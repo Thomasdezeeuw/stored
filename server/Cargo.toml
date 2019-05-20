@@ -1,0 +1,6 @@
+[package]
+name = "coeus-server"
+version = "0.1.0"
+authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+edition = "2018"
+publish = false
