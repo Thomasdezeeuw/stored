@@ -18,6 +18,13 @@ impl Hash {
     /// Length of the hash in bytes.
     pub const LENGTH: usize = SHA512_OUTPUT_LEN;
 
+    /// Create a new `Hash`.
+    pub fn new(hash: [u8; Hash::LENGTH]) -> Hash {
+        Hash {
+            bytes: hash,
+        }
+    }
+
     /// Converts a slice of bytes of length `Hash::LENGTH` into `&Hash`.
     ///
     /// # Panics
