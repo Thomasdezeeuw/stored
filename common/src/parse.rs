@@ -40,33 +40,62 @@ pub enum Response<'a> {
 }
 
 /// Parse a response.
-pub fn parse_response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
+///
+/// It returns a parsed [`Response`], borrowing data from the input, and the
+/// number of bytes that make up the response. Or it returns an [`Error`].
+pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => Ok((Response::Ok(response::Ok), 1)),
-            2 if bytes.len() >= Hash::LENGTH + 1 => {
-                let hash = Hash::from_bytes(&bytes[1..Hash::LENGTH+1]);
-                Ok((Response::Store(response::Store::new(hash)), Hash::LENGTH + 1))
-            },
-            2 => Err(Error::Incomplete),
-            3 if bytes.len() >= size_of::<u32>() + 1 => {
-                const HEADER_SIZE: usize = size_of::<u32>() + 1;
-                let size = NetworkEndian::read_u32(&bytes) as usize;
-                if size >= STREAMING_SIZE_MIN {
-                    // Large values we'll stream.
-                    Ok((Response::StreamValue { value_size: size }, HEADER_SIZE))
-                } else if bytes.len() >= (HEADER_SIZE + size) {
-                    // Small values we parse in one go.
-                    let value = &bytes[HEADER_SIZE..HEADER_SIZE + size];
-                    Ok((Response::Value(response::Value::new(value)), HEADER_SIZE + size))
-                } else {
-                    Err(Error::Incomplete)
-                }
-            },
-            3 => Err(Error::Incomplete),
+            2 => parse_hash(bytes)
+                .map(|(hash, n)| (Response::Store(response::Store::new(hash)), n)),
+            3 => parse_value(bytes).map(|(value, n)| match value {
+                    Either::Left(value_size) => (Response::StreamValue { value_size }, n),
+                    Either::Right(value) => (Response::Value(response::Value::new(value)), n),
+                }),
             4 => Ok((Response::ValueNotFound(response::ValueNotFound), 1)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
+    }
+}
+
+/// Either left or right.
+enum Either<T, U> {
+    Left(T),
+    Right(U),
+}
+
+/// Parse a value.
+///
+/// Expects the first byte to be the request type, which is ignored.
+fn parse_value<'a>(bytes: &'a [u8]) -> Result<Either<usize, &'a [u8]>> {
+    if bytes.len() >= 1 + size_of::<u32>() {
+        const HEADER_SIZE: usize = 1 + size_of::<u32>();
+        let size = NetworkEndian::read_u32(&bytes) as usize;
+        if size >= STREAMING_SIZE_MIN {
+            // Large values we'll stream.
+            Ok((Either::Left(size), HEADER_SIZE))
+        } else if bytes.len() >= (HEADER_SIZE + size) {
+            // Small values we parse in one go if possible.
+            let value = &bytes[HEADER_SIZE..HEADER_SIZE + size];
+            Ok((Either::Right(value), HEADER_SIZE + size))
+        } else {
+            Err(Error::Incomplete)
+        }
+    } else {
+        Err(Error::Incomplete)
+    }
+}
+
+/// Parse a `Hash`.
+///
+/// Expects the first byte to be the request type, which is ignored.
+fn parse_hash<'a>(bytes: &'a [u8]) -> Result<&'a Hash> {
+    if bytes.len() >= 1 + Hash::LENGTH {
+        let hash = Hash::from_bytes(&bytes[1..Hash::LENGTH+1]);
+        Ok((hash, 1 + Hash::LENGTH))
+    } else {
+        Err(Error::Incomplete)
     }
 }
