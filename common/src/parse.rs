@@ -14,6 +14,7 @@ pub const STREAMING_SIZE_MIN: usize = 1024;
 type Result<T> = std::result::Result<(T, usize), Error>;
 
 /// Error returned by parsing.
+#[derive(Debug, Eq, PartialEq)]
 pub enum Error {
     /// The bytes provided did not include a complete request.
     ///
@@ -24,6 +25,7 @@ pub enum Error {
 }
 
 /// A parsed response.
+#[derive(Debug, Eq, PartialEq)]
 pub enum Response<'a> {
     Ok(response::Ok),
     Store(response::Store<'a>),

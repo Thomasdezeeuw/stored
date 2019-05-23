@@ -3,6 +3,7 @@
 use crate::Hash;
 
 /// Request to store value.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Store<'a> {
     /// Value to store.
     value: &'a [u8],
@@ -18,6 +19,7 @@ impl<'a> Store<'a> {
 }
 
 /// Request to retrieve a value with a given hash.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Retrieve<'a> {
     /// Hash of the value to retrieve.
     hash: &'a Hash,
@@ -33,6 +35,7 @@ impl<'a> Retrieve<'a> {
 }
 
 /// Request to remove a value with a given hash.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Remove<'a> {
     /// Hash of the value to remove.
     hash: &'a Hash,

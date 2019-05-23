@@ -2,16 +2,16 @@
 
 use crate::Hash;
 
-// Serialize, Deserialize
-
 /// Generic OK response.
 ///
 /// Returned by remove.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Ok;
 
 /// Value is successfully stored.
 ///
 /// Return by store.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Store<'a> {
     /// Hash of the value stored.
     hash: &'a Hash,
@@ -34,6 +34,7 @@ impl<'a> Store<'a> {
 /// A retrieved value.
 ///
 /// Returned by retrieve.
+#[derive(Debug, Eq, PartialEq)]
 pub struct Value<'a> {
     /// Retrieved value.
     value: &'a [u8],
@@ -56,4 +57,5 @@ impl<'a> Value<'a> {
 /// Value in the request is not found.
 ///
 /// Returned by retrieve and remove.
+#[derive(Debug, Eq, PartialEq)]
 pub struct ValueNotFound;
