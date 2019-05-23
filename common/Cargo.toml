@@ -1,0 +1,8 @@
+[package]
+name = "coeus-common"
+version = "0.1.0"
+authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+ring = "0.14.6"
