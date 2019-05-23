@@ -2,7 +2,7 @@ use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{request, response, HASH_LENGTH, hash_from_bytes};
+use crate::{request, response, Hash};
 
 /// Minimum size for a value to using streaming.
 pub const STREAMING_SIZE_MIN: usize = 1024;
@@ -42,9 +42,9 @@ pub fn parse_response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => Ok((Response::Ok(response::Ok), 1)),
-            2 if bytes.len() >= HASH_LENGTH + 1 => {
-                let hash = hash_from_bytes(&bytes[1..HASH_LENGTH+1]);
-                Ok((Response::Store(response::Store::new(hash)), HASH_LENGTH + 1))
+            2 if bytes.len() >= Hash::LENGTH + 1 => {
+                let hash = Hash::from_bytes(&bytes[1..Hash::LENGTH+1]);
+                Ok((Response::Store(response::Store::new(hash)), Hash::LENGTH + 1))
             },
             2 => Err(Error::Incomplete),
             3 if bytes.len() >= size_of::<u32>() + 1 => {
