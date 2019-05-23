@@ -1,3 +1,5 @@
+//! Module with parsing types.
+
 use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
@@ -11,7 +13,7 @@ pub const STREAMING_SIZE_MIN: usize = 1024;
 ///
 /// In case of sucessfull parsing it will return `T` (either a request or
 /// response) and the number of bytes used for the request.
-type Result<T> = std::result::Result<(T, usize), Error>;
+pub type Result<T> = std::result::Result<(T, usize), Error>;
 
 /// Error returned by parsing.
 #[derive(Debug, Eq, PartialEq)]
