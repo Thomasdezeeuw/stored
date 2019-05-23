@@ -27,15 +27,21 @@ pub enum Error {
 /// A parsed response.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Response<'a> {
+    /// See [`response::Ok`].
     Ok(response::Ok),
+    /// See [`response::Store`].
     Store(response::Store<'a>),
+    /// See [`response::Value`].
     Value(response::Value<'a>),
-    /// A partially parsed value response. This will be returned if the size of
-    /// the value is larger then [`STREAMING_SIZE_MIN`].
+    /// A partially parsed value response. This will be returned if the `size`
+    /// of the value is larger then [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`response::Value`].
     StreamValue {
         /// Size of the value.
         value_size: usize,
     },
+    /// See [`response::ValueNotFound`].
     ValueNotFound(response::ValueNotFound),
 }
 
