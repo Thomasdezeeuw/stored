@@ -19,7 +19,7 @@ impl Hash {
     pub const LENGTH: usize = SHA512_OUTPUT_LEN;
 
     /// Create a new `Hash`.
-    pub fn new(hash: [u8; Hash::LENGTH]) -> Hash {
+    pub const fn new(hash: [u8; Hash::LENGTH]) -> Hash {
         Hash {
             bytes: hash,
         }
@@ -38,6 +38,17 @@ impl Hash {
             // Hash::LENGTH]` because we use the `repr(transparent)` attribute.
             &*(hash.as_ptr() as *const Hash)
         }
+    }
+}
+
+impl<'a> ToOwned for Hash {
+    type Owned = Hash;
+
+    fn to_owned(&self) -> Self::Owned {
+        // FIXME(Thomas): I think this can be done more efficiently.
+        let mut hash = [0; Hash::LENGTH];
+        hash.copy_from_slice(&self.bytes);
+        Hash::new(hash)
     }
 }
 
