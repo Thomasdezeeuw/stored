@@ -26,6 +26,46 @@ pub enum Error {
     InvalidType,
 }
 
+/// A parsed request.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Request<'a> {
+    /// See [`request::Store`].
+    Store(request::Store<'a>),
+    /// A partially parsed value request. This will be returned if the size of
+    /// the value is larger then [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`request::Store`].
+    StreamStore {
+        /// Size of the value.
+        value_size: usize,
+    },
+    /// See [`request::Retrieve`].
+    Retrieve(request::Retrieve<'a>),
+    /// See [`request::Remove`].
+    Remove(request::Remove<'a>),
+}
+
+/// Parse a request.
+///
+/// It returns a parsed [`Request`], borrowing data from the input, and the
+/// number of bytes that make up the request. Or it returns an [`Error`].
+pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
+    match bytes.first() {
+        Some(byte) => match byte {
+            1 => parse_value(bytes).map(|(value, n)| match value {
+                    Either::Left(value_size) => (Request::StreamStore { value_size }, n),
+                    Either::Right(value) => (Request::Store(request::Store::new(value)), n),
+                }),
+            2 => parse_hash(bytes)
+                .map(|(hash, n)| (Request::Retrieve(request::Retrieve::new(hash)), n)),
+            3 => parse_hash(bytes)
+                .map(|(hash, n)| (Request::Remove(request::Remove::new(hash)), n)),
+            _ => Err(Error::InvalidType),
+        },
+        None => Err(Error::Incomplete),
+    }
+}
+
 /// A parsed response.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Response<'a> {
