@@ -74,3 +74,29 @@ impl fmt::Debug for Hash {
         fmt::Display::fmt(self, f)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::Hash;
+    use ring::digest::{digest, SHA512};
+
+    #[test]
+    fn to_owned() {
+        let bytes: Vec<u8> = (0..64).collect();
+        let hash1 = Hash::from_bytes(&bytes);
+        let hash2 = hash1.to_owned();
+        assert_eq!(hash1, &hash2);
+    }
+
+    #[test]
+    fn formatting() {
+        let result = digest(&SHA512, b"Hello world");
+        let hash = Hash::from_bytes(result.as_ref());
+        let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
+            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+        assert_eq!(format!("{}", hash), expected); // `fmt::Display` trait.
+        assert_eq!(format!("{:?}", hash), expected); // `fmt::Debug` triat.
+        assert_eq!(hash.to_string(), expected); // ToString trait.
+    }
+}
