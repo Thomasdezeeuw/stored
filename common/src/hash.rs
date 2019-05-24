@@ -4,7 +4,7 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
-use ring::digest::SHA512_OUTPUT_LEN;
+use ring::digest::{digest, SHA512, SHA512_OUTPUT_LEN};
 
 /// Type that represents a hashed value, used as key.
 #[repr(transparent)]
@@ -36,6 +36,12 @@ impl Hash {
             // Hash::LENGTH]` because we use the `repr(transparent)` attribute.
             &*(hash.as_ptr() as *const Hash)
         }
+    }
+
+    /// Calculate the `Hash` for a `value`.
+    pub fn for_value<'a>(value: &'a [u8]) -> Hash {
+        let result = digest(&SHA512, value);
+        Hash::from_bytes(result.as_ref()).to_owned()
     }
 }
 
@@ -125,8 +131,6 @@ impl fmt::Debug for Hash {
 
 #[cfg(test)]
 mod tests {
-    use ring::digest::{digest, SHA512};
-
     use crate::{Hash, InvalidHashStr};
 
     #[test]
@@ -139,8 +143,7 @@ mod tests {
 
     #[test]
     fn formatting() {
-        let result = digest(&SHA512, b"Hello world");
-        let hash = Hash::from_bytes(result.as_ref());
+        let hash = Hash::for_value(b"Hello world");
         let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
             5f79a942600f9725f58ce1f29c18139bf80b06c0f\
             ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
@@ -151,14 +154,12 @@ mod tests {
 
     #[test]
     fn parsing() {
-        let result = digest(&SHA512, b"Hello world");
-        let expected = Hash::from_bytes(result.as_ref());
-
+        let expected = Hash::for_value(b"Hello world");
         let input = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
             5f79a942600f9725f58ce1f29c18139bf80b06c0f\
             ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         let hash: Hash = input.parse().expect("unexpected error parsing hash");
-        assert_eq!(&hash, expected);
+        assert_eq!(hash, expected);
     }
 
     #[test]
