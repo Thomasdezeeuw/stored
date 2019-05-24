@@ -1,6 +1,8 @@
 //! Module with the hash type.
 
+use std::error::Error;
 use std::fmt;
+use std::str::FromStr;
 
 use ring::digest::SHA512_OUTPUT_LEN;
 
@@ -34,6 +36,52 @@ impl Hash {
             // Hash::LENGTH]` because we use the `repr(transparent)` attribute.
             &*(hash.as_ptr() as *const Hash)
         }
+    }
+}
+
+/// Error returned by [`Hash`]'s [`FromStr`] implementation.
+#[derive(Debug, Eq, PartialEq)]
+pub struct InvalidHashStr;
+
+impl fmt::Display for InvalidHashStr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad(self.description())
+    }
+}
+
+impl Error for InvalidHashStr {
+    fn description(&self) -> &str {
+        "invalid hash string"
+    }
+}
+
+impl FromStr for Hash {
+    type Err = InvalidHashStr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.len() != Hash::LENGTH * 2 {
+            return Err(InvalidHashStr);
+        }
+
+        let mut hash = [0; Hash::LENGTH];
+        for (i, digits) in s.as_bytes().chunks_exact(2).enumerate() {
+            let high = from_hex_digit(digits[0])?;
+            let low = from_hex_digit(digits[1])?;
+            hash[i] = (high * 16) | low;
+        }
+        Ok(Hash::new(hash))
+    }
+}
+
+fn from_hex_digit(digit: u8) -> Result<u8, InvalidHashStr> {
+    if (b'0'..=b'9').contains(&digit) {
+        Ok(digit - b'0')
+    } else if (b'a'..=b'f').contains(&digit) {
+        Ok(digit - b'a' + 10)
+    } else if (b'A'..=b'F').contains(&digit) {
+        Ok(digit - b'A' + 10)
+    } else {
+        Err(InvalidHashStr)
     }
 }
 
@@ -77,8 +125,9 @@ impl fmt::Debug for Hash {
 
 #[cfg(test)]
 mod tests {
-    use crate::Hash;
     use ring::digest::{digest, SHA512};
+
+    use crate::{Hash, InvalidHashStr};
 
     #[test]
     fn to_owned() {
@@ -96,7 +145,32 @@ mod tests {
             5f79a942600f9725f58ce1f29c18139bf80b06c0f\
             ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         assert_eq!(format!("{}", hash), expected); // `fmt::Display` trait.
-        assert_eq!(format!("{:?}", hash), expected); // `fmt::Debug` triat.
+        assert_eq!(format!("{:?}", hash), expected); // `fmt::Debug` trait.
         assert_eq!(hash.to_string(), expected); // ToString trait.
+    }
+
+    #[test]
+    fn parsing() {
+        let result = digest(&SHA512, b"Hello world");
+        let expected = Hash::from_bytes(result.as_ref());
+
+        let input = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
+            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+        let hash: Hash = input.parse().expect("unexpected error parsing hash");
+        assert_eq!(&hash, expected);
+    }
+
+    #[test]
+    fn parsing_errors() {
+        // Invalid input length.
+        let input = "";
+        assert_eq!(input.parse::<Hash>(), Err(InvalidHashStr));
+
+        // Invalid hex digits.
+        let input = "G7f783baed8297f0db917462184ff4f08e69c2d5e\
+            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+        assert_eq!(input.parse::<Hash>(), Err(InvalidHashStr));
     }
 }

@@ -4,4 +4,4 @@ pub mod parse;
 
 mod hash;
 
-pub use hash::Hash;
+pub use hash::{Hash, InvalidHashStr};
