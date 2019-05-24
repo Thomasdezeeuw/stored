@@ -1,10 +1,10 @@
-use coeus_common::{parse, request, response};
+use coeus_common::parse;
 
 #[test]
 #[ignore = "TODO: add input"]
 fn parse_request() {
     let tests = &[
-        (&[1], parse::Request::Store(request::Store::new(b"Hello world")), 12),
+        (&[1], parse::Request::Store(b"Hello world"), 12),
         // 1 + size < 1024 + value.
         // 1 + size > 1024 + value.
         // 1 + size < 1024.
@@ -40,13 +40,13 @@ fn parse_request_errors() {
 #[test]
 fn parse_response() {
     let tests = &[
-        (&[1], parse::Response::Ok(response::Ok), 1),
+        (&[1], parse::Response::Ok, 1),
         // 2 + hash.
         // 3 + size < 1024 + value.
         // 3 + size < 1024.
         // 3 + size > 1024 + value.
         // 3 + size > 1024.
-        (&[4], parse::Response::ValueNotFound(response::ValueNotFound), 1),
+        (&[4], parse::Response::ValueNotFound, 1),
     ];
 
     for test in tests {

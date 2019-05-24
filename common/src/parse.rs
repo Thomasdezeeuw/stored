@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{request, response, Hash};
+use crate::Hash;
 
 /// Minimum size for a value to using streaming.
 pub const STREAMING_SIZE_MIN: usize = 1024;
@@ -29,20 +29,22 @@ pub enum Error {
 /// A parsed request.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Request<'a> {
-    /// See [`request::Store`].
-    Store(request::Store<'a>),
-    /// A partially parsed value request. This will be returned if the size of
-    /// the value is larger then [`STREAMING_SIZE_MIN`].
+    /// Request to store value.
+    Store(&'a [u8]),
+    /// A store request large enough to stream.
     ///
-    /// Also see [`request::Store`].
+    /// This will be returned if the `size` of the value is larger then
+    /// [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`Request::Store`].
     StreamStore {
         /// Size of the value.
         value_size: usize,
     },
-    /// See [`request::Retrieve`].
-    Retrieve(request::Retrieve<'a>),
-    /// See [`request::Remove`].
-    Remove(request::Remove<'a>),
+    /// Retrieve a value with the given hash.
+    Retrieve(&'a Hash),
+    /// Remove a value with the given hash.
+    Remove(&'a Hash),
 }
 
 /// Parse a request.
@@ -54,12 +56,12 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
         Some(byte) => match byte {
             1 => parse_value(bytes).map(|(value, n)| match value {
                     Either::Left(value_size) => (Request::StreamStore { value_size }, n),
-                    Either::Right(value) => (Request::Store(request::Store::new(value)), n),
+                    Either::Right(value) => (Request::Store(value), n),
                 }),
             2 => parse_hash(bytes)
-                .map(|(hash, n)| (Request::Retrieve(request::Retrieve::new(hash)), n)),
+                .map(|(hash, n)| (Request::Retrieve(hash), n)),
             3 => parse_hash(bytes)
-                .map(|(hash, n)| (Request::Remove(request::Remove::new(hash)), n)),
+                .map(|(hash, n)| (Request::Remove(hash), n)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
@@ -69,22 +71,24 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
 /// A parsed response.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Response<'a> {
-    /// See [`response::Ok`].
-    Ok(response::Ok),
-    /// See [`response::Store`].
-    Store(response::Store<'a>),
-    /// See [`response::Value`].
-    Value(response::Value<'a>),
-    /// A partially parsed value response. This will be returned if the `size`
-    /// of the value is larger then [`STREAMING_SIZE_MIN`].
+    /// Generic OK response.
+    Ok,
+    /// Value is successfully stored.
+    Store(&'a Hash),
+    /// A retrieved value.
+    Value(&'a [u8]),
+    /// A value large enough to stream.
     ///
-    /// Also see [`response::Value`].
+    /// This will be returned if the `size` of the value is larger then
+    /// [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`Response::Value`].
     StreamValue {
         /// Size of the value.
         value_size: usize,
     },
-    /// See [`response::ValueNotFound`].
-    ValueNotFound(response::ValueNotFound),
+    /// Value is not found.
+    ValueNotFound,
 }
 
 /// Parse a response.
@@ -94,14 +98,14 @@ pub enum Response<'a> {
 pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
-            1 => Ok((Response::Ok(response::Ok), 1)),
+            1 => Ok((Response::Ok, 1)),
             2 => parse_hash(bytes)
-                .map(|(hash, n)| (Response::Store(response::Store::new(hash)), n)),
+                .map(|(hash, n)| (Response::Store(hash), n)),
             3 => parse_value(bytes).map(|(value, n)| match value {
                     Either::Left(value_size) => (Response::StreamValue { value_size }, n),
-                    Either::Right(value) => (Response::Value(response::Value::new(value)), n),
+                    Either::Right(value) => (Response::Value(value), n),
                 }),
-            4 => Ok((Response::ValueNotFound(response::ValueNotFound), 1)),
+            4 => Ok((Response::ValueNotFound, 1)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
