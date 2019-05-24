@@ -1,7 +1,5 @@
 //! Coeus.
 
-use std::pin::Pin;
-
 use futures_io::{AsyncRead, AsyncWrite};
 
 pub mod response_to;
@@ -30,6 +28,8 @@ impl<C> Client<C>
     }
 
     /// Store a `value`.
+    ///
+    /// Returns [`response_to::Store`].
     pub fn store<'c, 'v>(&'c mut self, value: &'v [u8]) -> Request<'c, C, request::Store<'v>> {
         Request {
             client: self,
@@ -41,6 +41,8 @@ impl<C> Client<C>
     }
 
     /// Retrieve a value based on its `hash`.
+    ///
+    /// Returns [`response_to::Retrieve`].
     pub fn retrieve<'c, 'h>(&'c mut self, hash: &'h Hash) -> Request<'c, C, request::Retrieve<'h>> {
         Request {
             client: self,
@@ -52,6 +54,8 @@ impl<C> Client<C>
     }
 
     /// Remove a value based on its `hash`.
+    ///
+    /// Returns [`response_to::Remove`].
     pub fn remove<'c, 'h>(&'c mut self, hash: &'h Hash) -> Request<'c, C, request::Remove<'h>> {
         Request {
             client: self,
