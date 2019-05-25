@@ -1,17 +1,17 @@
 // TODO: start a coeus server.
 // TODO: use an AsyncRead/AsyncWrite client.
 
-use std::io::{self, Read, Write};
 use std::future::Future;
-use std::pin::Pin;
+use std::io::{self, Read, Write};
 use std::marker::Unpin;
 use std::net::{SocketAddr, TcpStream};
+use std::pin::Pin;
+use std::task::{self, Poll};
 use std::thread::sleep;
 use std::time::Duration;
-use std::task::{self, Poll};
 
-use futures_test::task::noop_context;
 use futures_io::{AsyncRead, AsyncWrite};
+use futures_test::task::noop_context;
 
 use coeus::response_to;
 
@@ -20,33 +20,32 @@ use coeus::response_to;
 fn simple() {
     let value = b"Hello world";
     let key = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
-        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47".parse().unwrap();
+               5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+               ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47"
+        .parse()
+        .unwrap();
 
     let address = "127.0.0.1:8080".parse().unwrap();
-    let connection = Connection::connect(address)
-        .expect("unable to connect server");
+    let connection = Connection::connect(address).expect("unable to connect server");
     let mut client = coeus::Client::new(connection);
 
     // Storing a value.
-    let response = wait_loop(client.store(value.as_ref()))
-        .expect("unexpected error with store request");
+    let response = wait_loop(client.store(value.as_ref())).expect("unexpected error with store request");
     assert_eq!(response, response_to::Store::Success(&key));
 
     // Retrieving the store value.
-    let response = wait_loop(client.retrieve(&key))
-        .expect("unexpected error with retrieve request");
+    let response = wait_loop(client.retrieve(&key)).expect("unexpected error with retrieve request");
     assert_eq!(response, response_to::Retrieve::Value(value.as_ref()));
 
     // And removing the value.
-    let response = wait_loop(client.remove(&key))
-        .expect("unexpected error with remove request");
+    let response = wait_loop(client.remove(&key)).expect("unexpected error with remove request");
     assert_eq!(response, response_to::Remove::Ok);
 }
 
 /// A simple wait loop that completes the future.
 fn wait_loop<Fut>(mut future: Fut) -> Fut::Output
-    where Fut: Future + Unpin,
+where
+    Fut: Future + Unpin,
 {
     let mut future = Pin::new(&mut future);
     let mut ctx = noop_context();
