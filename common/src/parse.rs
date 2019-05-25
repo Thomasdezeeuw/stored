@@ -55,13 +55,11 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => parse_value(bytes).map(|(value, n)| match value {
-                    Value::Stream(value_size) => (Request::StreamStore { value_size }, n),
-                    Value::Full(value) => (Request::Store(value), n),
-                }),
-            2 => parse_key(bytes)
-                .map(|(key, n)| (Request::Retrieve(key), n)),
-            3 => parse_key(bytes)
-                .map(|(key, n)| (Request::Remove(key), n)),
+                Value::Stream(value_size) => (Request::StreamStore { value_size }, n),
+                Value::Full(value) => (Request::Store(value), n),
+            }),
+            2 => parse_key(bytes).map(|(key, n)| (Request::Retrieve(key), n)),
+            3 => parse_key(bytes).map(|(key, n)| (Request::Remove(key), n)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
@@ -99,12 +97,11 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => Ok((Response::Ok, 1)),
-            2 => parse_key(bytes)
-                .map(|(key, n)| (Response::Store(key), n)),
+            2 => parse_key(bytes).map(|(key, n)| (Response::Store(key), n)),
             3 => parse_value(bytes).map(|(value, n)| match value {
-                    Value::Stream(value_size) => (Response::StreamValue { value_size }, n),
-                    Value::Full(value) => (Response::Value(value), n),
-                }),
+                Value::Stream(value_size) => (Response::StreamValue { value_size }, n),
+                Value::Full(value) => (Response::Value(value), n),
+            }),
             4 => Ok((Response::ValueNotFound, 1)),
             _ => Err(Error::InvalidType),
         },
@@ -145,7 +142,7 @@ fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
 /// Expects the first byte to be the request type, which is ignored.
 fn parse_key<'a>(bytes: &'a [u8]) -> Result<&'a Key> {
     if bytes.len() >= 1 + Key::LENGTH {
-        let key = Key::from_bytes(&bytes[1..Key::LENGTH+1]);
+        let key = Key::from_bytes(&bytes[1..Key::LENGTH + 1]);
         Ok((key, 1 + Key::LENGTH))
     } else {
         Err(Error::Incomplete)

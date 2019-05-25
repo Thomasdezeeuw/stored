@@ -21,9 +21,7 @@ impl Key {
 
     /// Create a new `Key` from the provided `bytes`..
     pub const fn new(bytes: [u8; Key::LENGTH]) -> Key {
-        Key {
-            bytes,
-        }
+        Key { bytes }
     }
 
     /// Convert a slice of bytes of length `Key::LENGTH` into `&Key`.
@@ -105,7 +103,7 @@ impl<'a> ToOwned for Key {
     }
 }
 
-impl Eq for Key { }
+impl Eq for Key {}
 
 impl PartialEq for Key {
     fn eq(&self, other: &Key) -> bool {
@@ -134,7 +132,7 @@ impl fmt::Debug for Key {
 
 #[cfg(test)]
 mod test {
-    use crate::{Key, InvalidKeyStr};
+    use crate::{InvalidKeyStr, Key};
 
     #[test]
     fn to_owned() {
@@ -148,8 +146,8 @@ mod test {
     fn formatting() {
         let key = Key::for_value(b"Hello world");
         let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
-            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         assert_eq!(format!("{}", key), expected); // `fmt::Display` trait.
         assert_eq!(format!("{:?}", key), expected); // `fmt::Debug` trait.
         assert_eq!(key.to_string(), expected); // ToString trait.
@@ -159,8 +157,8 @@ mod test {
     fn parsing() {
         let expected = Key::for_value(b"Hello world");
         let input = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
-            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+                     5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                     ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         let key: Key = input.parse().expect("unexpected error parsing key");
         assert_eq!(key, expected);
     }
@@ -173,8 +171,8 @@ mod test {
 
         // Invalid hex digits.
         let input = "G7f783baed8297f0db917462184ff4f08e69c2d5e\
-            5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-            ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+                     5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                     ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         assert_eq!(input.parse::<Key>(), Err(InvalidKeyStr));
     }
 }

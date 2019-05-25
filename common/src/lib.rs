@@ -4,4 +4,4 @@ pub mod parse;
 
 mod key;
 
-pub use key::{Key, InvalidKeyStr};
+pub use key::{InvalidKeyStr, Key};

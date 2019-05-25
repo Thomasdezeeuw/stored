@@ -14,8 +14,7 @@ fn parse_request() {
     ];
 
     for test in tests {
-        let got = parse::request(test.0)
-            .expect("unexpected error parsing request");
+        let got = parse::request(test.0).expect("unexpected error parsing request");
         assert_eq!(got.0, test.1, "unexpected result parsing request");
         assert_eq!(got.1, test.2, "unexpected number of bytes parsed");
     }
@@ -31,8 +30,7 @@ fn parse_request_errors() {
     ];
 
     for test in tests {
-        let got = parse::request(test.0)
-            .expect_err("unexpected valid result parsing request");
+        let got = parse::request(test.0).expect_err("unexpected valid result parsing request");
         assert_eq!(got, test.1, "unexpected result parsing request");
     }
 }
@@ -50,8 +48,7 @@ fn parse_response() {
     ];
 
     for test in tests {
-        let got = parse::response(test.0)
-            .expect("unexpected error parsing response");
+        let got = parse::response(test.0).expect("unexpected error parsing response");
         assert_eq!(got.0, test.1, "unexpected result parsing response");
         assert_eq!(got.1, test.2, "unexpected number of bytes parsed");
     }
@@ -68,8 +65,7 @@ fn parse_response_errors() {
     ];
 
     for test in tests {
-        let got = parse::response(test.0)
-            .expect_err("unexpected valid result parsing response");
+        let got = parse::response(test.0).expect_err("unexpected valid result parsing response");
         assert_eq!(got, test.1, "unexpected result parsing response");
     }
 }
