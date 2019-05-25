@@ -1,9 +1,9 @@
 //! Request future.
 
 use std::future::Future;
-use std::{io, slice};
 use std::pin::Pin;
 use std::task::{self, Poll};
+use std::{io, slice};
 
 use futures_io::{AsyncRead, AsyncWrite};
 
@@ -36,7 +36,7 @@ impl<'c, 'v, C> Request<'c, C, Store<'v>> {
 
 impl<'c, 'h, C> Request<'c, C, Retrieve<'h>> {
     pub(crate) fn retrieve(client: &'c mut Client<C>, key: &'h Key) -> Request<'c, C, Retrieve<'h>> {
-        Request::new(client, Retrieve  { key })
+        Request::new(client, Retrieve { key })
     }
 }
 
@@ -77,7 +77,8 @@ enum State {
 }
 
 impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
-    where C: AsyncRead + AsyncWrite + Unpin, // TODO: remove Unpin bound.
+where
+    C: AsyncRead + AsyncWrite + Unpin, // TODO: remove Unpin bound.
 {
     type Output = io::Result<response_to::Store<'c>>;
 
@@ -164,8 +165,7 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
                     // as the client, which owns the buffer.
                     slice::from_raw_parts(self.client.buf.as_ptr(), self.client.buf.len())
                 };
-                let (response, n_bytes) = parse::response(buf)
-                    .expect("TODO: deal with parse failures");
+                let (response, n_bytes) = parse::response(buf).expect("TODO: deal with parse failures");
                 match response {
                     parse::Response::Store(key) => {
                         assert_eq!(n_bytes, 1 + Key::LENGTH, "TODO: deal with unexpected longer parses");
@@ -179,7 +179,8 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
 }
 
 impl<'c, 'h, C> Future for Request<'c, C, Retrieve<'h>>
-    where C: AsyncRead + AsyncWrite,
+where
+    C: AsyncRead + AsyncWrite,
 {
     type Output = io::Result<response_to::Retrieve<'c>>;
 
@@ -194,7 +195,8 @@ impl<'c, 'h, C> Future for Request<'c, C, Retrieve<'h>>
 }
 
 impl<'c, 'h, C> Future for Request<'c, C, Remove<'h>>
-    where C: AsyncRead + AsyncWrite,
+where
+    C: AsyncRead + AsyncWrite,
 {
     type Output = io::Result<response_to::Remove>;
 

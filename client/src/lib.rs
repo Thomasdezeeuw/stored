@@ -2,8 +2,8 @@
 
 use futures_io::{AsyncRead, AsyncWrite};
 
-pub mod response_to;
 pub mod request;
+pub mod response_to;
 
 #[doc(inline)]
 pub use coeus_common::Key;
@@ -19,7 +19,8 @@ pub struct Client<C> {
 }
 
 impl<C> Client<C>
-    where C: AsyncRead + AsyncWrite,
+where
+    C: AsyncRead + AsyncWrite,
 {
     /// Create a new client from a connection.
     pub fn new(connection: C) -> Client<C> {

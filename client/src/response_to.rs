@@ -8,7 +8,7 @@ use crate::Key;
 
 /// Response to a store request.
 #[derive(Debug, Eq, PartialEq)]
-pub enum Store<'a>{
+pub enum Store<'a> {
     /// The value was successfully stored.
     Success(&'a Key),
 }
