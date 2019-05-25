@@ -55,8 +55,8 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => parse_value(bytes).map(|(value, n)| match value {
-                    Either::Left(value_size) => (Request::StreamStore { value_size }, n),
-                    Either::Right(value) => (Request::Store(value), n),
+                    Value::Stream(value_size) => (Request::StreamStore { value_size }, n),
+                    Value::Full(value) => (Request::Store(value), n),
                 }),
             2 => parse_hash(bytes)
                 .map(|(hash, n)| (Request::Retrieve(hash), n)),
@@ -102,8 +102,8 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
             2 => parse_hash(bytes)
                 .map(|(hash, n)| (Response::Store(hash), n)),
             3 => parse_value(bytes).map(|(value, n)| match value {
-                    Either::Left(value_size) => (Response::StreamValue { value_size }, n),
-                    Either::Right(value) => (Response::Value(value), n),
+                    Value::Stream(value_size) => (Response::StreamValue { value_size }, n),
+                    Value::Full(value) => (Response::Value(value), n),
                 }),
             4 => Ok((Response::ValueNotFound, 1)),
             _ => Err(Error::InvalidType),
@@ -112,26 +112,26 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     }
 }
 
-/// Either left or right.
-enum Either<T, U> {
-    Left(T),
-    Right(U),
+/// A parsed value that either can be streamed or is fully parsed.
+enum Value<'a> {
+    Stream(usize),
+    Full(&'a [u8]),
 }
 
 /// Parse a value.
 ///
 /// Expects the first byte to be the request type, which is ignored.
-fn parse_value<'a>(bytes: &'a [u8]) -> Result<Either<usize, &'a [u8]>> {
+fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
     if bytes.len() >= 1 + size_of::<u32>() {
         const HEADER_SIZE: usize = 1 + size_of::<u32>();
         let size = NetworkEndian::read_u32(&bytes) as usize;
         if size >= STREAMING_SIZE_MIN {
             // Large values we'll stream.
-            Ok((Either::Left(size), HEADER_SIZE))
+            Ok((Value::Stream(size), HEADER_SIZE))
         } else if bytes.len() >= (HEADER_SIZE + size) {
             // Small values we parse in one go if possible.
             let value = &bytes[HEADER_SIZE..HEADER_SIZE + size];
-            Ok((Either::Right(value), HEADER_SIZE + size))
+            Ok((Value::Full(value), HEADER_SIZE + size))
         } else {
             Err(Error::Incomplete)
         }
