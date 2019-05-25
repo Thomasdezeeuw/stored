@@ -1,6 +1,9 @@
 [workspace]
 members = [
-  "client",
-  "common",
-  "server",
+	"client",
+	"common",
+	"server",
+
+	# End to end tests.
+	"tests",
 ]
