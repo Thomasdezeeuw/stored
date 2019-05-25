@@ -12,17 +12,17 @@ use coeus_common::parse;
 use crate::{response_to, Client, Hash};
 
 /// Request future.
-pub struct Request<'c, C, T> {
+pub struct Request<'c, C, D> {
     client: &'c mut Client<C>,
-    request_type: T,
+    data: D,
     state: State,
 }
 
-impl<'c, C, T> Request<'c, C, T> {
-    fn new(client: &'c mut Client<C>, request_type: T) -> Request<'c, C, T> {
+impl<'c, C, D> Request<'c, C, D> {
+    fn new(client: &'c mut Client<C>, data: D) -> Request<'c, C, D> {
         Request {
             client,
-            request_type,
+            data,
             state: State::Initial,
         }
     }
@@ -98,13 +98,13 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
                 }
             },
             State::Written(already_written) => {
-                let Request { ref mut client, ref request_type, .. } = &mut *self;
+                let Request { ref mut client, ref data, .. } = &mut *self;
                 // Write the value to the connection.
-                match Pin::new(&mut client.connection).poll_write(ctx, &request_type.value[already_written..]) {
+                match Pin::new(&mut client.connection).poll_write(ctx, &data.value[already_written..]) {
                     Poll::Ready(Ok(bytes_written)) => {
                         // TODO: special case for `bytes_written` == 0?
                         let total_written = already_written + bytes_written;
-                        if total_written >= self.request_type.value.len() {
+                        if total_written >= self.data.value.len() {
                             // Written the entire request, move to the next state.
                             self.state = State::FlushRequest;
                         } else {
