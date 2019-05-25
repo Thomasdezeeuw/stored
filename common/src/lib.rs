@@ -2,6 +2,6 @@
 
 pub mod parse;
 
-mod hash;
+mod key;
 
-pub use hash::{Hash, InvalidHashStr};
+pub use key::{Key, InvalidKeyStr};

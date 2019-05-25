@@ -9,8 +9,8 @@ fn parse_request() {
         // 1 + size > 1024 + value.
         // 1 + size < 1024.
         // 1 + size > 1024.
-        // 2 + hash.
-        // 3 + hash.
+        // 2 + key.
+        // 3 + key.
     ];
 
     for test in tests {
@@ -41,7 +41,7 @@ fn parse_request_errors() {
 fn parse_response() {
     let tests = &[
         (&[1], parse::Response::Ok, 1),
-        // 2 + hash.
+        // 2 + key.
         // 3 + size < 1024 + value.
         // 3 + size < 1024.
         // 3 + size > 1024 + value.

@@ -6,7 +6,7 @@ pub mod response_to;
 pub mod request;
 
 #[doc(inline)]
-pub use coeus_common::Hash;
+pub use coeus_common::Key;
 
 pub use request::Request;
 
@@ -36,17 +36,17 @@ impl<C> Client<C>
         Request::store(self, value)
     }
 
-    /// Retrieve a value based on its `hash`.
+    /// Retrieve a value based on its `key`.
     ///
     /// Returns [`response_to::Retrieve`].
-    pub fn retrieve<'c, 'h>(&'c mut self, hash: &'h Hash) -> Request<'c, C, request::Retrieve<'h>> {
-        Request::retrieve(self, hash)
+    pub fn retrieve<'c, 'h>(&'c mut self, key: &'h Key) -> Request<'c, C, request::Retrieve<'h>> {
+        Request::retrieve(self, key)
     }
 
-    /// Remove a value based on its `hash`.
+    /// Remove a value based on its `key`.
     ///
     /// Returns [`response_to::Remove`].
-    pub fn remove<'c, 'h>(&'c mut self, hash: &'h Hash) -> Request<'c, C, request::Remove<'h>> {
-        Request::remove(self, hash)
+    pub fn remove<'c, 'h>(&'c mut self, key: &'h Key) -> Request<'c, C, request::Remove<'h>> {
+        Request::remove(self, key)
     }
 }

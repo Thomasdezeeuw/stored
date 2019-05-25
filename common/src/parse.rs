@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::Hash;
+use crate::Key;
 
 /// Minimum size for a value to using streaming.
 pub const STREAMING_SIZE_MIN: usize = 1024;
@@ -41,10 +41,10 @@ pub enum Request<'a> {
         /// Size of the value.
         value_size: usize,
     },
-    /// Retrieve a value with the given hash.
-    Retrieve(&'a Hash),
-    /// Remove a value with the given hash.
-    Remove(&'a Hash),
+    /// Retrieve a value with the given key.
+    Retrieve(&'a Key),
+    /// Remove a value with the given key.
+    Remove(&'a Key),
 }
 
 /// Parse a request.
@@ -58,10 +58,10 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
                     Value::Stream(value_size) => (Request::StreamStore { value_size }, n),
                     Value::Full(value) => (Request::Store(value), n),
                 }),
-            2 => parse_hash(bytes)
-                .map(|(hash, n)| (Request::Retrieve(hash), n)),
-            3 => parse_hash(bytes)
-                .map(|(hash, n)| (Request::Remove(hash), n)),
+            2 => parse_key(bytes)
+                .map(|(key, n)| (Request::Retrieve(key), n)),
+            3 => parse_key(bytes)
+                .map(|(key, n)| (Request::Remove(key), n)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
@@ -74,7 +74,7 @@ pub enum Response<'a> {
     /// Generic OK response.
     Ok,
     /// Value is successfully stored.
-    Store(&'a Hash),
+    Store(&'a Key),
     /// A retrieved value.
     Value(&'a [u8]),
     /// A value large enough to stream.
@@ -99,8 +99,8 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => Ok((Response::Ok, 1)),
-            2 => parse_hash(bytes)
-                .map(|(hash, n)| (Response::Store(hash), n)),
+            2 => parse_key(bytes)
+                .map(|(key, n)| (Response::Store(key), n)),
             3 => parse_value(bytes).map(|(value, n)| match value {
                     Value::Stream(value_size) => (Response::StreamValue { value_size }, n),
                     Value::Full(value) => (Response::Value(value), n),
@@ -140,13 +140,13 @@ fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
     }
 }
 
-/// Parse a `Hash`.
+/// Parse a `Key`.
 ///
 /// Expects the first byte to be the request type, which is ignored.
-fn parse_hash<'a>(bytes: &'a [u8]) -> Result<&'a Hash> {
-    if bytes.len() >= 1 + Hash::LENGTH {
-        let hash = Hash::from_bytes(&bytes[1..Hash::LENGTH+1]);
-        Ok((hash, 1 + Hash::LENGTH))
+fn parse_key<'a>(bytes: &'a [u8]) -> Result<&'a Key> {
+    if bytes.len() >= 1 + Key::LENGTH {
+        let key = Key::from_bytes(&bytes[1..Key::LENGTH+1]);
+        Ok((key, 1 + Key::LENGTH))
     } else {
         Err(Error::Incomplete)
     }

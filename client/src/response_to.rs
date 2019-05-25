@@ -4,13 +4,13 @@
 //! used to get an owned version of the response when dealing with lifetimes
 //! becomes to complicated.
 
-use crate::Hash;
+use crate::Key;
 
 /// Response to a store request.
 #[derive(Debug, Eq, PartialEq)]
 pub enum Store<'a>{
     /// The value was successfully stored.
-    Success(&'a Hash),
+    Success(&'a Key),
 }
 
 /// Response to a retrieve request.

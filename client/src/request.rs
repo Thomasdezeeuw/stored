@@ -9,7 +9,7 @@ use futures_io::{AsyncRead, AsyncWrite};
 
 use coeus_common::parse;
 
-use crate::{response_to, Client, Hash};
+use crate::{response_to, Client, Key};
 
 /// Request future.
 pub struct Request<'c, C, D> {
@@ -35,14 +35,14 @@ impl<'c, 'v, C> Request<'c, C, Store<'v>> {
 }
 
 impl<'c, 'h, C> Request<'c, C, Retrieve<'h>> {
-    pub(crate) fn retrieve(client: &'c mut Client<C>, hash: &'h Hash) -> Request<'c, C, Retrieve<'h>> {
-        Request::new(client, Retrieve  { hash })
+    pub(crate) fn retrieve(client: &'c mut Client<C>, key: &'h Key) -> Request<'c, C, Retrieve<'h>> {
+        Request::new(client, Retrieve  { key })
     }
 }
 
 impl<'c, 'h, C> Request<'c, C, Remove<'h>> {
-    pub(crate) fn remove(client: &'c mut Client<C>, hash: &'h Hash) -> Request<'c, C, Remove<'h>> {
-        Request::new(client, Remove { hash })
+    pub(crate) fn remove(client: &'c mut Client<C>, key: &'h Key) -> Request<'c, C, Remove<'h>> {
+        Request::new(client, Remove { key })
     }
 }
 
@@ -53,12 +53,12 @@ pub struct Store<'a> {
 
 /// Retrieve request.
 pub struct Retrieve<'a> {
-    hash: &'a Hash,
+    key: &'a Key,
 }
 
 /// Remove request.
 pub struct Remove<'a> {
-    hash: &'a Hash,
+    key: &'a Key,
 }
 
 enum State {
@@ -132,7 +132,7 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
             State::PrepareReceive => {
                 // TODO(Thomas): this can be done more efficiently, but would
                 // require unsafe.
-                self.client.buf.resize(1 + Hash::LENGTH, 0);
+                self.client.buf.resize(1 + Key::LENGTH, 0);
                 // Move to the next state.
                 self.state = State::Receiving(0);
                 self.poll(ctx)
@@ -144,7 +144,7 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
                     Poll::Ready(Ok(bytes_read)) => {
                         // TODO: special case for `bytes_read` == 0?
                         let total_read = already_read + bytes_read;
-                        if total_read >= 1 + Hash::LENGTH {
+                        if total_read >= 1 + Key::LENGTH {
                             // Read the entire request, move to the next state.
                             self.state = State::ParseResponse;
                         } else {
@@ -167,9 +167,9 @@ impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
                 let (response, n_bytes) = parse::response(buf)
                     .expect("TODO: deal with parse failures");
                 match response {
-                    parse::Response::Store(hash) => {
-                        assert_eq!(n_bytes, 1 + Hash::LENGTH, "TODO: deal with unexpected longer parses");
-                        Poll::Ready(Ok(response_to::Store::Success(hash)))
+                    parse::Response::Store(key) => {
+                        assert_eq!(n_bytes, 1 + Key::LENGTH, "TODO: deal with unexpected longer parses");
+                        Poll::Ready(Ok(response_to::Store::Success(key)))
                     },
                     response => unimplemented!("TODO: deal with unexpected responses: {:?}", response),
                 }
