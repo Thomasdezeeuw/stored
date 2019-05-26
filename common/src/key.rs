@@ -3,9 +3,13 @@
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::io::{self, Read, Write};
+use std::pin::Pin;
 use std::str::FromStr;
+use std::task::{self, Poll};
 
-use ring::digest::{digest, SHA512, SHA512_OUTPUT_LEN};
+use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
+use futures_io::{AsyncRead, AsyncWrite, Initializer};
 
 /// The key of a value.
 ///
@@ -45,6 +49,52 @@ impl Key {
     pub fn for_value<'a>(value: &'a [u8]) -> Key {
         let result = digest(&SHA512, value);
         Key::from_bytes(result.as_ref()).to_owned()
+    }
+
+    /// Create a `KeyCalculator`.
+    ///
+    /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
+    /// value, while streaming its contents.
+    ///
+    /// It can be used while [`Reading`] or [`Writing`], and even asynchronously
+    /// with [`AsyncRead`] or [`AsyncWrite`].
+    ///
+    /// [`Reading`]: std::io::Read
+    /// [`Writing`]: std::io::Write
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::io;
+    /// use std::io::Write;
+    ///
+    /// # use coeus_common::Key;
+    ///
+    /// # fn main() -> io::Result<()> {
+    /// // Our `Write` implementation.
+    /// let mut streamed_value = Vec::new();
+    /// let mut calculator = Key::calculator(&mut streamed_value);
+    ///
+    /// // We can now stream the value.
+    /// calculator.write(b"Hello")?;
+    /// calculator.write(b" ")?;
+    /// calculator.write(b"world")?;
+    ///
+    /// let key = calculator.finish();
+    /// assert_eq!(key, Key::for_value(b"Hello world"));
+    ///
+    /// // Now the writer can be used again.
+    /// streamed_value.write(b"!")?;
+    /// assert_eq!(streamed_value, b"Hello world!");
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    pub fn calculator<IO>(io: IO) -> KeyCalculator<IO> {
+        KeyCalculator {
+            digest: digest::Context::new(&digest::SHA512),
+            io,
+        }
     }
 }
 
@@ -124,6 +174,114 @@ impl fmt::Debug for Key {
 impl Hash for Key {
     fn hash<H>(&self, state: &mut H) where H: Hasher {
         Hash::hash(&self.bytes[..], state)
+    }
+}
+
+/// The key calculator, see [`Key::calculator`].
+pub struct KeyCalculator<IO> {
+    digest: digest::Context,
+    io: IO,
+}
+
+impl<IO> KeyCalculator<IO> {
+    /// Finish the calculation returning the value's key.
+    pub fn finish(self) -> Key {
+        let result = self.digest.finish();
+        Key::from_bytes(result.as_ref()).to_owned()
+    }
+}
+
+// TODO: vectored implementations.
+
+impl<IO> Read for KeyCalculator<IO>
+where IO: Read,
+{
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.io.read(buf)
+            .map(|n| {
+                self.digest.update(&buf[..n]);
+                n
+            })
+    }
+
+    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
+        self.io.read_to_end(buf)
+            .map(|n| {
+                self.digest.update(&buf);
+                n
+            })
+    }
+
+    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
+        self.io.read_to_string(buf)
+            .map(|n| {
+                self.digest.update(buf.as_bytes());
+                n
+            })
+    }
+
+    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
+        self.io.read_exact(buf)
+            .map(|()| self.digest.update(&buf))
+    }
+}
+
+impl<IO> Write for KeyCalculator<IO>
+where IO: Write,
+{
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.io.write(buf)
+            .map(|n| {
+                self.digest.update(&buf[..n]);
+                n
+            })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.io.flush()
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        self.io.write_all(buf)
+            .map(|()| self.digest.update(&buf))
+    }
+}
+
+// TODO: lose the `Unpin` requirement.
+
+impl<IO> AsyncRead for KeyCalculator<IO>
+where IO: AsyncRead + Unpin,
+{
+    fn poll_read(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_read(ctx, buf)
+            .map_ok(|n| {
+                self.digest.update(&buf[..n]);
+                n
+            })
+    }
+
+    unsafe fn initializer(&self) -> Initializer {
+        self.io.initializer()
+    }
+}
+
+impl<IO> AsyncWrite for KeyCalculator<IO>
+where IO: AsyncWrite + Unpin,
+{
+    fn poll_write(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &[u8]) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(ctx, buf)
+            .map_ok(|n| {
+                self.digest.update(&buf[..n]);
+                n
+            })
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(ctx)
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_close(ctx)
     }
 }
 
