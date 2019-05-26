@@ -2,6 +2,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::str::FromStr;
 
 use ring::digest::{digest, SHA512, SHA512_OUTPUT_LEN};
@@ -20,7 +21,7 @@ impl Key {
     /// Length of the key in bytes.
     pub const LENGTH: usize = SHA512_OUTPUT_LEN;
 
-    /// Create a new `Key` from the provided `bytes`..
+    /// Create a new `Key` from the provided `bytes`.
     pub const fn new(bytes: [u8; Key::LENGTH]) -> Key {
         Key { bytes }
     }
@@ -117,6 +118,12 @@ impl fmt::Display for Key {
 impl fmt::Debug for Key {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(self, f)
+    }
+}
+
+impl Hash for Key {
+    fn hash<H>(&self, state: &mut H) where H: Hasher {
+        Hash::hash(&self.bytes[..], state)
     }
 }
 
