@@ -10,6 +10,7 @@ use ring::digest::{digest, SHA512, SHA512_OUTPUT_LEN};
 ///
 /// This is always the SHA-512 checksum of the value, which can be calculated
 /// using the [`Key::for_value`] method.
+#[derive(Clone)]
 #[repr(transparent)]
 pub struct Key {
     bytes: [u8; Key::LENGTH],
@@ -89,17 +90,6 @@ fn from_hex_digit(digit: u8) -> Result<u8, InvalidKeyStr> {
         Ok(digit - b'A' + 10)
     } else {
         Err(InvalidKeyStr)
-    }
-}
-
-impl<'a> ToOwned for Key {
-    type Owned = Key;
-
-    fn to_owned(&self) -> Self::Owned {
-        // FIXME(Thomas): I think this can be done more efficiently.
-        let mut bytes = [0; Key::LENGTH];
-        bytes.copy_from_slice(&self.bytes);
-        Key::new(bytes)
     }
 }
 
