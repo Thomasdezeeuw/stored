@@ -7,7 +7,7 @@ use std::{io, slice};
 
 use futures_io::{AsyncRead, AsyncWrite};
 
-use coeus_common::parse;
+use coeus_common::{self as coeus, parse};
 
 use crate::{response_to, Client, Key};
 
@@ -167,7 +167,7 @@ where
                 };
                 let (response, n_bytes) = parse::response(buf).expect("TODO: deal with parse failures");
                 match response {
-                    parse::Response::Store(key) => {
+                    coeus::Response::Store(key) => {
                         assert_eq!(n_bytes, 1 + Key::LENGTH, "TODO: deal with unexpected longer parses");
                         Poll::Ready(Ok(response_to::Store::Success(key)))
                     },
