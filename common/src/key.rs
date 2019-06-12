@@ -51,6 +51,11 @@ impl Key {
         Key::from_bytes(result.as_ref()).to_owned()
     }
 
+    /// Get the key's bytes.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// Create a `KeyCalculator`.
     ///
     /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
