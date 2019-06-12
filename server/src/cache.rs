@@ -10,21 +10,43 @@ use log::trace;
 
 use crate::Key;
 
-/// Read handle to the cache.
-pub type Cache = evmap::ReadHandle<Key, Value, (), evmap::FxHashBuilder>;
+/// Type used for the value.
+pub type Value = Arc<[u8]>;
+
+#[derive(Clone)]
+pub struct CacheRef {
+    handle: evmap::ReadHandle<Key, Value, (), evmap::FxHashBuilder>,
+    actor_ref: ActorRef<Message, Sync>,
+}
+
+impl CacheRef {
+    /// Get the value with `key`.
+    pub fn get(&mut self, key: &Key) -> Option<Value> {
+        self.handle.get_and(key, |values| values[0].clone())
+    }
+
+    /// Asynchronously store `value`, returning its key.
+    pub fn async_add(&mut self, value: Value) -> Key {
+        let key = Key::for_value(&*value);
+        self.actor_ref <<= Message::Add(key.clone(), value);
+        key
+    }
+
+    /// Asynchronously remove the value with `key`.
+    pub fn async_remove(&mut self, key: Key) {
+        self.actor_ref <<= Message::Remove(key);
+    }
+}
 
 /// Write handle to the cache.
 type WCache = evmap::WriteHandle<Key, Value, (), evmap::FxHashBuilder>;
-
-/// Type used for the value.
-pub type Value = Arc<[u8]>;
 
 /// Start the value cache.
 ///
 /// This will start a synchronous actor that controls the value cache. The
 /// returned actor reference can be used to control the cache and the returned
 /// `Cache` is a read handle to the cache.
-pub fn start<S>(system: &mut ActorSystem<S>) -> Result<(ActorRef<Message, Sync>, Cache), RuntimeError> {
+pub fn start<S>(system: &mut ActorSystem<S>) -> Result<CacheRef, RuntimeError> {
     // Create the cache. Read handles go to all actors and the `cache_master`
     // will have write access.
     let (cache, cache_write_handle) = evmap::Options::default()
@@ -34,12 +56,12 @@ pub fn start<S>(system: &mut ActorSystem<S>) -> Result<(ActorRef<Message, Sync>,
     // Spawn our cache master, which has write access to the value cache.
     let cache_master = cache_master as fn(_, _) -> _;
     system.spawn_sync_actor(NoSupervisor, cache_master, cache_write_handle)
-        .map(|actor_ref| (actor_ref, cache))
+        .map(|actor_ref| CacheRef { handle: cache, actor_ref })
 }
 
 /// Message used to control the value cache.
 #[derive(Debug)]
-pub enum Message {
+enum Message {
     /// Add a new value to the cache.
     Add(Key, Value),
     /// Remove a value from the cache.
