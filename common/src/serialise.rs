@@ -6,18 +6,47 @@ use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
-use futures_io::AsyncWrite;
+use futures_io::{AsyncWrite, IoSlice};
 
-use crate::Response;
+use crate::Key;
+
+/// A response to serialise.
+#[derive(Debug)]
+pub enum Response<'a> {
+    /// Generic OK response.
+    Ok,
+    /// Value is successfully stored.
+    Store(&'a Key),
+    /// A retrieved value.
+    Value(&'a [u8]),
+    /// Value is not found.
+    ValueNotFound,
+}
+
+impl<'a> Response<'a> {
+    /// Write this response to an I/O object.
+    ///
+    /// # Notes
+    ///
+    /// The future doesn't flush the underlying I/O object.
+    pub fn write_to<IO>(self, to: IO) -> WriteResponse<'a, IO> {
+        WriteResponse::new(self, to)
+    }
+}
 
 pub struct WriteResponse<'a, IO> {
     response: Response<'a>,
     io: IO,
+    written: usize,
 }
 
 impl<'a, IO> WriteResponse<'a, IO> {
-    pub(super) fn new(response: Response<'a>, io: IO) -> WriteResponse<'a, IO> {
-        WriteResponse { response, io }
+    fn new(response: Response<'a>, io: IO) -> WriteResponse<'a, IO> {
+        WriteResponse {
+            response,
+            io,
+            written: 0,
+        }
     }
 }
 
@@ -28,36 +57,38 @@ where
     type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        // TODO: handle partial writes, etc.
         let WriteResponse {
             ref response,
             ref mut io,
+            ref mut written,
         } = &mut *self;
-        let mut io = Pin::new(io);
+        let io = Pin::new(io);
+
         match response {
-            Response::Ok => poll_write_all(io, ctx, &[1]),
+            Response::Ok => io.poll_write(ctx, &[1]),
             Response::Store(key) => {
-                poll_write_all(io.as_mut(), ctx, &[2])?;
-                poll_write_all(io, ctx, key.as_bytes())
+                let key_bytes = key.as_bytes();
+                let mut bufs = [IoSlice::new(&[2]), IoSlice::new(key_bytes)];
+                let bufs = if *written == 0 {
+                    &bufs[..]
+                } else {
+                    bufs[1] = IoSlice::new(&key_bytes[*written - 1..]);
+                    &bufs[1..]
+                };
+                io.poll_write_vectored(ctx, bufs)
             },
             Response::Value(value) => {
-                poll_write_all(io.as_mut(), ctx, &[3])?;
-                poll_write_all(io, ctx, value)
+                let mut bufs = [IoSlice::new(&[3]), IoSlice::new(value)];
+                let bufs = if *written == 0 {
+                    &bufs[..]
+                } else {
+                    bufs[1] = IoSlice::new(&value[*written - 1..]);
+                    &bufs[1..]
+                };
+                io.poll_write_vectored(ctx, bufs)
             },
-            // FIXME: don't have the actual value here...
-            Response::StreamValue { .. } => unimplemented!("TODO: streaming value"),
-            Response::ValueNotFound => poll_write_all(io, ctx, &[4]),
+            Response::ValueNotFound => io.poll_write(ctx, &[4]),
         }
+        .map_ok(|bytes_written| *written += bytes_written)
     }
-}
-
-fn poll_write_all<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, buf: &[u8]) -> Poll<io::Result<()>>
-where
-    IO: AsyncWrite,
-{
-    io.poll_write(ctx, buf).map(|result| match result {
-        Ok(n) if n != 1 => Err(io::ErrorKind::WriteZero.into()),
-        Ok(n) => Ok(()),
-        Err(err) => Err(err),
-    })
 }
