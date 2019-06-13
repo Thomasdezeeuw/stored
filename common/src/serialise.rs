@@ -6,6 +6,7 @@ use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
+use byteorder::{ByteOrder, NetworkEndian};
 use futures_io::{AsyncWrite, IoSlice};
 
 use crate::Key;
@@ -126,14 +127,19 @@ fn async_write_value<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, written: usi
     where IO: AsyncWrite,
 {
     let request_type_bytes = &[request_type];
-    let mut bufs = [IoSlice::new(request_type_bytes), IoSlice::new(value)];
+    let mut value_size_buf = [0; 4];
+    NetworkEndian::write_u32(&mut value_size_buf, value.len() as u32);
+    let mut bufs = [IoSlice::new(request_type_bytes), IoSlice::new(&value_size_buf), IoSlice::new(value)];
     let bufs = if written == 0 {
+        // Not written anything yet.
         &bufs[..]
-    } else {
-        // Already written something so we don't write the request type any
-        // maybe only a part of the value.
-        bufs[1] = IoSlice::new(&value[written - 1..]);
+    } else if written == 1 {
+        // Already written the request type, so we can skip that.
         &bufs[1..]
+    } else {
+        // Already written the request type and value size, so we can skip that.
+        bufs[2] = IoSlice::new(&value[written - 5..]);
+        &bufs[2..]
     };
     io.poll_write_vectored(ctx, bufs)
 }
