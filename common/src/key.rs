@@ -74,7 +74,7 @@ impl Key {
     /// use std::io::Write;
     ///
     /// # use coeus_common::Key;
-    ///
+    /// #
     /// # fn main() -> io::Result<()> {
     /// // Our `Write` implementation.
     /// let mut streamed_value = Vec::new();
