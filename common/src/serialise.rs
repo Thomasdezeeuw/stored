@@ -2,7 +2,6 @@
 
 use std::future::Future;
 use std::io;
-use std::marker::Unpin;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
@@ -28,7 +27,7 @@ impl<'a> Request<'a> {
     /// # Notes
     ///
     /// The future doesn't flush the underlying I/O object.
-    pub fn write_to<IO>(self, to: IO) -> WriteRequest<'a, IO> {
+    pub fn write_to<IO>(&'a self, to: IO) -> WriteRequest<'a, IO> {
         WriteRequest {
             request: self,
             io: to,
@@ -38,7 +37,7 @@ impl<'a> Request<'a> {
 }
 
 pub struct WriteRequest<'a, IO> {
-    request: Request<'a>,
+    request: &'a Request<'a>,
     io: IO,
     written: usize,
 }
@@ -86,7 +85,7 @@ impl<'a> Response<'a> {
     /// # Notes
     ///
     /// The future doesn't flush the underlying I/O object.
-    pub fn write_to<IO>(self, to: IO) -> WriteResponse<'a, IO> {
+    pub fn write_to<IO>(&'a self, to: IO) -> WriteResponse<'a, IO> {
         WriteResponse {
             response: self,
             io: to,
@@ -96,7 +95,7 @@ impl<'a> Response<'a> {
 }
 
 pub struct WriteResponse<'a, IO> {
-    response: Response<'a>,
+    response: &'a Response<'a>,
     io: IO,
     written: usize,
 }
