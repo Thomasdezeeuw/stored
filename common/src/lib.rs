@@ -1,11 +1,8 @@
 //! Coeus common code, shared between the client and server.
 
+pub mod key;
 pub mod parse;
 pub mod serialise;
-
-mod key;
-
-pub use key::{InvalidKeyStr, Key, KeyCalculator};
 
 use serialise::WriteResponse;
 
@@ -15,3 +12,5 @@ impl<'a> Response<'a> {
         WriteResponse::new(self, to)
     }
 }
+
+pub use key::Key;

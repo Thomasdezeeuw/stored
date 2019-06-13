@@ -291,7 +291,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use crate::{InvalidKeyStr, Key};
+    use crate::key::{InvalidKeyStr, Key};
 
     #[test]
     fn to_owned() {
