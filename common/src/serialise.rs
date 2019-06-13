@@ -45,17 +45,19 @@ pub struct WriteRequest<'a, IO> {
 
 impl<'a, IO> Future for WriteRequest<'a, IO>
 where
-    IO: AsyncWrite + Unpin, // TODO: remove the need for `Unpin`.
+    IO: AsyncWrite,
 {
     type Output = io::Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        // This is safe because we're not moving `io` and the only values are
+        // `Unpin`.
         let WriteRequest {
             ref request,
             ref mut io,
             ref mut written,
-        } = &mut *self;
-        let io = Pin::new(io);
+        } = unsafe { self.get_unchecked_mut() };
+        let io = unsafe { Pin::new_unchecked(io) };
 
         match request {
             Request::Store(value) => async_write_value(io, ctx, *written, 1, value),
@@ -101,17 +103,19 @@ pub struct WriteResponse<'a, IO> {
 
 impl<'a, IO> Future for WriteResponse<'a, IO>
 where
-    IO: AsyncWrite + Unpin, // TODO: remove the need for `Unpin`.
+    IO: AsyncWrite,
 {
     type Output = io::Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        // This is safe because we're not moving `io` and the only values are
+        // `Unpin`.
         let WriteResponse {
             ref response,
             ref mut io,
             ref mut written,
-        } = &mut *self;
-        let io = Pin::new(io);
+        } = unsafe { self.get_unchecked_mut() };
+        let io = unsafe { Pin::new_unchecked(io) };
 
         match response {
             Response::Ok => io.poll_write(ctx, &[1]),
