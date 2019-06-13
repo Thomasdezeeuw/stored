@@ -1,17 +1,16 @@
 //! Module with parsing types.
 
+// TODO: support for streaming values.
+
 use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
 use crate::Key;
 
-/// Minimum size for a value to using streaming.
-pub const STREAMING_SIZE_MIN: usize = 1024;
-
 /// The result of a parsing function.
 ///
-/// In case of sucessfull parsing it will return `T` (either a request or
+/// In case of successful parsing it will return `T` (either a request or
 /// response) and the number of bytes used for the request.
 pub type Result<T> = std::result::Result<(T, usize), Error>;
 
@@ -31,16 +30,6 @@ pub enum Error {
 pub enum Request<'a> {
     /// Request to store value.
     Store(&'a [u8]),
-    /// A store request large enough to stream.
-    ///
-    /// This will be returned if the `size` of the value is larger then
-    /// [`STREAMING_SIZE_MIN`].
-    ///
-    /// Also see [`Request::Store`].
-    StreamStore {
-        /// Size of the value.
-        value_size: usize,
-    },
     /// Retrieve a value with the given key.
     Retrieve(&'a Key),
     /// Remove a value with the given key.
@@ -55,7 +44,7 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
     match bytes.first() {
         Some(byte) => match byte {
             1 => parse_value(bytes).map(|(value, n)| match value {
-                Value::Stream(value_size) => (Request::StreamStore { value_size }, n),
+                Value::Stream(_value_size) => unimplemented!("parsing streaming value request"),
                 Value::Full(value) => (Request::Store(value), n),
             }),
             2 => parse_key(bytes).map(|(key, n)| (Request::Retrieve(key), n)),
@@ -75,16 +64,6 @@ pub enum Response<'a> {
     Store(&'a Key),
     /// A retrieved value.
     Value(&'a [u8]),
-    /// A value large enough to stream.
-    ///
-    /// This will be returned if the `size` of the value is larger then
-    /// [`STREAMING_SIZE_MIN`].
-    ///
-    /// Also see [`Response::Value`].
-    StreamValue {
-        /// Size of the value.
-        value_size: usize,
-    },
     /// Value is not found.
     ValueNotFound,
 }
@@ -99,7 +78,7 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
             1 => Ok((Response::Ok, 1)),
             2 => parse_key(bytes).map(|(key, n)| (Response::Store(key), n)),
             3 => parse_value(bytes).map(|(value, n)| match value {
-                Value::Stream(value_size) => (Response::StreamValue { value_size }, n),
+                Value::Stream(_value_size) => unimplemented!("parsing streaming value response"),
                 Value::Full(value) => (Response::Value(value), n),
             }),
             4 => Ok((Response::ValueNotFound, 1)),
@@ -111,6 +90,7 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
 
 /// A parsed value that either can be streamed or is fully parsed.
 enum Value<'a> {
+    #[allow(dead_code)]
     Stream(usize),
     Full(&'a [u8]),
 }
@@ -119,14 +99,12 @@ enum Value<'a> {
 ///
 /// Expects the first byte to be the request type, which is ignored.
 fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
-    if bytes.len() >= 1 + size_of::<u32>() {
-        const HEADER_SIZE: usize = 1 + size_of::<u32>();
-        let size = NetworkEndian::read_u32(&bytes) as usize;
-        if size >= STREAMING_SIZE_MIN {
-            // Large values we'll stream.
-            Ok((Value::Stream(size), HEADER_SIZE))
-        } else if bytes.len() >= (HEADER_SIZE + size) {
-            // Small values we parse in one go if possible.
+    // 1 bytes for the request type and the bytes for the size of the value.
+    const HEADER_SIZE: usize = 1 + size_of::<u32>();
+    if bytes.len() >= HEADER_SIZE {
+        // Skip the request type byte.
+        let size = NetworkEndian::read_u32(&bytes[1..]) as usize;
+        if bytes.len() >= (HEADER_SIZE + size) {
             let value = &bytes[HEADER_SIZE..HEADER_SIZE + size];
             Ok((Value::Full(value), HEADER_SIZE + size))
         } else {
@@ -141,9 +119,11 @@ fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
 ///
 /// Expects the first byte to be the request type, which is ignored.
 fn parse_key<'a>(bytes: &'a [u8]) -> Result<&'a Key> {
-    if bytes.len() >= 1 + Key::LENGTH {
-        let key = Key::from_bytes(&bytes[1..Key::LENGTH + 1]);
-        Ok((key, 1 + Key::LENGTH))
+    // 1 bytes for the request type and the bytes for the key.
+    const SIZE: usize = 1 + Key::LENGTH;
+    if bytes.len() >= SIZE {
+        let key = Key::from_bytes(&bytes[1..SIZE]);
+        Ok((key, SIZE))
     } else {
         Err(Error::Incomplete)
     }
