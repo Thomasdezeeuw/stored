@@ -52,7 +52,7 @@ impl Key {
     }
 
     /// Get the key's bytes.
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 
@@ -297,6 +297,7 @@ mod test {
     fn to_owned() {
         let bytes: Vec<u8> = (0..64).collect();
         let key1 = Key::from_bytes(&bytes);
+        assert_eq!(key1.as_bytes(), &*bytes);
         let key2 = key1.to_owned();
         assert_eq!(key1, &key2);
     }
