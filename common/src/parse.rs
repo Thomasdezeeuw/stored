@@ -4,7 +4,7 @@ use std::mem::size_of;
 
 use byteorder::{ByteOrder, NetworkEndian};
 
-use crate::{Key, Request, Response};
+use crate::Key;
 
 /// Minimum size for a value to using streaming.
 pub const STREAMING_SIZE_MIN: usize = 1024;
@@ -26,6 +26,27 @@ pub enum Error {
     InvalidType,
 }
 
+/// Parsed request.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Request<'a> {
+    /// Request to store value.
+    Store(&'a [u8]),
+    /// A store request large enough to stream.
+    ///
+    /// This will be returned if the `size` of the value is larger then
+    /// [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`Request::Store`].
+    StreamStore {
+        /// Size of the value.
+        value_size: usize,
+    },
+    /// Retrieve a value with the given key.
+    Retrieve(&'a Key),
+    /// Remove a value with the given key.
+    Remove(&'a Key),
+}
+
 /// Parse a request.
 ///
 /// It returns a parsed [`Request`], borrowing data from the input, and the
@@ -43,6 +64,29 @@ pub fn request<'a>(bytes: &'a [u8]) -> Result<Request<'a>> {
         },
         None => Err(Error::Incomplete),
     }
+}
+
+/// Parsed reponse.
+#[derive(Debug, Eq, PartialEq)]
+pub enum Response<'a> {
+    /// Generic OK response.
+    Ok,
+    /// Value is successfully stored.
+    Store(&'a Key),
+    /// A retrieved value.
+    Value(&'a [u8]),
+    /// A value large enough to stream.
+    ///
+    /// This will be returned if the `size` of the value is larger then
+    /// [`STREAMING_SIZE_MIN`].
+    ///
+    /// Also see [`Response::Value`].
+    StreamValue {
+        /// Size of the value.
+        value_size: usize,
+    },
+    /// Value is not found.
+    ValueNotFound,
 }
 
 /// Parse a response.
