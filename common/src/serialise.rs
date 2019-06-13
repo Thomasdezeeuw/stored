@@ -2,8 +2,8 @@
 
 use std::future::Future;
 use std::io;
-use std::pin::Pin;
 use std::marker::Unpin;
+use std::pin::Pin;
 use std::task::{self, Poll};
 
 use futures_io::AsyncWrite;
@@ -17,21 +17,22 @@ pub struct WriteResponse<'a, IO> {
 
 impl<'a, IO> WriteResponse<'a, IO> {
     pub(super) fn new(response: Response<'a>, io: IO) -> WriteResponse<'a, IO> {
-        WriteResponse {
-            response,
-            io,
-        }
+        WriteResponse { response, io }
     }
 }
 
 impl<'a, IO> Future for WriteResponse<'a, IO>
-    where IO: AsyncWrite + Unpin, // TODO: remove the need for `Unpin`.
+where
+    IO: AsyncWrite + Unpin, // TODO: remove the need for `Unpin`.
 {
     type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
         // TODO: handle partial writes, etc.
-        let WriteResponse { ref response, ref mut io } = &mut *self;
+        let WriteResponse {
+            ref response,
+            ref mut io,
+        } = &mut *self;
         let mut io = Pin::new(io);
         match response {
             Response::Ok => poll_write_all(io, ctx, &[1]),
@@ -51,7 +52,8 @@ impl<'a, IO> Future for WriteResponse<'a, IO>
 }
 
 fn poll_write_all<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, buf: &[u8]) -> Poll<io::Result<()>>
-    where IO: AsyncWrite,
+where
+    IO: AsyncWrite,
 {
     io.poll_write(ctx, buf).map(|result| match result {
         Ok(n) if n != 1 => Err(io::ErrorKind::WriteZero.into()),
