@@ -51,6 +51,7 @@ fn serialise_response() {
         (serialise::Response::Value(b"Hello"), (3, b"Hello")),
         (serialise::Response::Value(b""), (3, b"")),
         (serialise::Response::ValueNotFound, (4, b"")),
+        (serialise::Response::InvalidRequestType, (5, b"")),
     ];
 
     for test in tests {

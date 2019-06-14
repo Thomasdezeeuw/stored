@@ -78,6 +78,8 @@ pub enum Response<'a> {
     Value(&'a [u8]),
     /// Value is not found.
     ValueNotFound,
+    /// Request type is unknown to the server.
+    InvalidRequestType,
 }
 
 impl<'a> Response<'a> {
@@ -122,6 +124,7 @@ where
             Response::Store(key) => async_write_key(io, ctx, *written, 2, key),
             Response::Value(value) => async_write_value(io, ctx, *written, 3, value),
             Response::ValueNotFound => io.poll_write(ctx, &[4]),
+            Response::InvalidRequestType => io.poll_write(ctx, &[5]),
         }
         .map_ok(|bytes_written| *written += bytes_written)
     }

@@ -74,6 +74,7 @@ fn parse_response() {
         ((3, b"Hello"), parse::Response::Value(b"Hello"), 10),
         ((3, b""), parse::Response::Value(b""), 5),
         ((4, b""), parse::Response::ValueNotFound, 1),
+        ((5, b""), parse::Response::InvalidRequestType, 1),
     ];
 
     for test in tests {

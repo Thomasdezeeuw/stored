@@ -51,6 +51,7 @@ fn round_trip_reponse() {
         (serialise::Response::Value(b"Hello"), parse::Response::Value(b"Hello")),
         (serialise::Response::Value(b""), parse::Response::Value(b"")),
         (serialise::Response::ValueNotFound, parse::Response::ValueNotFound),
+        (serialise::Response::InvalidRequestType, parse::Response::InvalidRequestType),
     ];
 
     for test in tests {

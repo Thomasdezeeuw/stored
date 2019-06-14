@@ -67,6 +67,8 @@ pub enum Response<'a> {
     Value(&'a [u8]),
     /// Value is not found.
     ValueNotFound,
+    /// Request type is unknown to the server.
+    InvalidRequestType,
 }
 
 /// Parse a response.
@@ -83,6 +85,7 @@ pub fn response<'a>(bytes: &'a [u8]) -> Result<Response<'a>> {
                 Value::Full(value) => (Response::Value(value), n),
             }),
             4 => Ok((Response::ValueNotFound, 1)),
+            5 => Ok((Response::InvalidRequestType, 1)),
             _ => Err(Error::InvalidType),
         },
         None => Err(Error::Incomplete),
