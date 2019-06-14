@@ -1,11 +1,12 @@
-use std::future::Future;
 use std::pin::Pin;
-use std::task::{self, Poll};
 
 use coeus_common::{serialise, Key};
 
 use byteorder::{ByteOrder, NetworkEndian};
-use futures_util::task::noop_waker;
+
+mod util;
+
+use util::poll_wait;
 
 // TODO: test with bad writers:
 // * One that only writes partial values, e.g. 1 byte at a time.
@@ -59,20 +60,6 @@ fn serialise_response() {
 
         let expected = create_output((test.1).0, (test.1).0 == 3, (test.1).1);
         assert_eq!(got, expected);
-    }
-}
-
-fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
-    where Fut: Future,
-{
-    // This is not great.
-    let waker = noop_waker();
-    let mut ctx = task::Context::from_waker(&waker);
-    loop {
-        match future.as_mut().poll(&mut ctx) {
-            Poll::Ready(result) => return result,
-            Poll::Pending => continue,
-        }
     }
 }
 
