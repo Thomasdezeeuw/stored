@@ -7,6 +7,11 @@ use coeus_common::{serialise, Key};
 use byteorder::{ByteOrder, NetworkEndian};
 use futures_util::task::noop_waker;
 
+// TODO: test with bad writers:
+// * One that only writes partial values, e.g. 1 byte at a time.
+// * One that returns a lot of pending.
+//   `-> see https://github.com/rust-lang-nursery/futures-rs/pull/1342.
+
 #[test]
 fn serialise_request() {
     let key1: Key = "81381f1dacd4824a6c503fd07057763099c12b8309d0abcec4000c9060cbbfa67988b2ada669ab4837fcd3d4ea6e2b8db2b9da9197d5112fb369fd006da545de".parse().unwrap();

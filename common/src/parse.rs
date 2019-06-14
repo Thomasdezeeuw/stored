@@ -1,5 +1,6 @@
 //! Module with parsing types.
 
+// TODO: limit the maximum value size.
 // TODO: support for streaming values.
 
 use std::mem::size_of;
