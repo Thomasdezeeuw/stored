@@ -5,7 +5,8 @@ use std::task::{self, Poll};
 use futures_util::task::noop_waker;
 
 pub fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
-    where Fut: Future,
+where
+    Fut: Future,
 {
     // This is not great.
     let waker = noop_waker();
@@ -17,4 +18,3 @@ pub fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
         }
     }
 }
-

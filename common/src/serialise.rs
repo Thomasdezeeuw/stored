@@ -62,7 +62,8 @@ where
             Request::Store(value) => async_write_value(io, ctx, *written, 1, value),
             Request::Retrieve(key) => async_write_key(io, ctx, *written, 2, key),
             Request::Remove(key) => async_write_key(io, ctx, *written, 3, key),
-        }.map_ok(|bytes_written| *written += bytes_written)
+        }
+        .map_ok(|bytes_written| *written += bytes_written)
     }
 }
 
@@ -126,13 +127,24 @@ where
     }
 }
 
-fn async_write_value<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, written: usize, request_type: u8, value: &[u8]) -> Poll<io::Result<usize>>
-    where IO: AsyncWrite,
+fn async_write_value<IO>(
+    io: Pin<&mut IO>,
+    ctx: &mut task::Context,
+    written: usize,
+    request_type: u8,
+    value: &[u8],
+) -> Poll<io::Result<usize>>
+where
+    IO: AsyncWrite,
 {
     let request_type_bytes = &[request_type];
     let mut value_size_buf = [0; 4];
     NetworkEndian::write_u32(&mut value_size_buf, value.len() as u32);
-    let mut bufs = [IoSlice::new(request_type_bytes), IoSlice::new(&value_size_buf), IoSlice::new(value)];
+    let mut bufs = [
+        IoSlice::new(request_type_bytes),
+        IoSlice::new(&value_size_buf),
+        IoSlice::new(value),
+    ];
     let bufs = if written == 0 {
         // Not written anything yet.
         &bufs[..]
@@ -147,8 +159,15 @@ fn async_write_value<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, written: usi
     io.poll_write_vectored(ctx, bufs)
 }
 
-fn async_write_key<IO>(io: Pin<&mut IO>, ctx: &mut task::Context, written: usize, request_type: u8, key: &Key) -> Poll<io::Result<usize>>
-    where IO: AsyncWrite,
+fn async_write_key<IO>(
+    io: Pin<&mut IO>,
+    ctx: &mut task::Context,
+    written: usize,
+    request_type: u8,
+    key: &Key,
+) -> Poll<io::Result<usize>>
+where
+    IO: AsyncWrite,
 {
     let key_bytes = key.as_bytes();
     let request_type_bytes = &[request_type];

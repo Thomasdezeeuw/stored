@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use coeus_common::{serialise, parse, Key};
+use coeus_common::{parse, serialise, Key};
 
 mod util;
 
@@ -12,7 +12,10 @@ fn round_trip_request() {
     let key2: Key = "e1c112ff908febc3b98b1693a6cd3564eaf8e5e6ca629d084d9f0eba99247cacdd72e369ff8941397c2807409ff66be64be908da17ad7b8a49a2a26c0e8086aa".parse().unwrap();
 
     let tests = &[
-        (serialise::Request::Store(b"Hello world"), parse::Request::Store(b"Hello world")),
+        (
+            serialise::Request::Store(b"Hello world"),
+            parse::Request::Store(b"Hello world"),
+        ),
         (serialise::Request::Store(b"Hello"), parse::Request::Store(b"Hello")),
         (serialise::Request::Store(b""), parse::Request::Store(b"")),
         (serialise::Request::Retrieve(&key1), parse::Request::Retrieve(&key1)),
@@ -41,7 +44,10 @@ fn round_trip_reponse() {
         (serialise::Response::Ok, parse::Response::Ok),
         (serialise::Response::Store(&key1), parse::Response::Store(&key1)),
         (serialise::Response::Store(&key2), parse::Response::Store(&key2)),
-        (serialise::Response::Value(b"Hello world"), parse::Response::Value(b"Hello world")),
+        (
+            serialise::Response::Value(b"Hello world"),
+            parse::Response::Value(b"Hello world"),
+        ),
         (serialise::Response::Value(b"Hello"), parse::Response::Value(b"Hello")),
         (serialise::Response::Value(b""), parse::Response::Value(b"")),
         (serialise::Response::ValueNotFound, parse::Response::ValueNotFound),
