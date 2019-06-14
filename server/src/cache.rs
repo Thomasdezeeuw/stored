@@ -55,8 +55,12 @@ pub fn start<S>(system: &mut ActorSystem<S>) -> Result<CacheRef, RuntimeError> {
 
     // Spawn our cache master, which has write access to the value cache.
     let cache_master = cache_master as fn(_, _) -> _;
-    system.spawn_sync_actor(NoSupervisor, cache_master, cache_write_handle)
-        .map(|actor_ref| CacheRef { handle: cache, actor_ref })
+    system
+        .spawn_sync_actor(NoSupervisor, cache_master, cache_write_handle)
+        .map(|actor_ref| CacheRef {
+            handle: cache,
+            actor_ref,
+        })
 }
 
 /// Message used to control the value cache.

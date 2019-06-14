@@ -1,7 +1,7 @@
 #![feature(never_type, async_await)]
 
-use std::{fmt, io};
 use heph::system::{ActorSystem, ActorSystemRef, RuntimeError};
+use std::{fmt, io};
 
 use coeus_common::Key;
 
@@ -15,13 +15,12 @@ fn main() -> Result<(), DisplayAsDebug<RuntimeError<io::Error>>> {
 
     let mut system = ActorSystem::new();
 
-    let cache_ref = cache::start(&mut system)
-        .map_err(RuntimeError::map_type)?;
-    let options = Options {
-        cache_ref,
-    };
+    let cache_ref = cache::start(&mut system).map_err(RuntimeError::map_type)?;
+    let options = Options { cache_ref };
 
-    system.with_setup(move |system_ref| setup(system_ref, options)).run()
+    system
+        .with_setup(move |system_ref| setup(system_ref, options))
+        .run()
         .map_err(|err| err.into())
 }
 
@@ -53,7 +52,8 @@ impl<T> From<T> for DisplayAsDebug<T> {
 }
 
 impl<T> fmt::Debug for DisplayAsDebug<T>
-    where T: fmt::Display
+where
+    T: fmt::Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt::Display::fmt(&self.0, f)

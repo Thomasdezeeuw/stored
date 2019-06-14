@@ -6,10 +6,10 @@ use futures::io::AsyncReadExt;
 use heph::log::REQUEST_TARGET;
 use heph::net::tcp::{TcpListener, TcpListenerError, TcpStream};
 use heph::system::options::Priority;
-use heph::{actor, NewActor, ActorOptions, ActorSystemRef, SupervisorStrategy};
-use log::{error, info};
+use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
+use log::{error, info, trace};
 
-use coeus_common::{parse, Request, Response};
+use coeus_common::{parse, serialise};
 
 use crate::cache::CacheRef;
 
@@ -24,14 +24,18 @@ pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()
     let Options { cache, address } = options;
 
     let conn_actor = (conn_actor as fn(_, _, _, _) -> _) // Ugh.
-        .map_arg(move |(stream, address)|
-            (stream, address, cache.clone()));
+        .map_arg(move |(stream, address)| (stream, address, cache.clone()));
 
-    let listener = TcpListener::new(conn_supervisor, conn_actor, ActorOptions {
-        priority: Priority::LOW,
-        .. ActorOptions::default()
-    });
-    system_ref.try_spawn(listener_supervisor, listener, address, ActorOptions::default())
+    let listener = TcpListener::new(
+        conn_supervisor,
+        conn_actor,
+        ActorOptions {
+            priority: Priority::LOW,
+            ..ActorOptions::default()
+        },
+    );
+    system_ref
+        .try_spawn(listener_supervisor, listener, address, ActorOptions::default())
         .map(|_| ())
 }
 
