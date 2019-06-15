@@ -2,16 +2,16 @@ use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use futures::io::AsyncReadExt;
 use heph::log::REQUEST_TARGET;
 use heph::net::tcp::{TcpListener, TcpListenerError, TcpStream};
 use heph::system::options::Priority;
 use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
-use log::{error, info, trace};
+use log::{debug, error, info, trace};
 
 use coeus_common::{parse, serialise};
 
 use crate::cache::CacheRef;
+use crate::buffer::Buffer;
 
 /// Options used in [`setup`].
 pub struct Options {
@@ -34,6 +34,8 @@ pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()
             ..ActorOptions::default()
         },
     );
+
+    info!("listening on address: {}", address);
     system_ref
         .try_spawn(listener_supervisor, listener, address, ActorOptions::default())
         .map(|_| ())
@@ -50,48 +52,60 @@ fn conn_supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)
 }
 
 async fn conn_actor(
-    _ctx: actor::Context<!>,
+    _: actor::Context<!>,
     mut stream: TcpStream,
     address: SocketAddr,
     mut cache: CacheRef,
 ) -> io::Result<()> {
     info!(target: REQUEST_TARGET, "accepted connection: address={}", address);
 
-    let mut buf = [0; 4096];
+    let mut buf = Buffer::new();
 
-    let bytes = stream.read(&mut buf).await?;
-    let buf = &buf[0..bytes];
+    loop {
+        debug!("reading from connection");
+        let bytes_read = buf.read_from(&mut stream).await?;
+        trace!("read bytes: {}", bytes_read);
+        if bytes_read == 0 {
+            // Client closed the connection.
+            return Ok(())
+        }
 
-    match parse::request(&buf) {
-        Ok((request, _n)) => {
-            match request {
-                Request::Store(value) => {
-                    let key = cache.async_add(Arc::from(value));
-                    Response::Store(&key).write_to(&mut stream).await?;
-                },
-                Request::StreamStore { .. } =>
-                    return unimplemented_err("TOOD: handle request"),
-                Request::Retrieve(key) => {
-                    if let Some(value) = cache.get(key) {
-                        Response::Value(&*value).write_to(&mut stream).await?;
-                    } else {
-                        Response::ValueNotFound.write_to(&mut stream).await?;
-                    }
-                },
-                Request::Remove(key) => {
-                    cache.async_remove(key.clone());
-                    Response::Ok.write_to(&mut stream).await?;
-                },
-            }
-        },
-        Err(_err) => return unimplemented_err("TOOD: handle parsing error"),
+        match parse::request(buf.as_bytes()) {
+            Ok((request, request_length)) => {
+                debug!("successfully parsed request: {:?}", request);
+                match request {
+                    parse::Request::Store(value) => {
+                        let key = cache.async_add(Arc::from(value));
+                        let response = serialise::Response::Store(&key);
+                        trace!("writing store response");
+                        response.write_to(&mut stream).await?
+                    },
+                    parse::Request::Retrieve(key) => {
+                        if let Some(value) = cache.get(key) {
+                            let response = serialise::Response::Value(&*value);
+                            trace!("writing value response");
+                            response.write_to(&mut stream).await?
+                        } else {
+                            trace!("writing value not found response");
+                            serialise::Response::ValueNotFound.write_to(&mut stream).await?
+                        }
+                    },
+                    parse::Request::Remove(key) => {
+                        cache.async_remove(key.clone());
+                        trace!("writing ok response");
+                        serialise::Response::Ok.write_to(&mut stream).await?
+                    },
+                }
+
+                buf.processed(request_length)
+            },
+            Err(parse::Error::Incomplete) => {
+                debug!("incomplete request");
+            },
+            Err(parse::Error::InvalidType) => {
+                debug!("error parsing request: invalid request type");
+                serialise::Response::InvalidRequestType.write_to(&mut stream).await?
+            },
+        }
     }
-
-    // TODO: handle more the 1 request.
-
-    Ok(())
-}
-
-fn unimplemented_err(msg: &'static str) -> io::Result<()> {
-    Err(io::Error::new(io::ErrorKind::Other, msg))
 }
