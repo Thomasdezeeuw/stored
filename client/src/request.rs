@@ -5,7 +5,9 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::{io, slice};
 
+use byteorder::{ByteOrder, NetworkEndian};
 use futures_io::{AsyncRead, AsyncWrite};
+use log::trace;
 
 use coeus_common::{self as coeus, parse};
 
@@ -86,6 +88,7 @@ where
         // TODO(Thomas): DRY, optimise and cleanup this code.
         match self.state {
             State::Initial => {
+                trace!("writing request type byte");
                 // Write the request type to the connection.
                 match Pin::new(&mut self.client.connection).poll_write(ctx, &[1]) {
                     Poll::Ready(Ok(bytes_written)) => {
@@ -98,14 +101,34 @@ where
                     Poll::Pending => Poll::Pending,
                 }
             },
-            State::Written(already_written) => {
+            State::Written(mut already_written) => {
                 let Request { ref mut client, ref data, .. } = &mut *self;
+
+                if already_written < 4 {
+                    trace!("writing value length");
+                    let mut buf = [0; 4];
+                    NetworkEndian::write_u32(&mut buf, data.value.len() as u32);
+                    match Pin::new(&mut client.connection).poll_write(ctx, &buf) {
+                        Poll::Ready(Ok(bytes_written)) => {
+                            trace!("written value length, {} bytes", bytes_written);
+                            assert_eq!(bytes_written, 4, "TODO: deal with partial writes");
+                            self.state = State::Written(4);
+                            return self.poll(ctx);
+                        },
+                        Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+
                 // Write the value to the connection.
-                match Pin::new(&mut client.connection).poll_write(ctx, &data.value[already_written..]) {
+                trace!("writing value");
+                match Pin::new(&mut client.connection).poll_write(ctx, &data.value[already_written - 4..]) {
                     Poll::Ready(Ok(bytes_written)) => {
                         // TODO: special case for `bytes_written` == 0?
                         let total_written = already_written + bytes_written;
-                        if total_written >= self.data.value.len() {
+                        trace!("written {} bytes, now written {} of {} bytes",
+                            bytes_written, total_written, data.value.len() + 4);
+                        if total_written >= data.value.len() + 4 {
                             // Written the entire request, move to the next state.
                             self.state = State::FlushRequest;
                         } else {
@@ -119,6 +142,7 @@ where
                 }
             },
             State::FlushRequest => {
+                trace!("flushing request");
                 // The entire request has been written, now flush it.
                 match Pin::new(&mut self.client.connection).poll_flush(ctx) {
                     Poll::Ready(Ok(())) => {
@@ -131,6 +155,7 @@ where
                 }
             },
             State::PrepareReceive => {
+                trace!("preparing to receive response");
                 // TODO(Thomas): this can be done more efficiently, but would
                 // require unsafe.
                 self.client.buf.resize(1 + Key::LENGTH, 0);
@@ -139,18 +164,23 @@ where
                 self.poll(ctx)
             },
             State::Receiving(already_read) => {
+                trace!("receiving response");
                 let Request { ref mut client, .. } = &mut *self;
                 let Client { ref mut connection, ref mut buf } = client;
                 match Pin::new(connection).poll_read(ctx, &mut buf[already_read..]) {
                     Poll::Ready(Ok(bytes_read)) => {
-                        // TODO: special case for `bytes_read` == 0?
+                        // TODO: special case for `bytes_read` == 0, means
+                        // connection is closed.
                         let total_read = already_read + bytes_read;
+                        dbg!(total_read);
+                        trace!("read {} bytes, now read {} of {} bytes",
+                            bytes_read, total_read, 1 + Key::LENGTH);
                         if total_read >= 1 + Key::LENGTH {
                             // Read the entire request, move to the next state.
                             self.state = State::ParseResponse;
                         } else {
                             // Short read. Update our state and try again.
-                            self.state = State::Written(total_read);
+                            self.state = State::Receiving(total_read);
                         }
                         self.poll(ctx)
                     },
@@ -159,6 +189,7 @@ where
                 }
             },
             State::ParseResponse => {
+                trace!("parsing response");
                 let buf = unsafe {
                     // FIXME(Thomas): problems with lifetimes caused this. This
                     // should be safe as the output has the same lifetime ('c)
@@ -167,7 +198,7 @@ where
                 };
                 let (response, n_bytes) = parse::response(buf).expect("TODO: deal with parse failures");
                 match response {
-                    coeus::Response::Store(key) => {
+                    parse::Response::Store(key) => {
                         assert_eq!(n_bytes, 1 + Key::LENGTH, "TODO: deal with unexpected longer parses");
                         Poll::Ready(Ok(response_to::Store::Success(key)))
                     },
