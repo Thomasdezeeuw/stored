@@ -5,6 +5,7 @@ use std::{fmt, io};
 
 use coeus_common::Key;
 
+mod buffer;
 mod cache;
 mod listener;
 
