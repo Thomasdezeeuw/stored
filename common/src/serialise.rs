@@ -131,7 +131,7 @@ where
 }
 
 fn async_write_value<IO>(
-    io: Pin<&mut IO>,
+    mut io: Pin<&mut IO>,
     ctx: &mut task::Context,
     written: usize,
     request_type: u8,
@@ -159,11 +159,25 @@ where
         bufs[2] = IoSlice::new(&value[written - 5..]);
         &bufs[2..]
     };
-    io.poll_write_vectored(ctx, bufs)
+
+    let total_length = bufs.iter().map(|buf| buf.len()).sum();
+    match io.as_mut().poll_write_vectored(ctx, bufs) {
+        Poll::Ready(Ok(bytes_written)) => if bytes_written < total_length {
+            // The default implementation of vectored write only writes the
+            // first buffer, so we just call this again if we write less then
+            // all the buffers.
+            async_write_value(io, ctx, written + bytes_written, request_type, value)
+                .map_ok(|n| n + bytes_written)
+        } else {
+            Poll::Ready(Ok(bytes_written))
+        },
+        Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+        Poll::Pending => Poll::Pending,
+    }
 }
 
 fn async_write_key<IO>(
-    io: Pin<&mut IO>,
+    mut io: Pin<&mut IO>,
     ctx: &mut task::Context,
     written: usize,
     request_type: u8,
@@ -183,5 +197,19 @@ where
         bufs[1] = IoSlice::new(&key_bytes[written - 1..]);
         &bufs[1..]
     };
-    io.poll_write_vectored(ctx, bufs)
+
+    let total_length = bufs.iter().map(|buf| buf.len()).sum();
+    match io.as_mut().poll_write_vectored(ctx, bufs) {
+        Poll::Ready(Ok(bytes_written)) => if bytes_written < total_length {
+            // The default implementation of vectored write only writes the
+            // first buffer, so we just call this again if we write less then
+            // all the buffers.
+            async_write_key(io, ctx, written + bytes_written, request_type, key)
+                .map_ok(|n| n + bytes_written)
+        } else {
+            Poll::Ready(Ok(bytes_written))
+        },
+        Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+        Poll::Pending => Poll::Pending,
+    }
 }
