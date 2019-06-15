@@ -1,0 +1,13 @@
+[package]
+name = "coeus-cli"
+version = "0.1.0"
+authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+futures-io-preview   = "0.3.0-alpha.16"
+futures-util-preview = "0.3.0-alpha.16"
+log                  = "0.4.6"
+std-logger           = "0.3.2"
+
+coeus                = { path = "../client" }

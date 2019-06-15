@@ -172,7 +172,6 @@ where
                         // TODO: special case for `bytes_read` == 0, means
                         // connection is closed.
                         let total_read = already_read + bytes_read;
-                        dbg!(total_read);
                         trace!("read {} bytes, now read {} of {} bytes",
                             bytes_read, total_read, 1 + Key::LENGTH);
                         if total_read >= 1 + Key::LENGTH {
