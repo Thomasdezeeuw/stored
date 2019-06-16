@@ -1,7 +1,5 @@
 use coeus_common::{parse, Key};
 
-use byteorder::{ByteOrder, NetworkEndian};
-
 #[test]
 fn parse_request() {
     let key1: Key = "81381f1dacd4824a6c503fd07057763099c12b8309d0abcec4000c9060cbbfa67988b2ada669ab4837fcd3d4ea6e2b8db2b9da9197d5112fb369fd006da545de".parse().unwrap();
@@ -124,9 +122,7 @@ fn create_input(request_type: u8, write_size: bool, data: &[u8]) -> Vec<u8> {
     input.push(request_type);
 
     if write_size {
-        let mut buf = [0; 4];
-        NetworkEndian::write_u32(&mut buf, data.len() as u32);
-        input.extend_from_slice(&buf);
+        input.extend_from_slice(&(data.len() as u32).to_be_bytes());
     }
 
     input.extend_from_slice(data);

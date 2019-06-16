@@ -5,8 +5,6 @@
 
 use std::mem::size_of;
 
-use byteorder::{ByteOrder, NetworkEndian};
-
 use crate::Key;
 
 /// The result of a parsing function.
@@ -107,7 +105,8 @@ fn parse_value<'a>(bytes: &'a [u8]) -> Result<Value<'a>> {
     const HEADER_SIZE: usize = 1 + size_of::<u32>();
     if bytes.len() >= HEADER_SIZE {
         // Skip the request type byte.
-        let size = NetworkEndian::read_u32(&bytes[1..]) as usize;
+        let size_bytes = [bytes[1], bytes[2], bytes[3], bytes[4]];
+        let size = u32::from_be_bytes(size_bytes) as usize;
         if bytes.len() >= (HEADER_SIZE + size) {
             let value = &bytes[HEADER_SIZE..HEADER_SIZE + size];
             Ok((Value::Full(value), HEADER_SIZE + size))

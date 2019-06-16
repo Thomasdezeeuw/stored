@@ -2,8 +2,6 @@ use std::pin::Pin;
 
 use coeus_common::{serialise, Key};
 
-use byteorder::{ByteOrder, NetworkEndian};
-
 mod util;
 
 use util::poll_wait;
@@ -69,9 +67,7 @@ fn create_output(request_type: u8, write_size: bool, data: &[u8]) -> Vec<u8> {
     input.push(request_type);
 
     if write_size {
-        let mut buf = [0; 4];
-        NetworkEndian::write_u32(&mut buf, data.len() as u32);
-        input.extend_from_slice(&buf);
+        input.extend_from_slice(&(data.len() as u32).to_be_bytes());
     }
 
     input.extend_from_slice(data);

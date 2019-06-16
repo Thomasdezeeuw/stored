@@ -5,7 +5,6 @@ authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-byteorder          = "1.3.1"
 futures-io-preview = "0.3.0-alpha.16"
 ring               = "0.14.6"
 

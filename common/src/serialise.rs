@@ -5,7 +5,6 @@ use std::io;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
-use byteorder::{ByteOrder, NetworkEndian};
 use futures_io::{AsyncWrite, IoSlice};
 
 use crate::Key;
@@ -141,8 +140,7 @@ where
     IO: AsyncWrite,
 {
     let request_type_bytes = &[request_type];
-    let mut value_size_buf = [0; 4];
-    NetworkEndian::write_u32(&mut value_size_buf, value.len() as u32);
+    let value_size_buf = (value.len() as u32).to_be_bytes();
     let mut bufs = [
         IoSlice::new(request_type_bytes),
         IoSlice::new(&value_size_buf),
