@@ -4,6 +4,7 @@ use std::fmt;
 
 use coeus::Key;
 
+#[derive(Debug)]
 pub enum Request<'a> {
     Store(&'a [u8]),
     Retrieve(Key),
