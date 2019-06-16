@@ -5,11 +5,10 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::{io, slice};
 
-use byteorder::{ByteOrder, NetworkEndian};
 use futures_io::{AsyncRead, AsyncWrite};
 use log::trace;
 
-use coeus_common::{self as coeus, parse};
+use coeus_common::parse;
 
 use crate::{response_to, Client, Key};
 
@@ -101,13 +100,12 @@ where
                     Poll::Pending => Poll::Pending,
                 }
             },
-            State::Written(mut already_written) => {
+            State::Written(already_written) => {
                 let Request { ref mut client, ref data, .. } = &mut *self;
 
                 if already_written < 4 {
                     trace!("writing value length");
-                    let mut buf = [0; 4];
-                    NetworkEndian::write_u32(&mut buf, data.value.len() as u32);
+                    let buf = (data.value.len() as u32).to_be_bytes();
                     match Pin::new(&mut client.connection).poll_write(ctx, &buf) {
                         Poll::Ready(Ok(bytes_written)) => {
                             trace!("written value length, {} bytes", bytes_written);
