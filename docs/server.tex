@@ -1,0 +1,97 @@
+\documentclass{scrartcl}
+
+\title{Server architecture}
+\author{Thomas de Zeeuw}
+\date{June 16th 2019}
+
+\begin{document}
+
+\maketitle
+
+\section{Server architecture} \label{sec:srv}
+
+The Coeus server consists of a number of components, each with there own task
+and responsibility. Figure \ref{fig:server_design} gives an overview of how all
+the components interact. The following sections describe each component and
+the interactions between them.
+
+
+\begin{figure}
+\begin{verbatim}
+ +---------+               +----------------+
+ |         |     Updates   |                |
+ |  Cache  <---------------+  Cache master  |   // Single synchronous
+ |         |               |                |   // Heph actor.
+ +----^----+               +--------^-------+
+      |                             |
+Reads |                             | Update
+ from |                             |  (msg)
+      |              +----------+   |
+      |           +-----------+ |   |
+      |         +-----------+ | +---+
+      |         |           | | |               // Regular (local)
+      +---------+  Clients  | +-+               // Heph actors.
+                |           +-+
+                +----+------+
+                     |
+                     | Sends I/O operations
+                     |
+                +----|---------+
+              +------v-------+ |
+              |              | |
+              |  I/O thread  | |
+              |     pool     | |
+              |              +-+
+              +------+-------+
+                     |
+                     | Synchronously reads to/writes from
+                     |
+                 +---v----+
+                 |        |
+                 |  Disk  |
+                 |        |
+                 +--------+
+\end{verbatim}
+\caption{Architecture for the server.}
+\label{fig:server_design}
+\end{figure}
+
+
+\subsection{Client} \label{sec:srv_client}
+
+The client is an actor that deals with incoming connections. It's a regular
+(local) Heph actor for which one is created per incoming connection. It will
+parse any requests written to the connection and will handle them.
+
+It will have read only access to the cache. It has an actor reference to the
+cache master, which is used to add and remove value from the cache. For disk I/O
+it makes use of the I/O thread pool, to which it sends operations to execute
+(e.g. storing values).
+
+
+\subsection{Cache master} \label{sec:srv_cache_master}
+
+The cache master is the only actor with write access to the cache. It is a
+synchronous Heph actor that accept messages from the clients, adding or removing
+values.
+
+
+\subsection{Cache} \label{sec:srv_cache}
+
+Conceptually cache is a map: key $ \rightarrow $ value. It allows multiple
+readers, the clients, but only a single writer, the cache master. Currently this
+is implemented by using the `evmap' crate. The values are reference counted to
+ensure values always live long enough.
+
+
+\subsection{I/O pool} \label{sec:srv_io_pool}
+
+The I/O consists of a number of threads that execute synchronous disk I/O
+operations. As doing asynchronous disk I/O is still unpleasant the operations
+are moved to separate threads that deal with the operations.
+
+Operations can be request by the clients and are scheduled on one of the
+available threads, which synchronously execute the operation on the disk.
+
+
+\end{document}

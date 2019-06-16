@@ -2,4 +2,6 @@
 /target
 **/*.rs.bk
 
+**/*.pdf
+
 /NEW
