@@ -1,0 +1,77 @@
+\documentclass{scrartcl}
+
+\title{Distributed storing of values}
+\author{Thomas de Zeeuw}
+\date{June 16th 2019}
+
+\begin{document}
+
+\maketitle
+
+\section{Storing} \label{sec:storing}
+
+Storing values in a distributed deployment of Coeus (loosely) follows the two
+phase commit protocol.
+
+The following section describe the different phases of the storing process.
+
+
+\subsection{Storing in local cache} \label{sec:storing_phase1}
+
+First the client that receives the store request will store it in the (process's
+local) cache in an uncommitted state. Value in the cache that are uncommitted
+will be ignored by other readers.
+
+After the client received conformation from the cache master that the value is
+stored in the cache, it can execute the following two phases concurrently.
+
+
+\subsection{Storing on disk} \label{sec:storing_phase2}
+
+Next the client will store the value on disk, again in an uncommitted state.
+
+
+\subsection{Sharing with peers} \label{sec:storing_phase3}
+
+Concurrently the client will share the value with its peers.
+
+\subsubsection{Peer phase} \label{sec:storing_phase3_peer}
+
+Much like in phase 1, as described in \ref{sec:storing_phase1}, the peer will
+store the value in its cache in an uncommitted state.
+
+Next the peer, like in phase 2, will store the value on disk in an uncommitted
+state.
+
+After the value is stored in the cache and on disk it will return a
+ready-to-commit message to it's peer that initiated the store (i.e. the initial
+client).
+
+
+\subsection{Waiting for consensus} \label{sec:storing_phase4}
+
+Back on the original client, from phases 1 through 3, it will wait for consensus
+of its peers to ensure they are ready to commit the value.
+
+
+\subsection{Sending the commit message} \label{sec:storing_phase5}
+
+After consensus is reached on the storing of the value it initial client will
+send a commit message to all the peers.
+
+
+\subsection{Commit the value} \label{sec:storing_phase6}
+
+Both the initial client and all the peers (that receive the commit message) will
+mark the value as committed on disk and in the cache (in that order!).
+
+Next all the peers will return a committed message to the original client.
+
+
+\subsection{Writing a response} \label{sec:storing_phase7}
+
+Once the original client receives the committed message from a consensus of its
+peers it will return write an OK reply to the connection.
+
+
+\end{document}
