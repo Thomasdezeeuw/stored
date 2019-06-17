@@ -1,0 +1,42 @@
+\documentclass{scrartcl}
+
+\title{Write protocol description}
+\author{Thomas de Zeeuw}
+\date{June 16th 2019}
+
+\begin{document}
+
+\maketitle
+
+\section{WireProtocol} \label{sec:wire_protocol}
+
+TODO: expand on this.
+
+Request has the following structure:
+* request type: 1 byte.
+* request data: n bytes, format and length depends on the request type,
+
+Request types:
+* retrieve,
+* store,
+* remove.
+
+retrieve has a `value' as data.
+Store and remove have `key' as data.
+
+Value has the following structure:
+* value type: 1 byte, see below.
+* value data: n byte, depends on the value type.
+
+Value type can be one of the following:
+* small blob, length as u16, the bytes that make the value.
+* blob, length as u32, the bytes that make the value.
+* large blob, length as u64, the bytes that make the value.
+
+More value type can be added in the future. For example an JSON type has only
+accepts valid JSON. Or maybe even allow for use defined schema's that valid the
+data.
+
+Key is always the bytes that make up the sha512 checksum.
+
+\end{document}
