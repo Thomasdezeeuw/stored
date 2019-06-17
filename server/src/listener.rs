@@ -8,10 +8,10 @@ use heph::system::options::Priority;
 use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
 use log::{debug, error, info, trace};
 
+use coeus_common::buffer::Buffer;
 use coeus_common::{parse, serialise};
 
 use crate::cache::CacheRef;
-use crate::buffer::Buffer;
 
 /// Options used in [`setup`].
 pub struct Options {

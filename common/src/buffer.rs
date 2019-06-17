@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::{slice, io};
 
-use futures::io::AsyncRead;
+use futures_io::AsyncRead;
 
 /// Size used as initial buffer size.
 const INITIAL_BUF_SIZE: usize = 16 * 1024;
@@ -145,7 +145,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{self, Poll};
 
-    use futures::task::noop_waker;
+    use futures_util::task::noop_waker;
 
     use super::{MIN_SIZE_MOVE, INITIAL_BUF_SIZE, MIN_BUF_SIZE, Buffer};
 
