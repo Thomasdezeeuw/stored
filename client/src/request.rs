@@ -3,237 +3,264 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::{io, slice};
+use std::io;
 
 use futures_io::{AsyncRead, AsyncWrite};
-use log::trace;
+use futures_util::try_ready;
+use log::{debug, trace};
 
 use coeus_common::parse;
+use coeus_common::serialise::{async_write_key, async_write_value};
 
 use crate::{response_to, Client, Key};
 
-/// Request future.
-pub struct Request<'c, C, D> {
-    client: &'c mut Client<C>,
-    data: D,
-    state: State,
+enum State<'d, Data: ?Sized> {
+    /// Initial state of the request, writing the request.
+    Written(&'d Data, usize),
+    /// Written the request, flushing the request.
+    FlushRequest,
+    /// Request has been written and flushed, now we're going to receive the
+    /// response.
+    Receiving,
 }
 
-impl<'c, C, D> Request<'c, C, D> {
-    fn new(client: &'c mut Client<C>, data: D) -> Request<'c, C, D> {
-        Request {
+/// [`Future`] behind [`Client::retrieve`].
+pub struct Store<'client, 'value, Conn> {
+    client: &'client mut Client<Conn>,
+    state: State<'value, [u8]>,
+}
+
+impl<'client, 'key, Conn> Store<'client, 'key, Conn> {
+    pub(crate) fn new(client: &'client mut Client<Conn>, value: &'key [u8]) -> Store<'client, 'key, Conn> {
+        Store {
             client,
-            data,
-            state: State::Initial,
+            state: State::Written(&value, 0),
         }
     }
 }
 
-impl<'c, 'v, C> Request<'c, C, Store<'v>> {
-    pub(crate) fn store(client: &'c mut Client<C>, value: &'v [u8]) -> Request<'c, C, Store<'v>> {
-        Request::new(client, Store { value })
-    }
-}
-
-impl<'c, 'h, C> Request<'c, C, Retrieve<'h>> {
-    pub(crate) fn retrieve(client: &'c mut Client<C>, key: &'h Key) -> Request<'c, C, Retrieve<'h>> {
-        Request::new(client, Retrieve { key })
-    }
-}
-
-impl<'c, 'h, C> Request<'c, C, Remove<'h>> {
-    pub(crate) fn remove(client: &'c mut Client<C>, key: &'h Key) -> Request<'c, C, Remove<'h>> {
-        Request::new(client, Remove { key })
-    }
-}
-
-/// Store request.
-pub struct Store<'a> {
-    value: &'a [u8],
-}
-
-/// Retrieve request.
-pub struct Retrieve<'a> {
-    key: &'a Key,
-}
-
-/// Remove request.
-pub struct Remove<'a> {
-    key: &'a Key,
-}
-
-enum State {
-    /// Initial state of the request, nothing has been done.
-    Initial,
-    /// Written the request type and possibly part of the request.
-    Written(usize),
-    /// Written the request type and request data, flushing the request.
-    FlushRequest,
-    /// Request has been written and flushed, preparing the buffer.
-    PrepareReceive,
-    /// Buffer has been prepared, now waiting on the response.
-    Receiving(usize),
-    /// Response is read (into `client.buf`) and is ready to be parsed.
-    ParseResponse,
-}
-
-impl<'c, 'v, C> Future for Request<'c, C, Store<'v>>
+impl<'client, 'key, Conn> Future for Store<'client, 'key, Conn>
 where
-    C: AsyncRead + AsyncWrite + Unpin, // TODO: remove Unpin bound.
+    Conn: AsyncRead + AsyncWrite + Unpin,
 {
-    type Output = io::Result<response_to::Store<'c>>;
+    type Output = io::Result<response_to::Store<'client>>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        // TODO(Thomas): DRY, optimise and cleanup this code.
-        match self.state {
-            State::Initial => {
-                trace!("writing request type byte");
-                // Write the request type to the connection.
-                match Pin::new(&mut self.client.connection).poll_write(ctx, &[1]) {
-                    Poll::Ready(Ok(bytes_written)) => {
-                        assert_eq!(bytes_written, 1, "TODO: deal with partial writes");
-                        // Move to the next state.
-                        self.state = State::Written(0);
-                        self.poll(ctx)
-                    },
-                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                    Poll::Pending => Poll::Pending,
-                }
-            },
-            State::Written(already_written) => {
-                let Request { ref mut client, ref data, .. } = &mut *self;
-
-                if already_written < 4 {
-                    trace!("writing value length");
-                    let buf = (data.value.len() as u32).to_be_bytes();
-                    match Pin::new(&mut client.connection).poll_write(ctx, &buf) {
-                        Poll::Ready(Ok(bytes_written)) => {
-                            trace!("written value length, {} bytes", bytes_written);
-                            assert_eq!(bytes_written, 4, "TODO: deal with partial writes");
-                            self.state = State::Written(4);
-                            return self.poll(ctx);
-                        },
-                        Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                        Poll::Pending => return Poll::Pending,
-                    }
-                }
-
-                // Write the value to the connection.
-                trace!("writing value");
-                match Pin::new(&mut client.connection).poll_write(ctx, &data.value[already_written - 4..]) {
-                    Poll::Ready(Ok(bytes_written)) => {
-                        // TODO: special case for `bytes_written` == 0?
-                        let total_written = already_written + bytes_written;
-                        trace!("written {} bytes, now written {} of {} bytes",
-                            bytes_written, total_written, data.value.len() + 4);
-                        if total_written >= data.value.len() + 4 {
-                            // Written the entire request, move to the next state.
-                            self.state = State::FlushRequest;
-                        } else {
-                            // Short write. Update our state and try again.
-                            self.state = State::Written(total_written);
-                        }
-                        self.poll(ctx)
-                    },
-                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                    Poll::Pending => Poll::Pending,
+        let Store { client, ref mut state } = &mut *self;
+        match state {
+            State::Written(ref value, already_written) => {
+                trace!("polling write request future");
+                let conn = Pin::new(&mut client.conn);
+                let written = try_ready!(async_write_value(conn, ctx, *already_written, 1, value));
+                if written == 0 {
+                    Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
+                } else if written + *already_written > value.len() + 4 + 1 {
+                    // Wrote the entire request.
+                    *state = State::FlushRequest;
+                    self.poll(ctx)
+                } else {
+                    // Didn't write the complete request yet.
+                    *already_written += written;
+                    Poll::Pending
                 }
             },
             State::FlushRequest => {
                 trace!("flushing request");
                 // The entire request has been written, now flush it.
-                match Pin::new(&mut self.client.connection).poll_flush(ctx) {
-                    Poll::Ready(Ok(())) => {
-                        // Move to the next state.
-                        self.state = State::PrepareReceive;
-                        self.poll(ctx)
-                    },
-                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                    Poll::Pending => Poll::Pending,
-                }
-            },
-            State::PrepareReceive => {
-                trace!("preparing to receive response");
-                // TODO(Thomas): this can be done more efficiently, but would
-                // require unsafe.
-                self.client.buf.resize(1 + Key::LENGTH, 0);
-                // Move to the next state.
-                self.state = State::Receiving(0);
+                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                *state = State::Receiving;
                 self.poll(ctx)
             },
-            State::Receiving(already_read) => {
+            State::Receiving => {
                 trace!("receiving response");
-                let Request { ref mut client, .. } = &mut *self;
-                let Client { ref mut connection, ref mut buf } = client;
-                match Pin::new(connection).poll_read(ctx, &mut buf[already_read..]) {
-                    Poll::Ready(Ok(bytes_read)) => {
-                        // TODO: special case for `bytes_read` == 0, means
-                        // connection is closed.
-                        let total_read = already_read + bytes_read;
-                        trace!("read {} bytes, now read {} of {} bytes",
-                            bytes_read, total_read, 1 + Key::LENGTH);
-                        if total_read >= 1 + Key::LENGTH {
-                            // Read the entire request, move to the next state.
-                            self.state = State::ParseResponse;
-                        } else {
-                            // Short read. Update our state and try again.
-                            self.state = State::Receiving(total_read);
-                        }
-                        self.poll(ctx)
-                    },
-                    Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
-                    Poll::Pending => Poll::Pending,
+                let mut future = client.buf.read_from(&mut client.conn);
+                let future = Pin::new(&mut future);
+                if try_ready!(future.poll(ctx)) == 0 {
+                    return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
                 }
-            },
-            State::ParseResponse => {
-                trace!("parsing response");
-                let buf = unsafe {
-                    // FIXME(Thomas): problems with lifetimes caused this. This
-                    // should be safe as the output has the same lifetime ('c)
-                    // as the client, which owns the buffer.
-                    slice::from_raw_parts(self.client.buf.as_ptr(), self.client.buf.len())
+
+                let bytes: &'client [u8] = unsafe {
+                    // This is not safe, but I don't quite know how the fix the
+                    // lifetime troubles.
+                    &*(client.buf.as_bytes() as *const [u8])
                 };
-                let (response, n_bytes) = parse::response(buf).expect("TODO: deal with parse failures");
-                match response {
-                    parse::Response::Store(key) => {
-                        assert_eq!(n_bytes, 1 + Key::LENGTH, "TODO: deal with unexpected longer parses");
-                        Poll::Ready(Ok(response_to::Store::Success(key)))
+                match parse::response(bytes) {
+                    Ok((response, response_length)) => {
+                        debug!("successfully parsed response: {:?}", response);
+                        client.buf.processed(response_length);
+                        Poll::Ready(Ok(response_to::Store::from_parsed(response)))
                     },
-                    response => unimplemented!("TODO: deal with unexpected responses: {:?}", response),
+                    Err(parse::Error::Incomplete) => {
+                        debug!("incomplete request");
+                        Poll::Pending
+                    },
+                    Err(parse::Error::InvalidType) => {
+                        debug!("error parsing request: invalid request type");
+                        // FIXME: this isn't really correct.
+                        Poll::Ready(Ok(response_to::Store::UnexpectedResponse))
+                    },
                 }
             },
         }
     }
 }
 
-impl<'c, 'h, C> Future for Request<'c, C, Retrieve<'h>>
-where
-    C: AsyncRead + AsyncWrite,
-{
-    type Output = io::Result<response_to::Retrieve<'c>>;
+/// [`Future`] behind [`Client::retrieve`].
+pub struct Retrieve<'client, 'key, Conn> {
+    client: &'client mut Client<Conn>,
+    state: State<'key, Key>,
+}
 
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        // TODO:
-        // 1. Write request type.
-        // 2. Write request data, fully (dealing with partial writes).
-        // 3. Read request.
-        // 4. Parse request.
-        unimplemented!();
+impl<'client, 'key, Conn> Retrieve<'client, 'key, Conn> {
+    pub(crate) fn new(client: &'client mut Client<Conn>, key: &'key Key) -> Retrieve<'client, 'key, Conn> {
+        Retrieve {
+            client,
+            state: State::Written(&key, 0),
+        }
     }
 }
 
-impl<'c, 'h, C> Future for Request<'c, C, Remove<'h>>
+impl<'client, 'key, Conn> Future for Retrieve<'client, 'key, Conn>
 where
-    C: AsyncRead + AsyncWrite,
+    Conn: AsyncRead + AsyncWrite + Unpin,
+{
+    type Output = io::Result<response_to::Retrieve<'client>>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let Retrieve { client, ref mut state } = &mut *self;
+        match state {
+            State::Written(ref key, already_written) => {
+                trace!("polling write request future");
+                let conn = Pin::new(&mut client.conn);
+                let written = try_ready!(async_write_key(conn, ctx, *already_written, 2, key));
+                if written == 0 {
+                    Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
+                } else if written + *already_written > Key::LENGTH + 1 {
+                    // Wrote the entire request.
+                    *state = State::FlushRequest;
+                    self.poll(ctx)
+                } else {
+                    // Didn't write the complete request yet.
+                    *already_written += written;
+                    Poll::Pending
+                }
+            },
+            State::FlushRequest => {
+                trace!("flushing request");
+                // The entire request has been written, now flush it.
+                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                *state = State::Receiving;
+                self.poll(ctx)
+            },
+            State::Receiving => {
+                trace!("receiving response");
+                let mut future = client.buf.read_from(&mut client.conn);
+                let future = Pin::new(&mut future);
+                if try_ready!(future.poll(ctx)) == 0 {
+                    return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
+                }
+
+                let bytes: &'client [u8] = unsafe {
+                    // This is not safe, but I don't quite know how the fix the
+                    // lifetime troubles.
+                    &*(client.buf.as_bytes() as *const [u8])
+                };
+                match parse::response(bytes) {
+                    Ok((response, response_length)) => {
+                        debug!("successfully parsed response: {:?}", response);
+                        client.buf.processed(response_length);
+                        Poll::Ready(Ok(response_to::Retrieve::from_parsed(response)))
+                    },
+                    Err(parse::Error::Incomplete) => {
+                        debug!("incomplete request");
+                        Poll::Pending
+                    },
+                    Err(parse::Error::InvalidType) => {
+                        debug!("error parsing request: invalid request type");
+                        // FIXME: this isn't really correct.
+                        Poll::Ready(Ok(response_to::Retrieve::UnexpectedResponse))
+                    },
+                }
+            },
+        }
+    }
+}
+
+/// [`Future`] behind [`Client::remove`].
+pub struct Remove<'client, 'key, Conn> {
+    client: &'client mut Client<Conn>,
+    state: State<'key, Key>,
+}
+
+impl<'client, 'key, Conn> Remove<'client, 'key, Conn> {
+    pub(crate) fn new(client: &'client mut Client<Conn>, key: &'key Key) -> Remove<'client, 'key, Conn> {
+        Remove {
+            client,
+            state: State::Written(&key, 0),
+        }
+    }
+}
+
+impl<'client, 'key, Conn> Future for Remove<'client, 'key, Conn>
+where
+    Conn: AsyncRead + AsyncWrite + Unpin,
 {
     type Output = io::Result<response_to::Remove>;
 
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        // TODO:
-        // 1. Write request type.
-        // 2. Write request data, fully (dealing with partial writes).
-        // 3. Read request.
-        // 4. Parse request.
-        unimplemented!();
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let Remove { client, ref mut state } = &mut *self;
+        match state {
+            State::Written(ref key, already_written) => {
+                trace!("polling write request future");
+                let conn = Pin::new(&mut client.conn);
+                let written = try_ready!(async_write_key(conn, ctx, *already_written, 1, key));
+                if written == 0 {
+                    Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
+                } else if written + *already_written > Key::LENGTH + 1 {
+                    // Wrote the entire request.
+                    *state = State::FlushRequest;
+                    self.poll(ctx)
+                } else {
+                    // Didn't write the complete request yet.
+                    *already_written += written;
+                    Poll::Pending
+                }
+            },
+            State::FlushRequest => {
+                trace!("flushing request");
+                // The entire request has been written, now flush it.
+                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                *state = State::Receiving;
+                self.poll(ctx)
+            },
+            State::Receiving => {
+                trace!("receiving response");
+                let mut future = client.buf.read_from(&mut client.conn);
+                let future = Pin::new(&mut future);
+                if try_ready!(future.poll(ctx)) == 0 {
+                    return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
+                }
+
+                match parse::response(client.buf.as_bytes()) {
+                    Ok((response, response_length)) => {
+                        debug!("successfully parsed response: {:?}", response);
+                        Poll::Ready(Ok(response_to::Remove::from_parsed(response)))
+                            .map(|res| {
+                                client.buf.processed(response_length);
+                                res
+                            })
+                    },
+                    Err(parse::Error::Incomplete) => {
+                        debug!("incomplete request");
+                        Poll::Pending
+                    },
+                    Err(parse::Error::InvalidType) => {
+                        debug!("error parsing request: invalid request type");
+                        // FIXME: this isn't really correct.
+                        Poll::Ready(Ok(response_to::Remove::UnexpectedResponse))
+                    },
+                }
+            },
+        }
     }
 }

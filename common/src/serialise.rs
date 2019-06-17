@@ -129,7 +129,7 @@ where
     }
 }
 
-fn async_write_value<IO>(
+pub fn async_write_value<IO>(
     mut io: Pin<&mut IO>,
     ctx: &mut task::Context,
     written: usize,
@@ -174,7 +174,7 @@ where
     }
 }
 
-fn async_write_key<IO>(
+pub fn async_write_key<IO>(
     mut io: Pin<&mut IO>,
     ctx: &mut task::Context,
     written: usize,

@@ -2,52 +2,54 @@
 
 use futures_io::{AsyncRead, AsyncWrite};
 
+use coeus_common::buffer::Buffer;
+
 pub mod request;
 pub mod response_to;
 
 #[doc(inline)]
 pub use coeus_common::Key;
 
-pub use request::Request;
+use request::{Store, Retrieve, Remove};
 
 // TODO: doc requirements of `C`.
 // TODO: doc no buffering is done, or should we add buffering?
-pub struct Client<C> {
+pub struct Client<Conn> {
     /// Underlying connection.
-    connection: C,
-    buf: Vec<u8>,
+    conn: Conn,
+    buf: Buffer,
 }
 
-impl<C> Client<C>
+impl<Conn> Client<Conn>
 where
-    C: AsyncRead + AsyncWrite,
+    Conn: AsyncRead + AsyncWrite + Unpin,
 {
     /// Create a new client from a connection.
-    pub fn new(connection: C) -> Client<C> {
+    pub fn new(connection: Conn) -> Client<Conn> {
         Client {
-            connection,
-            buf: Vec::new(),
+            conn: connection,
+            buf: Buffer::new(),
         }
     }
 
     /// Store a `value`.
     ///
     /// Returns [`response_to::Store`].
-    pub fn store<'c, 'v>(&'c mut self, value: &'v [u8]) -> Request<'c, C, request::Store<'v>> {
-        Request::store(self, value)
+    pub fn store<'client, 'value>(&'client mut self, value: &'value [u8]) -> Store<'client, 'value, Conn> {
+        Store::new(self, value)
     }
 
     /// Retrieve a value based on its `key`.
     ///
     /// Returns [`response_to::Retrieve`].
-    pub fn retrieve<'c, 'h>(&'c mut self, key: &'h Key) -> Request<'c, C, request::Retrieve<'h>> {
-        Request::retrieve(self, key)
+    pub fn retrieve<'client, 'key>(&'client mut self, key: &'key Key) -> Retrieve<'client, 'key, Conn> {
+        Retrieve::new(self, key)
     }
 
     /// Remove a value based on its `key`.
     ///
     /// Returns [`response_to::Remove`].
-    pub fn remove<'c, 'h>(&'c mut self, key: &'h Key) -> Request<'c, C, request::Remove<'h>> {
-        Request::remove(self, key)
+    pub fn remove<'client, 'key>(&'client mut self, key: &'key Key) -> Remove<'client, 'key, Conn> {
+        Remove::new(self, key)
     }
 }
