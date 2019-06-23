@@ -1,9 +1,9 @@
 //! Request future.
 
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::io;
 
 use futures_io::{AsyncRead, AsyncWrite};
 use futures_util::try_ready;
@@ -54,7 +54,7 @@ where
                 let written = try_ready!(async_write_value(conn, ctx, *already_written, 1, value));
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
-                } else if written + *already_written > value.len() + 4 + 1 {
+                } else if written + *already_written >= value.len() + 4 + 1 {
                     // Wrote the entire request.
                     *state = State::FlushRequest;
                     self.poll(ctx)
@@ -135,7 +135,7 @@ where
                 let written = try_ready!(async_write_key(conn, ctx, *already_written, 2, key));
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
-                } else if written + *already_written > Key::LENGTH + 1 {
+                } else if written + *already_written >= Key::LENGTH + 1 {
                     // Wrote the entire request.
                     *state = State::FlushRequest;
                     self.poll(ctx)
@@ -213,10 +213,10 @@ where
             State::Written(ref key, already_written) => {
                 trace!("polling write request future");
                 let conn = Pin::new(&mut client.conn);
-                let written = try_ready!(async_write_key(conn, ctx, *already_written, 1, key));
+                let written = try_ready!(async_write_key(conn, ctx, *already_written, 3, key));
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
-                } else if written + *already_written > Key::LENGTH + 1 {
+                } else if written + *already_written >= Key::LENGTH + 1 {
                     // Wrote the entire request.
                     *state = State::FlushRequest;
                     self.poll(ctx)
@@ -244,11 +244,10 @@ where
                 match parse::response(client.buf.as_bytes()) {
                     Ok((response, response_length)) => {
                         debug!("successfully parsed response: {:?}", response);
-                        Poll::Ready(Ok(response_to::Remove::from_parsed(response)))
-                            .map(|res| {
-                                client.buf.processed(response_length);
-                                res
-                            })
+                        Poll::Ready(Ok(response_to::Remove::from_parsed(response))).map(|res| {
+                            client.buf.processed(response_length);
+                            res
+                        })
                     },
                     Err(parse::Error::Incomplete) => {
                         debug!("incomplete request");
