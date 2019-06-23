@@ -16,7 +16,7 @@ pub type Value = Arc<[u8]>;
 #[derive(Clone)]
 pub struct CacheRef {
     handle: evmap::ReadHandle<Key, Value, (), evmap::FxHashBuilder>,
-    actor_ref: ActorRef<Message, Sync>,
+    actor_ref: ActorRef<Sync<Message>>,
 }
 
 impl CacheRef {

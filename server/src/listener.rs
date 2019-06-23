@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use heph::log::REQUEST_TARGET;
-use heph::net::tcp::{TcpListener, TcpListenerError, TcpStream};
+use heph::net::tcp::{self, TcpStream};
 use heph::system::options::Priority;
 use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
 use log::{debug, error, info, trace};
@@ -26,7 +26,7 @@ pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()
     let conn_actor = (conn_actor as fn(_, _, _, _) -> _) // Ugh.
         .map_arg(move |(stream, address)| (stream, address, cache.clone()));
 
-    let listener = TcpListener::new(
+    let listener = tcp::setup_server(
         conn_supervisor,
         conn_actor,
         ActorOptions {
@@ -41,7 +41,7 @@ pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()
         .map(|_| ())
 }
 
-fn listener_supervisor(err: TcpListenerError<!>) -> SupervisorStrategy<SocketAddr> {
+fn listener_supervisor(err: tcp::ServerError<!>) -> SupervisorStrategy<SocketAddr> {
     error!("error accepting connection: {}", err);
     SupervisorStrategy::Stop
 }
