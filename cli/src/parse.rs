@@ -9,6 +9,8 @@ pub enum Request<'a> {
     Store(&'a [u8]),
     Retrieve(Key),
     Remove(Key),
+    /// Quit the cli.
+    Quit,
 }
 
 pub enum ParseError {
@@ -47,6 +49,7 @@ pub fn request(request: &str) -> Result<Request, ParseError> {
             let key = request[7..].trim().parse().map_err(|_| ParseError::InvalidKey)?;
             Ok(Request::Remove(key))
         },
+        "quit" | "q" | "exit" => Ok(Request::Quit),
         _ => Err(ParseError::InvalidCommand),
     }
 }

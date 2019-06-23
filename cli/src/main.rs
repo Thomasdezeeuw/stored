@@ -60,6 +60,7 @@ fn main() -> io::Result<()> {
                 trace!("got response: {:?}", response);
                 print::remove(response)?;
             },
+            parse::Request::Quit => return Ok(()),
         }
     }
 }
