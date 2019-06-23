@@ -8,6 +8,7 @@ pub fn store(response: response_to::Store) -> io::Result<()> {
     use response_to::Store::*;
     match response {
         Success(key) => io::stdout().write_fmt(format_args!("{}\n", key)),
+        UnexpectedResponse => io::stderr().write_all(b"got an unexpected reponse\n"),
     }
 }
 
@@ -22,6 +23,7 @@ pub fn retrieve(response: response_to::Retrieve) -> io::Result<()> {
             stdout.flush()
         },
         ValueNotFound => io::stderr().write_all(b"value not found\n"),
+        UnexpectedResponse => io::stderr().write_all(b"got an unexpected reponse\n"),
     }
 }
 
@@ -30,5 +32,6 @@ pub fn remove(response: response_to::Remove) -> io::Result<()> {
     match response {
         Ok => io::stdout().write_all(b"value removed\n"),
         ValueNotFound => io::stderr().write_all(b"value not found\n"),
+        UnexpectedResponse => io::stderr().write_all(b"got an unexpected reponse\n"),
     }
 }
