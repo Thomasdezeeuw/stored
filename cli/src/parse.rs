@@ -40,14 +40,12 @@ pub fn request(request: &str) -> Result<Request, ParseError> {
             Ok(Request::Store(value.as_bytes()))
         },
         "retrieve" => {
-            let key = request[9..].trim().parse()
-                .map_err(|_| ParseError::InvalidKey)?;
+            let key = request[9..].trim().parse().map_err(|_| ParseError::InvalidKey)?;
             Ok(Request::Retrieve(key))
         },
         "remove" => {
-            let key = request[7..].trim().parse()
-                .map_err(|_| ParseError::InvalidKey)?;
-            Ok(Request::Retrieve(key))
+            let key = request[7..].trim().parse().map_err(|_| ParseError::InvalidKey)?;
+            Ok(Request::Remove(key))
         },
         _ => Err(ParseError::InvalidCommand),
     }
