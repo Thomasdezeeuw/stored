@@ -5,8 +5,8 @@ authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-futures-io-preview   = "0.3.0-alpha.16"
-futures-util-preview = "0.3.0-alpha.16"
+futures-io-preview   = "0.3.0-alpha.17"
+futures-util-preview = "0.3.0-alpha.17"
 log                  = "0.4.6"
 
 coeus-common       = { path = "../common" }

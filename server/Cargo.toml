@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 evmap           = "6.0.0"
-futures-preview = { version = "0.3.0-alpha.14", features = ["nightly", "std", "async-await"] }
+futures-preview = { version = "0.3.0-alpha.17", features = ["nightly", "std", "async-await"] }
 heph            = { path = "../../heph" }
 log             = "0.4.6"
 

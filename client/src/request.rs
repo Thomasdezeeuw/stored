@@ -6,7 +6,7 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 
 use futures_io::{AsyncRead, AsyncWrite};
-use futures_util::try_ready;
+use futures_util::ready;
 use log::{debug, trace};
 
 use coeus_common::parse;
@@ -51,7 +51,7 @@ where
             State::Written(ref value, already_written) => {
                 trace!("polling write request future");
                 let conn = Pin::new(&mut client.conn);
-                let written = try_ready!(async_write_value(conn, ctx, *already_written, 1, value));
+                let written = ready!(async_write_value(conn, ctx, *already_written, 1, value))?;
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
                 } else if written + *already_written >= value.len() + 4 + 1 {
@@ -67,7 +67,7 @@ where
             State::FlushRequest => {
                 trace!("flushing request");
                 // The entire request has been written, now flush it.
-                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                ready!(Pin::new(&mut client.conn).poll_flush(ctx))?;
                 *state = State::Receiving;
                 self.poll(ctx)
             },
@@ -75,7 +75,7 @@ where
                 trace!("receiving response");
                 let mut future = client.buf.read_from(&mut client.conn);
                 let future = Pin::new(&mut future);
-                if try_ready!(future.poll(ctx)) == 0 {
+                if ready!(future.poll(ctx))? == 0 {
                     return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
                 }
 
@@ -132,7 +132,7 @@ where
             State::Written(ref key, already_written) => {
                 trace!("polling write request future");
                 let conn = Pin::new(&mut client.conn);
-                let written = try_ready!(async_write_key(conn, ctx, *already_written, 2, key));
+                let written = ready!(async_write_key(conn, ctx, *already_written, 2, key))?;
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
                 } else if written + *already_written >= Key::LENGTH + 1 {
@@ -148,7 +148,7 @@ where
             State::FlushRequest => {
                 trace!("flushing request");
                 // The entire request has been written, now flush it.
-                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                ready!(Pin::new(&mut client.conn).poll_flush(ctx))?;
                 *state = State::Receiving;
                 self.poll(ctx)
             },
@@ -156,7 +156,7 @@ where
                 trace!("receiving response");
                 let mut future = client.buf.read_from(&mut client.conn);
                 let future = Pin::new(&mut future);
-                if try_ready!(future.poll(ctx)) == 0 {
+                if ready!(future.poll(ctx))? == 0 {
                     return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
                 }
 
@@ -213,7 +213,7 @@ where
             State::Written(ref key, already_written) => {
                 trace!("polling write request future");
                 let conn = Pin::new(&mut client.conn);
-                let written = try_ready!(async_write_key(conn, ctx, *already_written, 3, key));
+                let written = ready!(async_write_key(conn, ctx, *already_written, 3, key))?;
                 if written == 0 {
                     Poll::Ready(Err(io::ErrorKind::WriteZero.into()))
                 } else if written + *already_written >= Key::LENGTH + 1 {
@@ -229,7 +229,7 @@ where
             State::FlushRequest => {
                 trace!("flushing request");
                 // The entire request has been written, now flush it.
-                try_ready!(Pin::new(&mut client.conn).poll_flush(ctx));
+                ready!(Pin::new(&mut client.conn).poll_flush(ctx))?;
                 *state = State::Receiving;
                 self.poll(ctx)
             },
@@ -237,7 +237,7 @@ where
                 trace!("receiving response");
                 let mut future = client.buf.read_from(&mut client.conn);
                 let future = Pin::new(&mut future);
-                if try_ready!(future.poll(ctx)) == 0 {
+                if ready!(future.poll(ctx))? == 0 {
                     return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into()));
                 }
 
