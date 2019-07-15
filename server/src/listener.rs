@@ -29,10 +29,7 @@ pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()
     let listener = tcp::setup_server(
         conn_supervisor,
         conn_actor,
-        ActorOptions {
-            priority: Priority::LOW,
-            ..ActorOptions::default()
-        },
+        ActorOptions::default().with_priority(Priority::LOW),
     );
 
     info!("listening on address: {}", address);
