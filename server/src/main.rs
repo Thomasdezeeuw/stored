@@ -1,14 +1,14 @@
 #![feature(never_type, async_await)]
 
-use heph::system::{ActorSystem, ActorSystemRef, RuntimeError};
 use std::{fmt, io};
+
+use heph::actor_ref::{ActorRef, Sync};
+use heph::system::{ActorSystem, ActorSystemRef, RuntimeError};
 
 use coeus_common::Key;
 
 mod cache;
 mod listener;
-
-use cache::CacheRef;
 
 fn main() -> Result<(), DisplayAsDebug<RuntimeError<io::Error>>> {
     heph::log::init();
@@ -26,12 +26,12 @@ fn main() -> Result<(), DisplayAsDebug<RuntimeError<io::Error>>> {
 
 #[derive(Clone)]
 struct Options {
-    cache_ref: CacheRef,
+    cache_ref: ActorRef<Sync<cache::Message>>,
 }
 
 fn setup(mut system_ref: ActorSystemRef, options: Options) -> io::Result<()> {
     let listener_options = listener::Options {
-        cache: options.cache_ref,
+        cache_ref: options.cache_ref,
         // TODO: read this from a config file or something.
         address: "127.0.0.1:8080".parse().unwrap(),
     };

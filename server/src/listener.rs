@@ -1,30 +1,31 @@
 use std::io;
-use std::net::SocketAddr;
 use std::sync::Arc;
+use std::net::SocketAddr;
 
 use heph::log::REQUEST_TARGET;
 use heph::net::tcp::{self, TcpStream};
 use heph::system::options::Priority;
 use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
+use heph::actor_ref::{ActorRef, Sync};
 use log::{debug, error, info, trace};
 
 use coeus_common::buffer::Buffer;
 use coeus_common::{parse, serialise};
 
-use crate::cache::CacheRef;
+use crate::{Key, cache};
 
 /// Options used in [`setup`].
 pub struct Options {
-    pub cache: CacheRef,
+    pub cache_ref: ActorRef<Sync<cache::Message>>,
     pub address: SocketAddr,
 }
 
 /// Add a `TcpListener` to the system.
 pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()> {
-    let Options { cache, address } = options;
+    let Options { cache_ref, address } = options;
 
     let conn_actor = (conn_actor as fn(_, _, _, _) -> _) // Ugh.
-        .map_arg(move |(stream, address)| (stream, address, cache.clone()));
+        .map_arg(move |(stream, address)| (stream, address, cache_ref.clone()));
 
     let listener = tcp::setup_server(
         conn_supervisor,
@@ -48,12 +49,42 @@ fn conn_supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)
     SupervisorStrategy::Stop
 }
 
+enum Message {
+    CacheFound(cache::Value),
+    CacheNotFound,
+    CacheOk,
+}
+
+impl From<Message> for cache::Response {
+    fn from(msg: Message) -> cache::Response {
+        use cache::Response::*;
+        use Message::*;
+        match msg {
+            CacheFound(value) => Found(value),
+            CacheNotFound => NotFound,
+            CacheOk => Ok,
+        }
+    }
+}
+
+impl From<cache::Response> for Message {
+    fn from(msg: cache::Response) -> Message {
+        use cache::Response::*;
+        match msg {
+            Found(value) => Message::CacheFound(value),
+            NotFound => Message::CacheNotFound,
+            Ok => Message::CacheOk,
+        }
+    }
+}
+
 async fn conn_actor(
-    _: actor::Context<!>,
+    mut ctx: actor::Context<Message>,
     mut stream: TcpStream,
     address: SocketAddr,
-    mut cache: CacheRef,
+    mut cache: ActorRef<Sync<cache::Message>>,
 ) -> io::Result<()> {
+    use Message::*;
     info!(target: REQUEST_TARGET, "accepted connection: address={}", address);
 
     let mut buf = Buffer::new();
@@ -70,27 +101,48 @@ async fn conn_actor(
         match parse::request(buf.as_bytes()) {
             Ok((request, request_length)) => {
                 debug!("successfully parsed request: {:?}", request);
+                let self_ref = ctx.actor_ref().upgrade(ctx.system_ref()).unwrap().map();
                 match request {
                     parse::Request::Store(value) => {
-                        let key = cache.async_add(Arc::from(value));
-                        let response = serialise::Response::Store(&key);
-                        trace!("writing store response");
-                        response.write_to(&mut stream).await?
+                        let key = Key::for_value(value);
+                        let value = Arc::from(value);
+                        cache <<= cache::Message::Store(key.clone(), value, self_ref);
+
+                        match ctx.receive_next().await {
+                            CacheOk => {
+                                trace!("writing store response");
+                                let response = serialise::Response::Store(&key);
+                                response.write_to(&mut stream).await?
+                            },
+                            _ => unreachable!("received unexpected message"),
+                        }
                     },
                     parse::Request::Retrieve(key) => {
-                        if let Some(value) = cache.get(key) {
-                            let response = serialise::Response::Value(&*value);
-                            trace!("writing value response");
-                            response.write_to(&mut stream).await?
-                        } else {
-                            trace!("writing value not found response");
-                            serialise::Response::ValueNotFound.write_to(&mut stream).await?
+                        cache <<= cache::Message::Retrieve(key.clone(), self_ref);
+
+                        match ctx.receive_next().await {
+                            CacheFound(value) => {
+                                let response = serialise::Response::Value(&*value);
+                                trace!("writing value response");
+                                response.write_to(&mut stream).await?;
+                            },
+                            CacheNotFound => {
+                                trace!("writing value not found response");
+                                serialise::Response::ValueNotFound.write_to(&mut stream).await?
+                            },
+                            _ => unreachable!("received unexpected message"),
                         }
                     },
                     parse::Request::Remove(key) => {
-                        cache.async_remove(key.clone());
-                        trace!("writing ok response");
-                        serialise::Response::Ok.write_to(&mut stream).await?
+                        cache <<= cache::Message::Remove(key.clone(), self_ref);
+
+                        match ctx.receive_next().await {
+                            CacheOk => {
+                                trace!("writing ok response");
+                                serialise::Response::Ok.write_to(&mut stream).await?
+                            },
+                            _ => unreachable!("received unexpected message"),
+                        }
                     },
                 }
 
