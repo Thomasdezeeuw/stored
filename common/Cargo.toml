@@ -6,7 +6,7 @@ edition = "2018"
 
 [dependencies]
 futures-io-preview = "0.3.0-alpha.17"
-ring               = "0.14.6"
+ring               = "0.16.2"
 
 [dev-dependencies]
 futures-util-preview = "0.3.0-alpha.17"
