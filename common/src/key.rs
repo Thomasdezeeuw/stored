@@ -78,7 +78,7 @@ impl Key {
     ///
     /// ```
     /// # use std::io;
-    /// use std::io::Write;
+    /// use std::io::{Write, IoSlice};
     ///
     /// # use coeus_common::Key;
     /// #
@@ -89,8 +89,7 @@ impl Key {
     ///
     /// // We can now stream the value.
     /// calculator.write(b"Hello")?;
-    /// calculator.write(b" ")?;
-    /// calculator.write(b"world")?;
+    /// calculator.write_vectored(&mut [IoSlice::new(b" "), IoSlice::new(b"world")])?;
     ///
     /// let key = calculator.finish();
     /// assert_eq!(key, Key::for_value(b"Hello world"));
