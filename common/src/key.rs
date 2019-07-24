@@ -3,7 +3,8 @@
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, IoSliceMut, Read, Write};
+use std::ops::Deref;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::task::{self, Poll};
@@ -208,15 +209,20 @@ impl<IO> KeyCalculator<IO> {
     }
 }
 
-// TODO: vectored implementations.
-
-impl<IO> Read for KeyCalculator<IO>
+impl<R> Read for KeyCalculator<R>
 where
-    IO: Read,
+    R: Read,
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.io.read(buf).map(|n| {
             self.digest.update(&buf[..n]);
+            n
+        })
+    }
+
+    fn read_vectored(&mut self, bufs: &mut [IoSliceMut]) -> io::Result<usize> {
+        self.io.read_vectored(bufs).map(|n| {
+            update_digest(&mut self.digest, bufs, n);
             n
         })
     }
@@ -240,9 +246,9 @@ where
     }
 }
 
-impl<IO> Write for KeyCalculator<IO>
+impl<W> Write for KeyCalculator<W>
 where
-    IO: Write,
+    W: Write,
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.io.write(buf).map(|n| {
@@ -255,6 +261,13 @@ where
         self.io.flush()
     }
 
+    fn write_vectored(&mut self, bufs: &[IoSlice]) -> io::Result<usize> {
+        self.io.write_vectored(bufs).map(|n| {
+            update_digest(&mut self.digest, bufs, n);
+            n
+        })
+    }
+
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.io.write_all(buf).map(|()| self.digest.update(&buf))
     }
@@ -262,13 +275,24 @@ where
 
 // TODO: lose the `Unpin` requirement.
 
-impl<IO> AsyncRead for KeyCalculator<IO>
+impl<R> AsyncRead for KeyCalculator<R>
 where
-    IO: AsyncRead + Unpin,
+    R: AsyncRead + Unpin,
 {
     fn poll_read(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &mut [u8]) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_read(ctx, buf).map_ok(|n| {
             self.digest.update(&buf[..n]);
+            n
+        })
+    }
+
+    fn poll_read_vectored(
+        mut self: Pin<&mut Self>,
+        ctx: &mut task::Context,
+        bufs: &mut [IoSliceMut],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_read_vectored(ctx, bufs).map_ok(|n| {
+            update_digest(&mut self.digest, bufs, n);
             n
         })
     }
@@ -278,13 +302,24 @@ where
     }
 }
 
-impl<IO> AsyncWrite for KeyCalculator<IO>
+impl<W> AsyncWrite for KeyCalculator<W>
 where
-    IO: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin,
 {
     fn poll_write(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &[u8]) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_write(ctx, buf).map_ok(|n| {
             self.digest.update(&buf[..n]);
+            n
+        })
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        ctx: &mut task::Context,
+        bufs: &[IoSlice],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write_vectored(ctx, bufs).map_ok(|n| {
+            update_digest(&mut self.digest, bufs, n);
             n
         })
     }
@@ -295,6 +330,24 @@ where
 
     fn poll_close(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {
         Pin::new(&mut self.io).poll_close(ctx)
+    }
+}
+
+fn update_digest<B>(digest: &mut digest::Context, bufs: &[B], bytes_read: usize)
+where
+    B: Deref<Target = [u8]>,
+{
+    let mut left = bytes_read;
+    for buf in bufs.iter() {
+        let length = buf.len();
+        if length >= left {
+            digest.update(&buf[..left]);
+            return;
+        } else {
+            // Entire buffer was filled.
+            digest.update(&buf);
+            left -= length;
+        }
     }
 }
 
