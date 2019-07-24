@@ -5,8 +5,8 @@ authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-futures-io-preview = "0.3.0-alpha.17"
-ring               = "0.16.2"
+futures-io-preview = { version = "0.3.0-alpha.17", default-features = false, features = ["std"] }
+ring               = { version = "0.16.2", default-features = false }
 
 [dev-dependencies]
 futures-util-preview = "0.3.0-alpha.17"
