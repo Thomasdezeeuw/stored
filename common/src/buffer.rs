@@ -1,7 +1,9 @@
+//! Module with the `Buffer` type.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::{slice, io};
+use std::{io, slice};
 
 use futures_io::AsyncRead;
 
@@ -15,6 +17,13 @@ const MIN_BUF_SIZE: usize = 2 * 1024;
 /// the buffer.
 const MIN_SIZE_MOVE: usize = 512;
 
+/// Buffer, *you know what a buffer is*.
+///
+/// This buffer buffers reads (that is what a buffer does), but also keeps track
+/// of the bytes processed which is useful in combination with the parsing
+/// functions found in the [`parse`] module.
+///
+/// [`parse`]: crate::parse
 #[derive(Debug)]
 pub struct Buffer {
     data: Vec<u8>,
@@ -23,7 +32,7 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    /// Create a new empty `Buffer`.
+    /// Create an empty `Buffer`.
     pub fn new() -> Buffer {
         Buffer {
             data: Vec::with_capacity(INITIAL_BUF_SIZE),
@@ -33,12 +42,10 @@ impl Buffer {
 
     /// Read from `reader` into this buffer.
     pub fn read_from<R>(&mut self, reader: R) -> Read<R>
-        where R: AsyncRead,
+    where
+        R: AsyncRead,
     {
-        Read {
-            buffer: self,
-            reader,
-        }
+        Read { buffer: self, reader }
     }
 
     /// Returns the unprocessed, read bytes.
@@ -48,9 +55,17 @@ impl Buffer {
 
     /// Mark `n` bytes as processed.
     pub fn processed(&mut self, n: usize) {
-        assert!(self.processed + n <= self.data.len(),
-            "marking bytes as processed beyond read range");
+        assert!(
+            self.processed + n <= self.data.len(),
+            "marking bytes as processed beyond read range"
+        );
         self.processed += n;
+    }
+
+    /// Reset the buffer so it can be used reading from another source.
+    pub fn reset(&mut self) {
+        self.processed = 0;
+        unsafe { self.data.set_len(0) }
     }
 
     /// Number of bytes to which can be written.
@@ -115,7 +130,12 @@ impl Buffer {
     }
 }
 
-/// [`Future`] that read from reader `R` into the buffer.
+/// [`Future`] that reads from reader `R` into a [`Buffer`].
+///
+/// # Notes
+///
+/// This future doesn't implement any waking mechanism, it up to the reader `R`
+/// to handle wakeups.
 #[derive(Debug)]
 pub struct Read<'b, R> {
     buffer: &'b mut Buffer,
@@ -123,16 +143,20 @@ pub struct Read<'b, R> {
 }
 
 impl<'b, R> Future for Read<'b, R>
-    where R: AsyncRead + Unpin,
+where
+    R: AsyncRead + Unpin,
 {
     type Output = io::Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
         let Read { buffer, ref mut reader } = &mut *self;
-        Pin::new(reader).poll_read(ctx, unsafe { buffer.available_bytes() })
+        Pin::new(reader)
+            .poll_read(ctx, unsafe { buffer.available_bytes() })
             .map_ok(|bytes_read| {
                 // Safe because we just read into the buffer.
-                unsafe { buffer.read_bytes(bytes_read); }
+                unsafe {
+                    buffer.read_bytes(bytes_read);
+                }
                 bytes_read
             })
     }
@@ -140,14 +164,14 @@ impl<'b, R> Future for Read<'b, R>
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::future::Future;
+    use std::io;
     use std::pin::Pin;
     use std::task::{self, Poll};
 
     use futures_util::task::noop_waker;
 
-    use super::{MIN_SIZE_MOVE, INITIAL_BUF_SIZE, MIN_BUF_SIZE, Buffer};
+    use super::{Buffer, INITIAL_BUF_SIZE, MIN_BUF_SIZE, MIN_SIZE_MOVE};
 
     #[test]
     fn buffer_simple_read() {
@@ -183,9 +207,35 @@ mod tests {
     }
 
     #[test]
+    fn buffer_reset() {
+        let mut buf = Buffer::new();
+
+        let mut reader = io::Cursor::new([1, 2, 3]);
+        let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
+        assert_eq!(bytes_read, 3);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+
+        buf.reset();
+        assert_eq!(buf.as_bytes(), &[]);
+    }
+
+    #[test]
     #[should_panic(expected = "marking bytes as processed beyond read range")]
     fn marking_processed_beyond_read_range() {
         let mut buf = Buffer::new();
+        buf.processed(1);
+    }
+
+    #[test]
+    #[should_panic(expected = "marking bytes as processed beyond read range")]
+    fn marking_processed_beyond_read_range_after_reset() {
+        let mut buf = Buffer::new();
+
+        let mut reader = io::Cursor::new([1, 2, 3]);
+        let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
+        assert_eq!(bytes_read, 3);
+
+        buf.reset();
         buf.processed(1);
     }
 
@@ -208,13 +258,13 @@ mod tests {
         buf.processed(MIN_SIZE_MOVE - 1);
         // Should again do nothing as a move would not be worth it.
         buf.move_to_start();
-        assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE - 1 .. ]);
+        assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE - 1..]);
         assert_eq!(buf.capacity_left(), 1);
 
         buf.processed(1);
         // Finally the data should be moved to the start of the buffer.
         buf.move_to_start();
-        assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE .. ]);
+        assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE..]);
         assert_eq!(buf.capacity_left(), MIN_SIZE_MOVE + 1);
 
         buf.processed(buf.as_bytes().len());
@@ -250,9 +300,9 @@ mod tests {
         let mut reader = io::Cursor::new(data2.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
-        // Buffer should hold the old and new data.
+                                              // Buffer should hold the old and new data.
         let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE .. ]);
+        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
         assert_eq!(buf.as_bytes()[old_data_length..], data2[..MIN_BUF_SIZE]);
         assert_eq!(buf.capacity_left(), 0);
 
@@ -261,11 +311,13 @@ mod tests {
         let mut reader = io::Cursor::new(data3.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
-        // Buffer should hold the old and new data.
+                                              // Buffer should hold the old and new data.
         let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE .. ]);
-        assert_eq!(buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
-            data2[..MIN_BUF_SIZE]);
+        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
+        assert_eq!(
+            buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
+            data2[..MIN_BUF_SIZE]
+        );
         assert_eq!(buf.as_bytes()[old_data_length + MIN_BUF_SIZE..], data3[..MIN_BUF_SIZE]);
         assert_eq!(buf.capacity_left(), 0);
 
@@ -281,15 +333,24 @@ mod tests {
         assert_eq!(bytes_read, data4.len());
         // Buffer should hold the old and new data.
         let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE .. ]);
-        assert_eq!(buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
-            data2[..MIN_BUF_SIZE]);
-        assert_eq!(buf.as_bytes()[old_data_length + MIN_BUF_SIZE..old_data_length + 2*MIN_BUF_SIZE], data3[..MIN_BUF_SIZE]);
-        assert_eq!(buf.as_bytes()[old_data_length + 2*MIN_BUF_SIZE..], data4[..MIN_BUF_SIZE]);
+        assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
+        assert_eq!(
+            buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
+            data2[..MIN_BUF_SIZE]
+        );
+        assert_eq!(
+            buf.as_bytes()[old_data_length + MIN_BUF_SIZE..old_data_length + 2 * MIN_BUF_SIZE],
+            data3[..MIN_BUF_SIZE]
+        );
+        assert_eq!(
+            buf.as_bytes()[old_data_length + 2 * MIN_BUF_SIZE..],
+            data4[..MIN_BUF_SIZE]
+        );
     }
 
     fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
-        where Fut: Future,
+    where
+        Fut: Future,
     {
         // This is not great.
         let waker = noop_waker();
