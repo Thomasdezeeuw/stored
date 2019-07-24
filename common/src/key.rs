@@ -51,7 +51,7 @@ impl Key {
         Key::from_bytes(result.as_ref()).to_owned()
     }
 
-    /// Get the key's bytes.
+    /// Get the key as bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
@@ -66,6 +66,12 @@ impl Key {
     ///
     /// [`Reading`]: std::io::Read
     /// [`Writing`]: std::io::Write
+    ///
+    /// # Notes
+    ///
+    /// When using `KeyCalculator`'s asynchronous reading and writing traits it
+    /// doesn't implement any waking mechanism, it up to the `IO` type to handle
+    /// wakeups.
     ///
     /// # Examples
     ///
@@ -94,7 +100,6 @@ impl Key {
     /// # Ok(())
     /// # }
     /// ```
-    ///
     pub fn calculator<IO>(io: IO) -> KeyCalculator<IO> {
         KeyCalculator {
             digest: digest::Context::new(&digest::SHA512),
@@ -107,15 +112,19 @@ impl Key {
 #[derive(Debug, Eq, PartialEq)]
 pub struct InvalidKeyStr;
 
+impl InvalidKeyStr {
+    const DESC: &'static str = "invalid SHA-512 checksum string";
+}
+
 impl fmt::Display for InvalidKeyStr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.pad(self.description())
+        f.write_str(Self::DESC)
     }
 }
 
 impl Error for InvalidKeyStr {
     fn description(&self) -> &str {
-        "invalid SHA-512 checksum string"
+        Self::DESC
     }
 }
 
@@ -192,7 +201,7 @@ pub struct KeyCalculator<IO> {
 }
 
 impl<IO> KeyCalculator<IO> {
-    /// Finish the calculation returning the value's key.
+    /// Finish the calculation returning the [`Key`] for all read/written bytes.
     pub fn finish(self) -> Key {
         let result = self.digest.finish();
         Key::from_bytes(result.as_ref()).to_owned()
