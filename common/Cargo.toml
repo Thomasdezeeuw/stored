@@ -9,4 +9,4 @@ futures-io-preview = { version = "0.3.0-alpha.17", default-features = false, fea
 ring               = { version = "0.16.2", default-features = false }
 
 [dev-dependencies]
-futures-util-preview = "0.3.0-alpha.17"
+futures-util-preview = { version = "0.3.0-alpha.17", default-features = false }
