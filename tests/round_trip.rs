@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use coeus_common::{parse, serialise, Key};
+use coeus::{parse, serialise, Key};
 
 mod util;
 
@@ -51,7 +51,10 @@ fn round_trip_reponse() {
         (serialise::Response::Value(b"Hello"), parse::Response::Value(b"Hello")),
         (serialise::Response::Value(b""), parse::Response::Value(b"")),
         (serialise::Response::ValueNotFound, parse::Response::ValueNotFound),
-        (serialise::Response::InvalidRequestType, parse::Response::InvalidRequestType),
+        (
+            serialise::Response::InvalidRequestType,
+            parse::Response::InvalidRequestType,
+        ),
     ];
 
     for test in tests {

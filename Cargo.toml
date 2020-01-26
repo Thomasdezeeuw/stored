@@ -1,10 +1,32 @@
-[workspace]
-members = [
-	"cli",
-	"client",
-	"common",
-	"server",
+[package]
+name = "coeus"
+version = "0.1.0"
+authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+edition = "2018"
+publish = false
 
-	# End to end tests.
-	"tests",
-]
+[dependencies]
+evmap                = { version = "6.0.0", default-features = false }
+futures-io-preview   = { version = "=0.3.0-alpha.19", default-features = false, features = ["std"] }
+futures-util-preview = { version = "=0.3.0-alpha.19", default-features = false }
+# features = ["std", "async-await"]
+# TODO: replace with published crate.
+heph                 = { path = "../heph" }
+log                  = { version = "0.4.6", default-features = false }
+ring                 = { version = "0.16.2", default-features = false }
+
+[[bin]]
+name = "store"
+path = "src/bin/store.rs"
+
+[[bin]]
+name = "retrieve"
+path = "src/bin/retrieve.rs"
+
+[[bin]]
+name = "remove"
+path = "src/bin/remove.rs"
+
+[[bin]]
+name = "stored"
+path = "src/bin/server.rs"

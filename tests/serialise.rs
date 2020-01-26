@@ -1,6 +1,6 @@
 use std::pin::Pin;
 
-use coeus_common::{serialise, Key};
+use coeus::{serialise, Key};
 
 mod util;
 

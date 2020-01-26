@@ -1,4 +1,4 @@
-use coeus_common::{parse, Key};
+use coeus::{parse, Key};
 
 #[test]
 fn parse_request() {

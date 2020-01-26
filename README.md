@@ -1,65 +1,59 @@
 # Coeus
 
-Coeus is a distributed value store. Coeus is not a key-value store, as the key
-isn't the decided by the user but by the sha512 sum of the stored value. It
-supports three operations; storing values, reading values and removing values.
-As the key of a value is its sha512 sum it not possible to modify values. If a
-value needs to be modified a new value simply needs to stored and the new key
-used.
+Coeus is a distributed immutable value store. Coeus is not a key-value store, as
+the key isn't the decided by the user but by the checksum of the stored value.
 
+It supports three operations: storing, retrieving and removing values. As the
+key of a value is its checksum it not possible to modify values. If a value
+needs to be modified a new value simply needs to stored and the new key used.
 The client can validate the correct delivery of the value by using the returned
-key, which is the sha512 sum of the stored value.
+key. They values themselves are unchanged by Coeus and are seen as binary blobs.
 
-TODO: describe use case(s).
-TODO: values are blobs, unchanged by Coeus.
 
 ## Operations
 
 Coeus supports three operations; storing values, reading values and removing
-values.
+values. But first we need to start the server.
 
-TODO: remove commands and change it to describing the operations.
 
-### Storing values
+### Starting the server
 
-Storing values can be done with the `SET` command, it requires the `data` to be
-stored and needs to know it's `size`.
+Starting the server is simple, just call `stored`.
 
-The commands returns the sha512 hash of the `$data`.
-
-#### Examples
-
-```
-> STORE "Hello world"
-< 81381f1dacd4824a6c503fd07057763099c12b8309d0abcec4000c9060cbbfa67988b2ada669ab4837fcd3d4ea6e2b8db2b9da9197d5112fb369fd006da545de
-> STORE "Hello World"
-< e1c112ff908febc3b98b1693a6cd3564eaf8e5e6ca629d084d9f0eba99247cacdd72e369ff8941397c2807409ff66be64be908da17ad7b8a49a2a26c0e8086aa
+```bash
+$ stored
 ```
 
-### Reading values
+Next we using the various binaries to access the stored values.
 
-Getting a value in one go, or streaming the contents.
 
-TODO: not found.
+### Storing a value
 
-```
-GET $hash
+Storing values can be done with the `store` command. The commands returns the
+key of value.
+
+
+```bash
+# Using the first argument
+$ store "Hello world"
+# Without arguments it reads from standard in.
+$ echo "Hello world" | store
 ```
 
 
-#### Examples
+### Retrieving a value
 
+Getting a value can be done using the `retrieve` command.
+
+```bash
+$ retrieve $key
 ```
-> GET "81381f1dacd4824a6c503fd07057763099c12b8309d0abcec4000c9060cbbfa67988b2ada669ab4837fcd3d4ea6e2b8db2b9da9197d5112fb369fd006da545de"
-< "Hello world"
-> GET "e1c112ff908febc3b98b1693a6cd3564eaf8e5e6ca629d084d9f0eba99247cacdd72e369ff8941397c2807409ff66be64be908da17ad7b8a49a2a26c0e8086aa"
-< "Hello World"
-```
 
-### Removing values
 
-TODO: not found.
+### Removing a value
 
-```
-REMOVE $hash
+Removing a value can be done with `remove` command.
+
+```bash
+$ remove $key
 ```
