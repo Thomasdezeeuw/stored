@@ -1,46 +1,52 @@
-#![feature(never_type, async_await)]
+#![feature(never_type)]
 
-use std::{fmt, io};
+use std::io;
 
-use heph::actor_ref::{ActorRef, Sync};
-use heph::system::{ActorSystem, ActorSystemRef, RuntimeError};
+use heph::{ActorRef, Runtime, RuntimeError, RuntimeRef};
+use log::info;
 
 use coeus_common::Key;
 
 mod cache;
 mod listener;
+//mod storage;
 
-fn main() -> Result<(), DisplayAsDebug<RuntimeError<io::Error>>> {
+use cache::Cache;
+
+fn main() -> Result<(), RuntimeError<io::Error>> {
     heph::log::init();
 
-    let mut system = ActorSystem::new();
+    let mut runtime = Runtime::new();
 
-    let cache_ref = cache::start(&mut system).map_err(RuntimeError::map_type)?;
-    let options = Options { cache_ref };
+    let cache = cache::start(&mut runtime).map_err(RuntimeError::map_type)?;
+    let options = Options { cache };
 
-    system
-        .with_setup(move |system_ref| setup(system_ref, options))
-        .run()
+    runtime
+        .with_setup(move |runtime_ref| setup(runtime_ref, options))
+        .start()
         .map_err(|err| err.into())
 }
 
 #[derive(Clone)]
 struct Options {
-    cache_ref: ActorRef<Sync<cache::Message>>,
+    cache: Cache,
 }
 
-fn setup(mut system_ref: ActorSystemRef, options: Options) -> io::Result<()> {
+fn setup(mut runtime_ref: RuntimeRef, options: Options) -> io::Result<()> {
+    // TODO: read this from a config file or something.
+    let address = "127.0.0.1:123".parse().unwrap();
     let listener_options = listener::Options {
-        cache_ref: options.cache_ref,
-        // TODO: read this from a config file or something.
-        address: "127.0.0.1:8080".parse().unwrap(),
+        cache: options.cache,
+        address,
     };
 
-    listener::setup(&mut system_ref, listener_options)?;
+    listener::setup(&mut runtime_ref, listener_options)?;
+    info!("listening on address: {}", address);
 
     Ok(())
 }
 
+/*
 // This is needed because the stupid `Termination` trait used the `fmt::Debug`
 // implementation for whatever reason.
 struct DisplayAsDebug<T>(T);
@@ -59,3 +65,4 @@ where
         fmt::Display::fmt(&self.0, f)
     }
 }
+*/

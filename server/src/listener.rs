@@ -4,42 +4,80 @@ use std::net::SocketAddr;
 
 use heph::log::REQUEST_TARGET;
 use heph::net::tcp::{self, TcpStream};
-use heph::system::options::Priority;
-use heph::{actor, ActorOptions, ActorSystemRef, NewActor, SupervisorStrategy};
-use heph::actor_ref::{ActorRef, Sync};
-use log::{debug, error, info, trace};
+use heph::rt::options::Priority;
+use heph::{Supervisor, actor, ActorRef, ActorOptions, RuntimeRef, NewActor, SupervisorStrategy};
+use log::{warn, debug, error, info, trace};
 
 use coeus_common::buffer::Buffer;
 use coeus_common::{parse, serialise};
 
 use crate::{Key, cache};
+use crate::cache::Cache;
 
 /// Options used in [`setup`].
 pub struct Options {
-    pub cache_ref: ActorRef<Sync<cache::Message>>,
+    pub cache: Cache,
     pub address: SocketAddr,
 }
 
-/// Add a `TcpListener` to the system.
-pub fn setup(system_ref: &mut ActorSystemRef, options: Options) -> io::Result<()> {
-    let Options { cache_ref, address } = options;
+/// Spawns a TCP listener.
+pub fn setup(runtime: &mut RuntimeRef, options: Options) -> io::Result<()> {
+    let Options { cache, address } = options;
 
     let conn_actor = (conn_actor as fn(_, _, _, _) -> _) // Ugh.
-        .map_arg(move |(stream, address)| (stream, address, cache_ref.clone()));
+        .map_arg(move |(stream, address)| (stream, address, cache.clone()));
 
-    let listener = tcp::setup_server(
-        conn_supervisor,
-        conn_actor,
-        ActorOptions::default().with_priority(Priority::LOW),
-    );
+    let listener = tcp::Server::setup(address, conn_supervisor, conn_actor, ActorOptions::default())?;
 
-    info!("listening on address: {}", address);
-    system_ref
-        .try_spawn(listener_supervisor, listener, address, ActorOptions::default())
-        .map(|_| ())
+    runtime
+        .try_spawn(ServerSupervisor, listener, (), ActorOptions::default().with_priority(Priority::LOW))
+        .map(|actor_ref| runtime.receive_signals(actor_ref.try_map()))
 }
 
-fn listener_supervisor(err: tcp::ServerError<!>) -> SupervisorStrategy<SocketAddr> {
+/// Our supervisor for the TCP server.
+#[derive(Copy, Clone, Debug)]
+struct ServerSupervisor;
+
+impl<S, NA> Supervisor<tcp::ServerSetup<S, NA>> for ServerSupervisor
+where
+    S: Supervisor<NA> + Clone + 'static,
+    NA: NewActor<Argument = (TcpStream, SocketAddr), Error = !> + Clone + 'static,
+{
+    fn decide(&mut self, err: tcp::ServerError<!>) -> SupervisorStrategy<()> {
+        use tcp::ServerError::*;
+        match err {
+            // When we hit an error accepting a connection we'll drop the old
+            // listener and create a new one.
+            Accept(err) => {
+                warn!("error accepting new connection: {}", err);
+                SupervisorStrategy::Restart(())
+            }
+            NewActor::<!>(_) => unreachable!(),
+        }
+    }
+
+    fn decide_on_restart_error(&mut self, err: io::Error) -> SupervisorStrategy<()> {
+        // If we can't create a new listener we'll stop.
+        warn!("error restarting the TCP server: {}", err);
+        SupervisorStrategy::Restart(())
+    }
+
+    fn second_restart_error(&mut self, err: io::Error) {
+        error!("error restarting the TCP server a second time: {}", err);
+    }
+}
+
+/// Our supervisor for the connection actor.
+///
+/// Since we can't create a new TCP connection all this supervisor does is log
+/// the error and signal to stop the actor.
+fn conn_supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)> {
+    error!("error handling connection: {}", err);
+    SupervisorStrategy::Stop
+}
+
+/*
+fn listener_supervisor(err: tcp::ServerError<!>) -> SupervisorStrategy<()> {
     error!("error accepting connection: {}", err);
     SupervisorStrategy::Stop
 }
@@ -48,6 +86,7 @@ fn conn_supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)
     error!("error handling connection: {}", err);
     SupervisorStrategy::Stop
 }
+*/
 
 enum Message {
     CacheFound(cache::Value),
@@ -55,6 +94,7 @@ enum Message {
     CacheOk,
 }
 
+/*
 impl From<Message> for cache::Response {
     fn from(msg: Message) -> cache::Response {
         use cache::Response::*;
@@ -77,13 +117,17 @@ impl From<cache::Response> for Message {
         }
     }
 }
+*/
 
 async fn conn_actor(
     mut ctx: actor::Context<Message>,
     mut stream: TcpStream,
     address: SocketAddr,
-    mut cache: ActorRef<Sync<cache::Message>>,
+    mut cache: Cache,
 ) -> io::Result<()> {
+    todo!()
+
+    /*
     use Message::*;
     info!(target: REQUEST_TARGET, "accepted connection: address={}", address);
 
@@ -101,7 +145,7 @@ async fn conn_actor(
         match parse::request(buf.as_bytes()) {
             Ok((request, request_length)) => {
                 debug!("successfully parsed request: {:?}", request);
-                let self_ref = ctx.actor_ref().upgrade(ctx.system_ref()).unwrap().map();
+                let self_ref = ctx.actor_ref().upgrade(ctx.runtime()).unwrap().map();
                 match request {
                     parse::Request::Store(value) => {
                         let key = Key::for_value(value);
@@ -157,4 +201,5 @@ async fn conn_actor(
             },
         }
     }
+    */
 }

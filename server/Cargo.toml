@@ -7,8 +7,10 @@ publish = false
 
 [dependencies]
 evmap           = "6.0.0"
-futures-preview = { version = "0.3.0-alpha.17", features = ["nightly", "std", "async-await"] }
+futures-preview = { version = "=0.3.0-alpha.19", features = ["std", "async-await"] }
 heph            = { path = "../../heph" }
 log             = "0.4.6"
+
+#rocksdb         = "0.12.3"
 
 coeus-common    = { path = "../common" }
