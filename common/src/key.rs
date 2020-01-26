@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::str::FromStr;
 use std::task::{self, Poll};
 
-use futures_io::{AsyncRead, AsyncWrite, Initializer};
+use futures_io::{AsyncRead, AsyncWrite};
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 
 /// The key of a value.
@@ -294,10 +294,6 @@ where
             update_digest(&mut self.digest, bufs, n);
             n
         })
-    }
-
-    unsafe fn initializer(&self) -> Initializer {
-        self.io.initializer()
     }
 }
 
