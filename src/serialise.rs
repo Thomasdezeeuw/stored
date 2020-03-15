@@ -165,11 +165,12 @@ where
                 // The default implementation of vectored write only writes the
                 // first buffer, so we just call this again if we write less then
                 // all the buffers.
-                async_write_value(io, ctx, written + bytes_written, request_type, value).map_ok(|n| n + bytes_written)
+                async_write_value(io, ctx, written + bytes_written, request_type, value)
+                    .map_ok(|n| n + bytes_written)
             } else {
                 Poll::Ready(Ok(bytes_written))
             }
-        },
+        }
         Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
         Poll::Pending => Poll::Pending,
     }
@@ -204,11 +205,12 @@ where
                 // The default implementation of vectored write only writes the
                 // first buffer, so we just call this again if we write less then
                 // all the buffers.
-                async_write_key(io, ctx, written + bytes_written, request_type, key).map_ok(|n| n + bytes_written)
+                async_write_key(io, ctx, written + bytes_written, request_type, key)
+                    .map_ok(|n| n + bytes_written)
             } else {
                 Poll::Ready(Ok(bytes_written))
             }
-        },
+        }
         Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
         Poll::Pending => Poll::Pending,
     }

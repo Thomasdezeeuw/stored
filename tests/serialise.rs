@@ -17,7 +17,10 @@ fn serialise_request() {
     let key2: Key = "e1c112ff908febc3b98b1693a6cd3564eaf8e5e6ca629d084d9f0eba99247cacdd72e369ff8941397c2807409ff66be64be908da17ad7b8a49a2a26c0e8086aa".parse().unwrap();
 
     let tests: &[(_, (u8, &[u8]))] = &[
-        (serialise::Request::Store(b"Hello world"), (1, b"Hello world")),
+        (
+            serialise::Request::Store(b"Hello world"),
+            (1, b"Hello world"),
+        ),
         (serialise::Request::Store(b"Hello"), (1, b"Hello")),
         (serialise::Request::Store(b""), (1, b"")),
         (serialise::Request::Retrieve(&key1), (2, key1.as_bytes())),
@@ -45,7 +48,10 @@ fn serialise_response() {
         (serialise::Response::Ok, (1, b"")),
         (serialise::Response::Store(&key1), (2, key1.as_bytes())),
         (serialise::Response::Store(&key2), (2, key2.as_bytes())),
-        (serialise::Response::Value(b"Hello world"), (3, b"Hello world")),
+        (
+            serialise::Response::Value(b"Hello world"),
+            (3, b"Hello world"),
+        ),
         (serialise::Response::Value(b"Hello"), (3, b"Hello")),
         (serialise::Response::Value(b""), (3, b"")),
         (serialise::Response::ValueNotFound, (4, b"")),

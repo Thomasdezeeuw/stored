@@ -6,7 +6,11 @@ fn parse_request() {
     let key2: Key = "e1c112ff908febc3b98b1693a6cd3564eaf8e5e6ca629d084d9f0eba99247cacdd72e369ff8941397c2807409ff66be64be908da17ad7b8a49a2a26c0e8086aa".parse().unwrap();
 
     let tests: &[((u8, &[u8]), _, _)] = &[
-        ((1, b"Hello world"), parse::Request::Store(b"Hello world"), 16),
+        (
+            (1, b"Hello world"),
+            parse::Request::Store(b"Hello world"),
+            16,
+        ),
         ((1, b"Hello"), parse::Request::Store(b"Hello"), 10),
         ((1, b""), parse::Request::Store(b""), 5),
         ((2, key1.as_bytes()), parse::Request::Retrieve(&key1), 65),
@@ -54,7 +58,8 @@ fn parse_request_errors() {
     for test in tests {
         let input = create_input((test.0).0, (test.0).0 == 1, (test.0).1);
 
-        let got = parse::request(&input[..input.len() - 2]).expect_err("unexpected valid result parsing request");
+        let got = parse::request(&input[..input.len() - 2])
+            .expect_err("unexpected valid result parsing request");
         assert_eq!(got, test.1, "unexpected result parsing request");
     }
 }
@@ -68,7 +73,11 @@ fn parse_response() {
         ((1, b""), parse::Response::Ok, 1),
         ((2, key1.as_bytes()), parse::Response::Store(&key1), 65),
         ((2, key2.as_bytes()), parse::Response::Store(&key2), 65),
-        ((3, b"Hello world"), parse::Response::Value(b"Hello world"), 16),
+        (
+            (3, b"Hello world"),
+            parse::Response::Value(b"Hello world"),
+            16,
+        ),
         ((3, b"Hello"), parse::Response::Value(b"Hello"), 10),
         ((3, b""), parse::Response::Value(b""), 5),
         ((4, b""), parse::Response::ValueNotFound, 1),
@@ -112,7 +121,8 @@ fn parse_response_errors() {
     for test in tests {
         let input = create_input((test.0).0, (test.0).0 == 1, (test.0).1);
 
-        let got = parse::request(&input[..input.len() - 2]).expect_err("unexpected valid result parsing request");
+        let got = parse::request(&input[..input.len() - 2])
+            .expect_err("unexpected valid result parsing request");
         assert_eq!(got, test.1, "unexpected result parsing request");
     }
 }

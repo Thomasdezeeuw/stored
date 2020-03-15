@@ -278,7 +278,11 @@ impl<R> AsyncRead for KeyCalculator<R>
 where
     R: AsyncRead + Unpin,
 {
-    fn poll_read(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &mut [u8]) -> Poll<io::Result<usize>> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        ctx: &mut task::Context,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_read(ctx, buf).map_ok(|n| {
             self.digest.update(&buf[..n]);
             n
@@ -290,10 +294,12 @@ where
         ctx: &mut task::Context,
         bufs: &mut [IoSliceMut],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_read_vectored(ctx, bufs).map_ok(|n| {
-            update_digest(&mut self.digest, bufs, n);
-            n
-        })
+        Pin::new(&mut self.io)
+            .poll_read_vectored(ctx, bufs)
+            .map_ok(|n| {
+                update_digest(&mut self.digest, bufs, n);
+                n
+            })
     }
 }
 
@@ -301,7 +307,11 @@ impl<W> AsyncWrite for KeyCalculator<W>
 where
     W: AsyncWrite + Unpin,
 {
-    fn poll_write(mut self: Pin<&mut Self>, ctx: &mut task::Context, buf: &[u8]) -> Poll<io::Result<usize>> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        ctx: &mut task::Context,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_write(ctx, buf).map_ok(|n| {
             self.digest.update(&buf[..n]);
             n
@@ -313,10 +323,12 @@ where
         ctx: &mut task::Context,
         bufs: &[IoSlice],
     ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_write_vectored(ctx, bufs).map_ok(|n| {
-            update_digest(&mut self.digest, bufs, n);
-            n
-        })
+        Pin::new(&mut self.io)
+            .poll_write_vectored(ctx, bufs)
+            .map_ok(|n| {
+                update_digest(&mut self.digest, bufs, n);
+                n
+            })
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {

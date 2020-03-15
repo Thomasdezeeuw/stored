@@ -66,7 +66,10 @@ enum Message {
 }
 
 /// Synchronous actor that control the cache.
-fn cache_master(mut ctx: SyncContext<Message>, mut cache: evmap::WriteHandle<Key, Value>) -> Result<(), !> {
+fn cache_master(
+    mut ctx: SyncContext<Message>,
+    mut cache: evmap::WriteHandle<Key, Value>,
+) -> Result<(), !> {
     trace!("cache starting");
 
     while let Ok(msg) = ctx.receive_next() {
@@ -74,11 +77,11 @@ fn cache_master(mut ctx: SyncContext<Message>, mut cache: evmap::WriteHandle<Key
             Message::Store(key, value) => {
                 trace!("storing in cache: key={}", key);
                 cache.insert(key, value);
-            },
+            }
             Message::Remove(key) => {
                 trace!("removing {} from cache", key);
                 cache.empty(key);
-            },
+            }
         }
 
         // TODO: optimise this so we don't flush every write, but only every nth

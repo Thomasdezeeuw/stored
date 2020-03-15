@@ -45,7 +45,10 @@ impl Buffer {
     where
         R: AsyncRead,
     {
-        Read { buffer: self, reader }
+        Read {
+            buffer: self,
+            reader,
+        }
     }
 
     /// Returns the unprocessed, read bytes.
@@ -149,7 +152,10 @@ where
     type Output = io::Result<usize>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        let Read { buffer, ref mut reader } = &mut *self;
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
         Pin::new(reader)
             .poll_read(ctx, unsafe { buffer.available_bytes() })
             .map_ok(|bytes_read| {
@@ -318,7 +324,10 @@ mod tests {
             buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
             data2[..MIN_BUF_SIZE]
         );
-        assert_eq!(buf.as_bytes()[old_data_length + MIN_BUF_SIZE..], data3[..MIN_BUF_SIZE]);
+        assert_eq!(
+            buf.as_bytes()[old_data_length + MIN_BUF_SIZE..],
+            data3[..MIN_BUF_SIZE]
+        );
         assert_eq!(buf.capacity_left(), 0);
 
         // Ensure no additional allocation.

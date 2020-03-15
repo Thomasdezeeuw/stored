@@ -16,12 +16,27 @@ fn round_trip_request() {
             serialise::Request::Store(b"Hello world"),
             parse::Request::Store(b"Hello world"),
         ),
-        (serialise::Request::Store(b"Hello"), parse::Request::Store(b"Hello")),
+        (
+            serialise::Request::Store(b"Hello"),
+            parse::Request::Store(b"Hello"),
+        ),
         (serialise::Request::Store(b""), parse::Request::Store(b"")),
-        (serialise::Request::Retrieve(&key1), parse::Request::Retrieve(&key1)),
-        (serialise::Request::Retrieve(&key2), parse::Request::Retrieve(&key2)),
-        (serialise::Request::Remove(&key1), parse::Request::Remove(&key1)),
-        (serialise::Request::Remove(&key2), parse::Request::Remove(&key2)),
+        (
+            serialise::Request::Retrieve(&key1),
+            parse::Request::Retrieve(&key1),
+        ),
+        (
+            serialise::Request::Retrieve(&key2),
+            parse::Request::Retrieve(&key2),
+        ),
+        (
+            serialise::Request::Remove(&key1),
+            parse::Request::Remove(&key1),
+        ),
+        (
+            serialise::Request::Remove(&key2),
+            parse::Request::Remove(&key2),
+        ),
     ];
 
     for test in tests {
@@ -42,15 +57,27 @@ fn round_trip_reponse() {
 
     let tests = &[
         (serialise::Response::Ok, parse::Response::Ok),
-        (serialise::Response::Store(&key1), parse::Response::Store(&key1)),
-        (serialise::Response::Store(&key2), parse::Response::Store(&key2)),
+        (
+            serialise::Response::Store(&key1),
+            parse::Response::Store(&key1),
+        ),
+        (
+            serialise::Response::Store(&key2),
+            parse::Response::Store(&key2),
+        ),
         (
             serialise::Response::Value(b"Hello world"),
             parse::Response::Value(b"Hello world"),
         ),
-        (serialise::Response::Value(b"Hello"), parse::Response::Value(b"Hello")),
+        (
+            serialise::Response::Value(b"Hello"),
+            parse::Response::Value(b"Hello"),
+        ),
         (serialise::Response::Value(b""), parse::Response::Value(b"")),
-        (serialise::Response::ValueNotFound, parse::Response::ValueNotFound),
+        (
+            serialise::Response::ValueNotFound,
+            parse::Response::ValueNotFound,
+        ),
         (
             serialise::Response::InvalidRequestType,
             parse::Response::InvalidRequestType,
