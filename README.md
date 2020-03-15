@@ -1,18 +1,20 @@
-# Coeus
+# Store*d*
 
-Coeus is a distributed immutable value store. Coeus is not a key-value store, as
-the key isn't the decided by the user but by the checksum of the stored value.
+Store*d* (pronounced store-daemon, or just stored) is a distributed immutable
+value store. Stored is not a key-value store, as the key isn't the decided by
+the user but by the checksum of the stored value.
 
 It supports three operations: storing, retrieving and removing values. As the
 key of a value is its checksum it not possible to modify values. If a value
 needs to be modified a new value simply needs to stored and the new key used.
 The client can validate the correct delivery of the value by using the returned
-key. They values themselves are unchanged by Coeus and are seen as binary blobs.
+key. They values themselves are unchanged by Stored and are seen as binary
+blobs.
 
 
 ## Operations
 
-Coeus supports three operations; storing values, reading values and removing
+Stored supports three operations; storing values, reading values and removing
 values. But first we need to start the server.
 
 

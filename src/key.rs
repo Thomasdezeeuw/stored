@@ -80,7 +80,7 @@ impl Key {
     /// # use std::io;
     /// use std::io::{Write, IoSlice};
     ///
-    /// # use coeus::Key;
+    /// # use stored::Key;
     /// #
     /// # fn main() -> io::Result<()> {
     /// // Our `Write` implementation.

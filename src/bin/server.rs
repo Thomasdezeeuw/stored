@@ -5,7 +5,7 @@ use std::io;
 use heph::{Runtime, RuntimeError, RuntimeRef};
 use log::info;
 
-use coeus::server::{cache, listener};
+use stored::server::{cache, listener};
 
 use cache::Cache;
 
@@ -19,6 +19,7 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
 
     runtime
         .with_setup(move |runtime_ref| setup(runtime_ref, options))
+        //.use_all_cores() // FIXME: need to create listener before setup.
         .start()
         .map_err(|err| err.into())
 }
@@ -30,7 +31,7 @@ struct Options {
 
 fn setup(mut runtime_ref: RuntimeRef, options: Options) -> io::Result<()> {
     // TODO: read this from a config file or something.
-    let address = "127.0.0.1:123".parse().unwrap();
+    let address = "127.0.0.1:1234".parse().unwrap();
     let listener_options = listener::Options {
         cache: options.cache,
         address,

@@ -1,4 +1,4 @@
-use coeus::{parse, Key};
+use stored::{parse, Key};
 
 #[test]
 fn parse_request() {

@@ -21,6 +21,7 @@ pub fn setup(runtime: &mut RuntimeRef, options: Options) -> io::Result<()> {
     let conn_actor = (conn_actor as fn(_, _, _, _) -> _) // Ugh.
         .map_arg(move |(stream, address)| (stream, address, cache.clone()));
 
+    // FIXME: do this before starting the runtime, see example 2_my_ip.
     let listener = tcp::Server::setup(address, conn_supervisor, conn_actor, ActorOptions::default())?;
     let options = ActorOptions::default().with_priority(Priority::LOW);
 
