@@ -16,8 +16,8 @@ use std::mem::{align_of, size_of};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr::{self, NonNull};
-use std::slice;
 use std::time::{Duration, SystemTime};
+use std::{slice, thread};
 
 use log::error;
 
@@ -30,20 +30,33 @@ struct Data {
     /// Data file opened for reading (for use in `entries`) and writing in
     /// append-only mode for adding entries (`add_entry`).
     file: File,
-    /// Currently length of the file.
+    /// Current length of the file and all `mmap`ed areas.
     length: libc::size_t,
     /// `mmap`ed areas.
     /// See `check` for notes about safety.
     areas: Vec<MmapArea>,
 }
 
+/// The size of a single page, used in `mmap`ing memory.
+// TODO: ensure this is correct on all architectures.
+const PAGE_SIZE: usize = 1 << 12; // 4096.
+const PAGE_BITS: usize = 12;
+
 struct MmapArea {
     /// Mmap address. Safety: must be the `mmap` returned address.
     address: NonNull<libc::c_void>,
+    /// Absolute offset in the file.
+    offset: libc::off_t,
     /// Mmap allocation length. Safety: must be length used in `mmap`.
     length: libc::size_t,
-    /// Offset in the file.
-    offset: libc::off_t,
+}
+
+impl MmapArea {
+    /// Returns `true` if the value at `offset` with `length` is in this area.
+    fn in_area(&self, offset: u64, length: u32) -> bool {
+        let area_offset = self.offset as u64;
+        area_offset <= offset && (offset + length as u64) <= (area_offset + self.length as u64)
+    }
 }
 
 impl Data {
@@ -70,53 +83,101 @@ impl Data {
         Ok(data)
     }
 
-    fn add_value(&mut self, value: &[u8]) -> io::Result<*const u8> {
+    /// Add `value` at the end of the data log.
+    /// Returns its offset in the file and its `mmap`ed address.
+    fn add_value(&mut self, value: &[u8]) -> io::Result<(u64, NonNull<u8>)> {
+        assert!(!value.is_empty(), "tried to store an empty value");
         // First add the value to the file.
         self.file
             .write_all(value)
             .and_then(|()| self.file.sync_all())?;
 
         // Next grow our `mmap`ed area(s).
+        let offset = self.length;
         let address = self.grow_to(value.len())?;
         self.check();
-        Ok(address)
+        Ok((offset as u64, address))
     }
 
     /// Grows the `mmap`ed data by `grow_by_length` bytes.
-    fn grow_to(&mut self, grow_by_length: libc::size_t) -> io::Result<*const u8> {
+    fn grow_to(&mut self, grow_by_length: libc::size_t) -> io::Result<NonNull<u8>> {
         // Try to grow the last `mmap`ed area.
         if let Some(area) = self.areas.last_mut() {
-            // TODO: look into `mremap(2)` on Linux.
-            let new_length = area.length + grow_by_length;
-            let res = mmap(
-                area.address.as_ptr(),
-                new_length,
-                libc::PROT_READ,
-                libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
-                self.file.as_raw_fd(),
-                area.offset,
-            );
+            // The number of bytes used in last page of our mmap area.
+            let used_last_page = area.length % PAGE_SIZE;
 
-            if let Ok(new_address) = res {
-                // address and offset should remain unchanged.
-                assert_eq!(
-                    new_address,
+            // If our last page is fully used or the value doesn't fit in this
+            // last page we need to ensure that no other mapping is using the
+            // next page.
+            let can_grow = if used_last_page == 0 || (PAGE_SIZE - used_last_page) < grow_by_length {
+                // Probe the next page to see if is being used.
+                // Probe address is the next page (`+ PAGE_SIZE`), aligned
+                // to the page (`>> PAGE_BITS << PAGE_BITS`).
+                let probe_address: *mut libc::c_void =
+                    (((area.address.as_ptr() as usize + PAGE_SIZE) >> PAGE_BITS) << PAGE_BITS)
+                        as *mut _;
+
+                let actual_address = mmap(
+                    probe_address,
+                    PAGE_SIZE,
+                    libc::PROT_NONE,
+                    libc::MAP_PRIVATE | libc::MAP_ANON,
+                    -1,
+                    0,
+                )?;
+
+                if actual_address == probe_address {
+                    // We can grow the page safely as we now own the next page
+                    // as well. The next call to mmap below will overwrite the
+                    // probe mapping so we don't have to unmap it.
+                    true
+                } else {
+                    // Our probe failed, we need to create another area.
+                    munmap(actual_address, PAGE_SIZE)?;
+                    false
+                }
+            } else {
+                // If the value does fit in the last page we can safely
+                // overwrite our own mapping.
+                true
+            };
+
+            if can_grow {
+                let new_length = area.length + grow_by_length;
+                let res = mmap(
                     area.address.as_ptr(),
-                    "remapping the mmap area changed the address"
+                    new_length,
+                    libc::PROT_READ,
+                    libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
+                    self.file.as_raw_fd(),
+                    area.offset,
                 );
-                area.length = new_length;
-                self.length += grow_by_length;
-                let value_ptr = unsafe {
-                    (area.address.as_ptr() as *const u8).add(area.length - grow_by_length)
-                };
-                return Ok(value_ptr);
+
+                if let Ok(new_address) = res {
+                    // address and offset should remain unchanged.
+                    assert_eq!(
+                        new_address,
+                        area.address.as_ptr(),
+                        "remapping the mmap area changed the address"
+                    );
+                    area.length = new_length;
+                    self.length += grow_by_length;
+                    let value_ptr = unsafe {
+                        (area.address.as_ptr() as *mut u8).add(area.length - grow_by_length)
+                    };
+                    return Ok(NonNull::new(value_ptr).unwrap());
+                }
             }
         }
 
         // If we've failed to grow the last `mmap`ed area, or didn't yet have
         // one, we'll allocate a new area.
 
-        let offset = self.areas.last().map(|area| area.offset).unwrap_or(0);
+        let offset = self
+            .areas
+            .last()
+            .map(|area| area.offset + area.length as libc::off_t)
+            .unwrap_or(0);
         let address = mmap(
             ptr::null_mut(),
             grow_by_length,
@@ -134,7 +195,26 @@ impl Data {
         });
 
         self.length += grow_by_length;
-        Ok(address as *const u8)
+        Ok(NonNull::new(address as *mut u8).unwrap())
+    }
+
+    /// Returns the address for the value at `offset`, with `length`.
+    ///
+    /// # Notes
+    ///
+    /// The returned address lifetime is tied to the `Data` struct.
+    fn address_for(&self, offset: u64, length: u32) -> Option<NonNull<u8>> {
+        // TODO: return slice? What lifetime would that have?
+        self.areas
+            .iter()
+            .find(|area| area.in_area(offset, length))
+            .map(|area| {
+                let relative_offset = offset as libc::off_t - area.offset;
+                assert!(relative_offset >= 0);
+                let address = unsafe { area.address.as_ptr().add(relative_offset as usize) };
+                assert!(!address.is_null());
+                NonNull::new(address as *mut u8).unwrap()
+            })
     }
 
     /// Run all safety checks.
@@ -158,7 +238,11 @@ impl Data {
             let mut total_length: libc::size_t = 0;
             let mut last_offset: libc::off_t = -1;
             for area in &self.areas {
-                assert!(area.offset.is_positive(), "negative offset");
+                assert!(
+                    area.address.as_ptr() as usize % PAGE_SIZE == 0,
+                    "invalid mmap address alignment, maybe invalid PAGE_SIZE?"
+                );
+                assert!(area.offset >= 0, "negative offset");
                 assert!(
                     area.offset > last_offset,
                     "mmaped areas not sorted by offset"
@@ -180,8 +264,10 @@ impl Drop for MmapArea {
         // Safety: both `address` and `length` are used in the call to `mmap`.
         if let Err(err) = munmap(self.address.as_ptr(), self.length) {
             error!("error unmapping data: {}", err);
-            #[cfg(test)]
-            panic!("error unmapping data: {}", err);
+            if !thread::panicking() {
+                #[cfg(test)]
+                panic!("error unmapping data: {}", err);
+            }
         }
     }
 }
@@ -344,8 +430,10 @@ impl<'i> Drop for Entries<'i> {
             // Safety: both `address` and `length` are used in the call to `mmap`.
             if let Err(err) = munmap(self.address, self.length) {
                 error!("error unmapping data: {}", err);
-                #[cfg(test)]
-                panic!("error unmapping data: {}", err);
+                if !thread::panicking() {
+                    #[cfg(test)]
+                    panic!("error unmapping data: {}", err);
+                }
             }
         }
     }
