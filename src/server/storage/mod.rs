@@ -15,8 +15,9 @@ use std::iter::FusedIterator;
 use std::mem::{align_of, size_of};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::ptr::{self, NonNull};
+use std::slice;
 use std::time::{Duration, SystemTime};
-use std::{ptr, slice};
 
 use log::error;
 
@@ -25,7 +26,167 @@ use crate::Key;
 #[cfg(test)]
 mod tests;
 
-pub(crate) struct Index {
+struct Data {
+    /// Data file opened for reading (for use in `entries`) and writing in
+    /// append-only mode for adding entries (`add_entry`).
+    file: File,
+    /// Currently length of the file.
+    length: libc::size_t,
+    /// `mmap`ed areas.
+    /// See `check` for notes about safety.
+    areas: Vec<MmapArea>,
+}
+
+struct MmapArea {
+    /// Mmap address. Safety: must be the `mmap` returned address.
+    address: NonNull<libc::c_void>,
+    /// Mmap allocation length. Safety: must be length used in `mmap`.
+    length: libc::size_t,
+    /// Offset in the file.
+    offset: libc::off_t,
+}
+
+impl Data {
+    /// Open a data file.
+    fn open<P: AsRef<Path>>(path: P) -> io::Result<Data> {
+        let mut data = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .append(true)
+            .open(path)
+            .map(|file| Data {
+                file,
+                length: 0,
+                areas: Vec::new(),
+            })?;
+
+        let metadata = data.file.metadata()?;
+        let length = metadata.len() as libc::size_t;
+        if length != 0 {
+            data.grow_to(length)?;
+        }
+
+        data.check();
+        Ok(data)
+    }
+
+    fn add_value(&mut self, value: &[u8]) -> io::Result<*const u8> {
+        // First add the value to the file.
+        self.file
+            .write_all(value)
+            .and_then(|()| self.file.sync_all())?;
+
+        // Next grow our `mmap`ed area(s).
+        let address = self.grow_to(value.len())?;
+        self.check();
+        Ok(address)
+    }
+
+    /// Grows the `mmap`ed data by `grow_by_length` bytes.
+    fn grow_to(&mut self, grow_by_length: libc::size_t) -> io::Result<*const u8> {
+        // Try to grow the last `mmap`ed area.
+        if let Some(area) = self.areas.last_mut() {
+            // TODO: look into `mremap(2)` on Linux.
+            let new_length = area.length + grow_by_length;
+            let res = mmap(
+                area.address.as_ptr(),
+                new_length,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
+                self.file.as_raw_fd(),
+                area.offset,
+            );
+
+            if let Ok(new_address) = res {
+                // address and offset should remain unchanged.
+                assert_eq!(
+                    new_address,
+                    area.address.as_ptr(),
+                    "remapping the mmap area changed the address"
+                );
+                area.length = new_length;
+                self.length += grow_by_length;
+                let value_ptr = unsafe {
+                    (area.address.as_ptr() as *const u8).add(area.length - grow_by_length)
+                };
+                return Ok(value_ptr);
+            }
+        }
+
+        // If we've failed to grow the last `mmap`ed area, or didn't yet have
+        // one, we'll allocate a new area.
+
+        let offset = self.areas.last().map(|area| area.offset).unwrap_or(0);
+        let address = mmap(
+            ptr::null_mut(),
+            grow_by_length,
+            libc::PROT_READ,
+            libc::MAP_PRIVATE,
+            self.file.as_raw_fd(),
+            offset,
+        )?;
+
+        self.areas.push(MmapArea {
+            // Safety: `mmap` doesn't return a null address.
+            address: unsafe { NonNull::new_unchecked(address) },
+            offset: offset,
+            length: grow_by_length,
+        });
+
+        self.length += grow_by_length;
+        Ok(address as *const u8)
+    }
+
+    /// Run all safety checks.
+    ///
+    /// Checks the following:
+    ///
+    /// * All `MmapArea.offset`s are positive.
+    /// * `self.areas` is sorted by `MmapArea.offset`.
+    /// * All `MmapArea.offset`s are valid: `(0..D).sum(length) == offset`,
+    ///   for each D in `self.areas` (all `Mmap.offset`s are the sum of the
+    ///   mmaped so far).
+    /// * The total length matches the length of all mmaped slices: `self.length
+    ///   == self.areas.sum(length)`.
+    ///
+    /// # Notes
+    ///
+    /// This is only run with `debug_assertions` on, i.e. its a no-op in release
+    /// mode.
+    fn check(&self) {
+        if cfg!(debug_assertions) {
+            let mut total_length: libc::size_t = 0;
+            let mut last_offset: libc::off_t = -1;
+            for area in &self.areas {
+                assert!(area.offset.is_positive(), "negative offset");
+                assert!(
+                    area.offset > last_offset,
+                    "mmaped areas not sorted by offset"
+                );
+                assert_eq!(
+                    area.offset as libc::size_t, total_length,
+                    "invalid offset for mmap area"
+                );
+                last_offset = area.offset;
+                total_length += area.length;
+            }
+            assert_eq!(self.length, total_length, "invalid total length");
+        }
+    }
+}
+
+impl Drop for MmapArea {
+    fn drop(&mut self) {
+        // Safety: both `address` and `length` are used in the call to `mmap`.
+        if let Err(err) = munmap(self.address.as_ptr(), self.length) {
+            error!("error unmapping data: {}", err);
+            #[cfg(test)]
+            panic!("error unmapping data: {}", err);
+        }
+    }
+}
+
+struct Index {
     /// Index file opened for reading (for use in `entries`) and writing in
     /// append-only mode for adding entries (`add_entry`).
     file: File,
@@ -67,7 +228,7 @@ impl Index {
             ptr::null_mut(),
             length,
             libc::PROT_READ,
-            libc::MAP_PRIVATE, // TODO: look into MAP_POPULATE on Linux.
+            libc::MAP_PRIVATE,
             self.file.as_raw_fd(),
             0,
         )?;
@@ -112,6 +273,14 @@ fn mmap(
     }
 }
 
+fn munmap(addr: *mut libc::c_void, len: libc::size_t) -> io::Result<()> {
+    if unsafe { libc::munmap(addr, len) } != 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
 fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> io::Result<()> {
     if unsafe { libc::madvise(addr, len, advice) != 0 } {
         return Err(io::Error::last_os_error());
@@ -140,12 +309,12 @@ fn mmap_slice<'a, T>(address: *mut libc::c_void, length: libc::size_t) -> &'a [T
 #[derive(Debug)]
 pub(crate) struct Entries<'i> {
     /// Mmap address. Safety: must be the `mmap` returned address, may be null
-    /// in which can the address in not unmapped.
+    /// in which case the address is not unmapped.
     address: *mut libc::c_void,
     /// Mmap allocation length. Safety: must be length used in `mmap`.
     length: libc::size_t,
     /// Iterator based on a slice, so we don't have to do the heavy lifting.
-    /// This points to the `mmap`-ed memory.
+    /// This points to the `mmap`ed memory.
     iter: std::slice::Iter<'i, Entry>,
 }
 
@@ -173,11 +342,10 @@ impl<'i> Drop for Entries<'i> {
     fn drop(&mut self) {
         if !self.address.is_null() {
             // Safety: both `address` and `length` are used in the call to `mmap`.
-            if unsafe { libc::munmap(self.address, self.length) } != 0 {
-                let err = io::Error::last_os_error();
-                error!("error unmapping index: {}", err);
+            if let Err(err) = munmap(self.address, self.length) {
+                error!("error unmapping data: {}", err);
                 #[cfg(test)]
-                panic!("error unmapping index: {}", err);
+                panic!("error unmapping data: {}", err);
             }
         }
     }
