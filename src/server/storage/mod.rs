@@ -54,6 +54,7 @@ const PAGE_BITS: usize = 12;
 /// * `mmap_address` and `mmap_length` are the value used in the call to
 ///   `mmap(2)` and can be used to `unmap(2)` it.
 /// * `offset` and `length` are relative to the `Data.file`.
+#[derive(Debug)]
 struct MmapArea {
     /// Mmap address. Safety: must be the `mmap` returned address.
     mmap_address: NonNull<libc::c_void>,
@@ -86,7 +87,13 @@ impl MmapArea {
     fn offset(&self, offset: u64) -> NonNull<u8> {
         // The offset in the `mmap`ed area.
         let relative_offset = offset as libc::off_t - self.offset;
-        assert!(relative_offset >= 0);
+        assert!(
+            relative_offset >= 0,
+            "want offset: {}, absolute offset: {}, relative offset: {}",
+            offset,
+            self.offset,
+            relative_offset
+        );
 
         // The ensure that the offset into the file is page aligned we might
         // having overlapping bytes at the start of this area, we need to ignore
@@ -198,7 +205,8 @@ impl Data {
                     // Update total `Data` length .
                     self.length += length;
                     // The value is located in the last `length` bytes.
-                    let value_ptr = area.offset((area.length - length) as u64);
+                    let offset = area.offset as u64 + (area.length - length) as u64;
+                    let value_ptr = area.offset(offset);
                     return Ok(value_ptr);
                 }
             }

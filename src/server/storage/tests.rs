@@ -190,7 +190,8 @@ mod index {
 mod data {
     use std::mem::{size_of, ManuallyDrop};
     use std::ptr::NonNull;
-    use std::slice;
+    use std::time::Duration;
+    use std::{slice, thread};
 
     use super::{
         is_page_aligned, mmap, munmap, next_page_aligned, temp_file, test_data_path, test_entries,
@@ -251,10 +252,12 @@ mod data {
     #[test]
     fn test_next_page_aligned() {
         assert_eq!(next_page_aligned(0), PAGE_SIZE);
+        assert_eq!(next_page_aligned(1), PAGE_SIZE);
         assert_eq!(next_page_aligned(10), PAGE_SIZE);
         assert_eq!(next_page_aligned(100), PAGE_SIZE);
         assert_eq!(next_page_aligned(PAGE_SIZE - 1), PAGE_SIZE);
         assert_eq!(next_page_aligned(PAGE_SIZE), 2 * PAGE_SIZE);
+        assert_eq!(next_page_aligned(PAGE_SIZE + 1), 2 * PAGE_SIZE);
         assert_eq!(next_page_aligned(2 * PAGE_SIZE - 1), 2 * PAGE_SIZE);
         assert_eq!(next_page_aligned(2 * PAGE_SIZE), 3 * PAGE_SIZE);
         assert_eq!(next_page_aligned(2 * PAGE_SIZE + 1), 3 * PAGE_SIZE);
@@ -324,128 +327,136 @@ mod data {
         assert_eq!(got1, DATA[0]);
     }
 
-    #[test]
-    fn add_value_new_area() {
-        let path = temp_file("add_value_new_area.data");
-        let mut data = Data::open(&path).unwrap();
+    /// Length used in `create_dummy_area_after` to create dummy `mmap` areas.
+    const DUMMY_LENGTH: usize = 100;
 
-        const DATA2: &[u8] = super::DATA[0];
-        const DATA: &[u8] = &[1; PAGE_SIZE - DATA2.len() + 1]; // Ensure `DATA2` doesn't fit.
+    fn create_dummy_area_after(areas: &[MmapArea]) -> *mut libc::c_void {
+        let area = areas.last().unwrap();
+        let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
+        let want_dummy_address = if is_page_aligned(end_address) {
+            end_address as *mut libc::c_void
+        } else {
+            next_page_aligned(end_address) as *mut libc::c_void
+        };
 
-        // Adding a first value should create a new area.
-        let (offset, address1) = data.add_value(DATA).unwrap();
-        assert_eq!(offset, 0);
-        let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA.len()) };
-        assert_eq!(got1, DATA);
+        for _ in 0..5 {
+            let dummy_address = mmap(
+                want_dummy_address,
+                DUMMY_LENGTH,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE | libc::MAP_ANON,
+                0,
+                0,
+            )
+            .unwrap();
 
-        assert_eq!(data.file_length(), DATA.len());
-        assert_eq!(data.areas.len(), 1);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.len());
+            if dummy_address == want_dummy_address {
+                // Success!
+                return dummy_address;
+            } else {
+                // Wrong page, try again.
+                munmap(dummy_address, DUMMY_LENGTH).unwrap();
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
 
-        // Create an new mmaping so that the area created above can't be
-        // extended.
-        // NOTE: address must be page aligned.
-        let want_dummy_address =
-            next_page_aligned(address1.as_ptr() as usize + DATA.len()) as *mut libc::c_void;
-        let dummy_length = 100;
-        let dummy_address = mmap(
-            want_dummy_address,
-            dummy_length,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE | libc::MAP_ANON,
-            0,
-            0,
-        )
-        .unwrap();
-        assert!(
-            dummy_address != want_dummy_address,
-            "OS didn't give us the memory we need for this test. NOT A TEST FAILURE"
-        );
-
-        // Adding a second should grow the existing area.
-        let (offset, address2) = data.add_value(DATA2).unwrap();
-        // Check that a new area is created.
-        assert_ne!(address2.as_ptr(), dummy_address as *mut _);
-        assert_eq!(offset, DATA.len() as u64);
-        let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), DATA2.len()) };
-        assert_eq!(got2, DATA2);
-
-        assert_eq!(data.file_length(), DATA.len() + DATA2.len());
-        assert_eq!(data.areas.len(), 2);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.len());
-        let mmap_area = &data.areas[1];
-        assert_eq!(mmap_area.offset, DATA.len() as libc::off_t);
-        assert_eq!(mmap_area.length, DATA2.len());
-
-        // Original address must still be valid.
-        assert_eq!(got1, DATA);
-
-        munmap(dummy_address, dummy_length).unwrap();
+        panic!("OS didn't give us the memory we need for this test. NOT A TEST FAILURE");
     }
 
     #[test]
-    fn add_value_new_area_page_aligned() {
-        let path = temp_file("add_value_new_area_page_aligned.data");
-        let mut data = Data::open(&path).unwrap();
+    fn add_value_new_area() {
+        const DATA1: [u8; PAGE_SIZE] = [1; PAGE_SIZE];
+        const DATA2: [u8; PAGE_SIZE] = [2; PAGE_SIZE];
+        const DATA3: [u8; PAGE_SIZE] = [3; PAGE_SIZE];
 
-        const DATA: &[u8] = &[1; PAGE_SIZE];
-        const DATA2: &[u8] = super::DATA[0];
+        let tests = &[
+            // Perfect fit.
+            (PAGE_SIZE, PAGE_SIZE, PAGE_SIZE),
+            // Too small a space leftover.
+            (PAGE_SIZE - 1, PAGE_SIZE, PAGE_SIZE),
+            (PAGE_SIZE, PAGE_SIZE - 1, PAGE_SIZE),
+            (PAGE_SIZE, PAGE_SIZE, PAGE_SIZE - 1),
+            (1, PAGE_SIZE, PAGE_SIZE),
+            (PAGE_SIZE, 1, PAGE_SIZE),
+            (PAGE_SIZE, PAGE_SIZE, 1),
+            // Misc.
+            (PAGE_SIZE - 1, 2, PAGE_SIZE),
+        ];
 
-        // Adding a first value should create a new area.
-        let (offset, address1) = data.add_value(DATA).unwrap();
-        assert_eq!(offset, 0);
-        let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA.len()) };
-        assert_eq!(got1, DATA);
+        for (s1, s2, s3) in tests.iter().copied() {
+            let value1 = &DATA1[0..s1];
+            let value2 = &DATA2[0..s2];
+            let value3 = &DATA3[0..s3];
 
-        assert_eq!(data.file_length(), DATA.len());
-        assert_eq!(data.areas.len(), 1);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.len());
+            let path = temp_file("add_value_new_area.data");
+            let mut data = Data::open(&path).unwrap();
 
-        // Create an new mmaping so that the area created above can't be
-        // extended.
-        // NOTE: address must be page aligned.
-        let want_dummy_address = unsafe { address1.as_ptr().add(DATA.len()).cast() };
-        let dummy_length = 100;
-        let dummy_address = mmap(
-            want_dummy_address,
-            dummy_length,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE | libc::MAP_ANON,
-            0,
-            0,
-        )
-        .unwrap();
-        assert!(
-            dummy_address != want_dummy_address,
-            "OS didn't give us the memory we need for this test. NOT A TEST FAILURE"
-        );
+            // Adding a first value should create a new area.
+            let (offset, address1) = data.add_value(value1).unwrap();
+            assert_eq!(offset, 0);
+            let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), value1.len()) };
+            assert_eq!(got1, value1);
 
-        // Adding a second should grow the existing area.
-        let (offset, address2) = data.add_value(DATA2).unwrap();
-        // Check that a new area is created.
-        assert_ne!(address2.as_ptr(), dummy_address as *mut _);
-        assert_eq!(offset, DATA.len() as u64);
-        let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), DATA2.len()) };
-        assert_eq!(got2, DATA2);
+            assert_eq!(data.file_length(), value1.len());
+            assert_eq!(data.areas.len(), 1);
+            let mmap_area = &data.areas[0];
+            assert_eq!(mmap_area.offset, 0);
+            assert_eq!(mmap_area.length, value1.len());
 
-        assert_eq!(data.file_length(), DATA.len() + DATA2.len());
-        assert_eq!(data.areas.len(), 2);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.len());
-        let mmap_area = &data.areas[1];
-        assert_eq!(mmap_area.offset, DATA.len() as libc::off_t);
-        assert_eq!(mmap_area.length, DATA2.len());
+            // Create an new `mmap`ing so that the area created above can't be
+            // extended.
+            let dummy_address1 = create_dummy_area_after(&data.areas);
 
-        // Original address must still be valid.
-        assert_eq!(got1, DATA);
+            // Adding a second value should create a new area.
+            let (offset, address2) = data.add_value(value2).unwrap();
+            assert_eq!(offset, value1.len() as u64);
+            let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), value2.len()) };
+            assert_eq!(got2, value2);
+            // Check that we didn't overwrite our dummy.
+            assert_ne!(address2.as_ptr(), dummy_address1 as *mut _);
 
-        munmap(dummy_address, dummy_length).unwrap();
+            assert_eq!(data.file_length(), value1.len() + value2.len());
+            assert_eq!(data.areas.len(), 2);
+            let mmap_area = &data.areas[0];
+            assert_eq!(mmap_area.offset, 0);
+            assert_eq!(mmap_area.length, value1.len());
+            let mmap_area = &data.areas[1];
+            assert_eq!(mmap_area.offset, value1.len() as libc::off_t);
+            assert_eq!(mmap_area.length, value2.len());
+
+            let dummy_address2 = create_dummy_area_after(&data.areas);
+            // Adding a second value should create a new area.
+            let (offset, address3) = data.add_value(value3).unwrap();
+            assert_eq!(offset, (value1.len() + value2.len()) as u64);
+            let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), value3.len()) };
+            assert_eq!(got3, value3);
+            // Check that we didn't overwrite our dummy.
+            assert_ne!(address3.as_ptr(), dummy_address2 as *mut _);
+
+            assert_eq!(
+                data.file_length(),
+                value1.len() + value2.len() + value3.len()
+            );
+            assert_eq!(data.areas.len(), 3);
+            let mmap_area = &data.areas[0];
+            assert_eq!(mmap_area.offset, 0);
+            assert_eq!(mmap_area.length, value1.len());
+            let mmap_area = &data.areas[1];
+            assert_eq!(mmap_area.offset, value1.len() as libc::off_t);
+            assert_eq!(mmap_area.length, value2.len());
+            let mmap_area = &data.areas[2];
+            assert_eq!(
+                mmap_area.offset,
+                (value1.len() + value2.len()) as libc::off_t
+            );
+            assert_eq!(mmap_area.length, value3.len());
+
+            // All returned addresses must still be valid.
+            assert_eq!(got1, value1);
+            assert_eq!(got2, value2);
+
+            munmap(dummy_address1, DUMMY_LENGTH).unwrap();
+            munmap(dummy_address2, DUMMY_LENGTH).unwrap();
+        }
     }
 }
