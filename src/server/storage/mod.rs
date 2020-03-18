@@ -1,5 +1,38 @@
 //! Module with the `Storage` handle to a database.
 
+// # Design
+//
+// The database is split into two files: the data and an index. Both files are
+// append-only logs*. Adding new blobs to the database is done by 1) appending
+// the blob's byte to the data file, ensuring its fully synced, 2) adding a new
+// entry to the index file, again ensuring its fully synced.
+//
+// * Not really, but pretend like they are for now.
+//
+// ## In case of failures
+//
+// If there is a failure in step 1, for example if the application crashes
+// before the all bytes are written to disk it means that we have bytes in the
+// data file which don't have an entry in the index. But this should be fine.
+// TODO: do some kind of cleanup of unused bytes?
+//
+// In there is a failure is step 2 we need to make a choose: either dropping a
+// (possibly) corrupt entry or trying to restore it.
+//
+// # Validating the database
+//
+// Since all entries hold the key for the blob each blob can validated using the
+// key as checksum. This will point out any corruptions and could help in
+// restoring them. TODO: implement this.
+//
+// ## Append-only log, but not really
+//
+// In an ideal world the data and index files would actually be append-only
+// logs. However we don't live in an ideal world. In this less than ideal world
+// we also need to remove blobs, complying with laws such as GDPR. For this we
+// need to invalidate the entry in the index file and overwrite the bytes in the
+// data file, ensuring they can't be read anymore. TODO: implement this.
+
 // TODO: add a magic string and version at the start of the index and data
 // files? To ensure we're opening a correct file?
 
