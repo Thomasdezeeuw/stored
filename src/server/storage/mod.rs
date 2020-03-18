@@ -1,4 +1,4 @@
-#![allow(dead_code)] // FIXME: use this.
+//! Module with the `Storage` handle to a database.
 
 // TODO: add a magic string and version at the start of the index and data
 // files? To ensure we're opening a correct file?
@@ -12,7 +12,8 @@
 //   - MAP_HUGE_1GB
 // - MAP_POPULATE
 
-use std::fs::{File, OpenOptions};
+use std::collections::HashMap;
+use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Write};
 use std::iter::FusedIterator;
 use std::mem::{align_of, size_of};
@@ -29,13 +30,156 @@ use crate::Key;
 #[cfg(test)]
 mod tests;
 
+/// A Binary Large OBject (BLOB).
+#[derive(Debug, Clone)]
+pub struct Blob<'s> {
+    bytes: &'s [u8],
+    created: SystemTime,
+}
+
+impl<'s> Blob<'s> {
+    /// Returns the bytes that make up the `Blob`.
+    pub fn bytes(&self) -> &[u8] {
+        self.bytes
+    }
+
+    /// Returns the time at which the blob was added.
+    pub fn created_at(&self) -> SystemTime {
+        self.created
+    }
+}
+
+/// Handle to a database.
+#[derive(Debug)]
+pub struct Storage<'s> {
+    index: Index,
+    /// All blobs currently in `Index` and `Data`. The lifetime `'s` refers to
+    /// the `mmap`ed areas in `Data`.
+    ///
+    /// # Safety
+    ///
+    /// `blobs` must be declared before `data`because it must be dropped before
+    /// `data`.
+    // TODO: use different hashing algorithm.
+    blobs: HashMap<Key, Blob<'s>>,
+    /// # Safety
+    ///
+    /// Must outlive `blobs`, the lifetime `'s` refers to this.
+    data: Data,
+}
+
+impl<'s> Storage<'s> {
+    /// Open a database.
+    ///
+    /// `path` must be a directory with the `index` and `data` files.
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Storage<'s>> {
+        let path = path.as_ref();
+
+        // Ensure the directory exists.
+        create_dir_all(path)?;
+
+        let data = Data::open(path.join("data"))?;
+
+        let mut index = Index::open(path.join("index"))?;
+        let entries = index.entries()?;
+
+        // Add all blobs currently in the database.
+        let mut blobs = HashMap::with_capacity(entries.len());
+        blobs.extend(entries.map(|entry| {
+            let address = data
+                .address_for(entry.offset, entry.length)
+                // TODO: handle this better. Think should happen. It it possible
+                // that there are more blobs in `Data` then the `Index`
+                // suggests.
+                .expect("missing blobs from data file");
+
+            // Safety: this is safe because `Data` outlives `blobs`, see
+            // `Storage.blobs` docs.
+            let bytes = unsafe { slice::from_raw_parts(address.as_ptr(), entry.length as usize) };
+
+            let blob = Blob {
+                bytes,
+                created: entry.created.into(),
+            };
+            (entry.key.clone(), blob)
+        }));
+
+        Ok(Storage { data, index, blobs })
+    }
+
+    /// Returns the number of blobs stored in the database.
+    pub fn len(&self) -> usize {
+        self.blobs.len()
+    }
+
+    /// Returns the number of bytes of data stored.
+    pub fn data_size(&self) -> u64 {
+        self.data.file_length() as u64
+    }
+
+    /// Returns the size of the index in bytes.
+    pub fn index_size(&self) -> u64 {
+        self.len() as u64 * size_of::<Entry>() as u64
+    }
+
+    /// Returns the total size of the database (data and index).
+    pub fn total_size(&self) -> u64 {
+        self.data_size() + self.index_size()
+    }
+
+    /// Returns a reference to the `Blob` corresponding to the key, if stored.
+    pub fn lookup(&self, key: &Key) -> Option<Blob<'s>> {
+        self.blobs.get(key).cloned()
+    }
+
+    /// Add `blob` to the database.
+    pub fn add_blob<'b>(&mut self, blob: &'b [u8]) -> io::Result<Key> {
+        let key = Key::for_value(blob);
+
+        // Can't have double entries.
+        if self.blobs.contains_key(&key) {
+            debug_assert_eq!(self.lookup(&key).unwrap().bytes(), blob);
+            return Ok(key);
+        }
+
+        // First add the blob to the data file. If something happens the blob
+        // will be written (or not), but its not *in* the database as the index
+        // defines what is in the database.
+        let (offset, address) = self.data.add_blob(blob)?;
+
+        // Now the data is safely stored (we hope) we can add the blob to the
+        // index.
+        let entry = Entry {
+            key,
+            offset,
+            length: blob.len() as u32,
+            created: DateTime::now(),
+        };
+        self.index.add_entry(&entry)?;
+
+        // Now that the data and index entry are stored we can return the blob
+        // to the user.
+        let blob = Blob {
+            // Safety: `Data` must outlive `blobs`.
+            bytes: unsafe { slice::from_raw_parts(address.as_ptr(), blob.len()) },
+            created: entry.created.into(),
+        };
+
+        let old = self.blobs.insert(entry.key.clone(), blob);
+        // Checked this at the start as well.
+        assert!(old.is_none());
+        Ok(entry.key)
+    }
+}
+
 /// Handle for a data file.
+#[derive(Debug)]
 struct Data {
     /// Data file opened for reading and writing in append-only mode (for
     /// adding new values).
     file: File,
     /// Current length of the file and all `mmap`ed areas.
-    length: libc::size_t,
+    length: u64,
     /// `mmap`ed areas.
     /// See `check` for notes about safety.
     areas: Vec<MmapArea>,
@@ -51,7 +195,7 @@ const PAGE_BITS: usize = 12;
 ///
 /// In this struct there are two kinds of values: used in the call to `mmap` and
 /// the values used in respect to the `Data.file`.
-/// * `mmap_address` and `mmap_length` are the value used in the call to
+/// * `mmap_address` and `mmap_length` are the values used in the call to
 ///   `mmap(2)` and can be used to `unmap(2)` it.
 /// * `offset` and `length` are relative to the `Data.file`.
 #[derive(Debug)]
@@ -72,7 +216,7 @@ struct MmapArea {
 }
 
 impl MmapArea {
-    /// Returns `true` if the value at `offset` with `length` is in this area.
+    /// Returns `true` if the blob at `offset` with `length` is in this area.
     fn in_area(&self, offset: u64, length: u32) -> bool {
         let area_offset = self.offset as u64;
         area_offset <= offset && (offset + length as u64) <= (area_offset + self.length as u64)
@@ -134,23 +278,23 @@ impl Data {
     }
 
     /// Returns the total file length.
-    fn file_length(&self) -> usize {
+    fn file_length(&self) -> u64 {
         self.length
     }
 
-    /// Add `value` at the end of the data log.
-    /// Returns the stored value's offset in the data file and its `mmap`ed
+    /// Add `blob` at the end of the data log.
+    /// Returns the stored blob's offset in the data file and its `mmap`ed
     /// address.
-    fn add_value(&mut self, value: &[u8]) -> io::Result<(u64, NonNull<u8>)> {
-        assert!(!value.is_empty(), "tried to store an empty value");
-        // First add the value to the file.
+    fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>)> {
+        assert!(!blob.is_empty(), "tried to store an empty blob");
+        // First add the blob to the file.
         self.file
-            .write_all(value)
+            .write_all(blob)
             .and_then(|()| self.file.sync_all())?;
 
         // Next grow our `mmap`ed area(s).
         let offset = self.length;
-        let address = self.grow_by(value.len())?;
+        let address = self.grow_by(blob.len())?;
         self.check();
         Ok((offset as u64, address))
     }
@@ -158,8 +302,8 @@ impl Data {
     /// Grows the `mmap`ed data by `length` bytes.
     ///
     /// This either grows the last `mmap`ed area, or allocates a new one.
-    /// Returns the starting address at which the area is grown, i.e. were the
-    /// value is mmaped into memory.
+    /// Returns the starting address at which the area is grown, i.e. where the
+    /// blob is mmaped into memory.
     fn grow_by(&mut self, length: libc::size_t) -> io::Result<NonNull<u8>> {
         // Try to grow the last `mmap`ed area.
         if let Some(area) = self.areas.last_mut() {
@@ -203,8 +347,8 @@ impl Data {
                     area.mmap_length = new_length;
                     area.length += length;
                     // Update total `Data` length .
-                    self.length += length;
-                    // The value is located in the last `length` bytes.
+                    self.length += length as u64;
+                    // The blob is located in the last `length` bytes.
                     let offset = area.offset as u64 + (area.length - length) as u64;
                     let value_ptr = area.offset(offset);
                     return Ok(value_ptr);
@@ -220,9 +364,9 @@ impl Data {
     /// Create a new `mmap` area of `length` bytes, using the offset from the
     /// last mmap area (or 0).
     ///
-    /// Returns the starting address of the value added value. Note that this
-    /// can different from the address of the `mmap`ed area (last
-    /// `MmapArea.address`), as the value offset might not be page aligned.
+    /// Returns the starting address of the added blob. Note that this can
+    /// different from the address of the `mmap`ed area (last
+    /// `MmapArea.address`), as the blob offset might not be page aligned.
     fn new_area(&mut self, length: libc::size_t) -> io::Result<NonNull<u8>> {
         // Get the file offset from the last `mmap`ed area.
         let offset = self
@@ -268,11 +412,11 @@ impl Data {
         self.areas.push(area);
 
         // Not counting the overlapping length!
-        self.length += length;
+        self.length += length as u64;
         Ok(value_address)
     }
 
-    /// Returns the address for the value at `offset`, with `length`. Or `None`
+    /// Returns the address for the blob at `offset`, with `length`. Or `None`
     /// if the combination is invalid.
     ///
     /// # Notes
@@ -305,7 +449,7 @@ impl Data {
     /// mode.
     fn check(&self) {
         if cfg!(debug_assertions) {
-            let mut total_length: libc::size_t = 0;
+            let mut total_length: u64 = 0;
             let mut last_offset: libc::off_t = -1;
             for area in &self.areas {
                 assert!(
@@ -318,7 +462,7 @@ impl Data {
                     "mmaped areas not sorted by offset"
                 );
                 assert_eq!(
-                    area.offset as libc::size_t, total_length,
+                    area.offset as u64, total_length,
                     "invalid offset for mmap area"
                 );
                 assert!(
@@ -326,7 +470,7 @@ impl Data {
                     "mmap area smaller the MmapArea.length"
                 );
                 last_offset = area.offset;
-                total_length += area.length;
+                total_length += area.length as u64;
             }
             assert_eq!(self.length, total_length, "invalid total length");
         }
@@ -338,8 +482,8 @@ impl Data {
 fn needs_next_page(area_length: libc::size_t, grow_by_length: libc::size_t) -> bool {
     // The number of bytes used in last page of the mmap area.
     let used_last_page = area_length % PAGE_SIZE;
-    // If our last page is fully used (0 bytes used in last page) or the value
-    // doesn't fit in this last page we need another page for the value.
+    // If our last page is fully used (0 bytes used in last page) or the blob
+    // doesn't fit in this last page we need another page for the blob.
     used_last_page == 0 || (PAGE_SIZE - used_last_page) < grow_by_length
 }
 
@@ -418,6 +562,7 @@ impl Drop for MmapArea {
 }
 
 /// Handle for an index file.
+#[derive(Debug)]
 struct Index {
     /// Index file opened for reading (for use in `entries`) and writing in
     /// append-only mode for adding entries (`add_entry`).
@@ -551,7 +696,7 @@ fn mmap_slice<'a, T>(address: *mut libc::c_void, length: libc::size_t) -> &'a [T
 ///
 /// Lifetime `'i` is connected to `Index`.
 #[derive(Debug)]
-pub(crate) struct Entries<'i> {
+struct Entries<'i> {
     /// Mmap address. Safety: must be the `mmap` returned address, may be null
     /// in which case the address is not unmapped. If null `length` must be 0.
     address: *mut libc::c_void,
@@ -609,16 +754,16 @@ impl<'i> Drop for Entries<'i> {
 /// The layout of the `Entry` is fixed as it must be loaded from disk.
 #[repr(C)]
 #[derive(Eq, PartialEq, Debug)]
-pub(crate) struct Entry {
-    /// Key for the value.
+struct Entry {
+    /// Key for the blob.
     key: Key,
     /// Offset into the data file.
     ///
-    /// If this is `u64::MAX` the value has been removed.
+    /// If this is `u64::MAX` the blbo has been removed.
     offset: u64,
-    /// Length of the value in bytes.
+    /// Length of the blob in bytes.
     length: u32,
-    /// Time at which the value is created.
+    /// Time at which the blob is created.
     created: DateTime,
 }
 
@@ -634,7 +779,7 @@ pub(crate) struct Entry {
 /// Can't represent times before Unix epoch.
 #[repr(C, packed)] // Packed to reduce the size of `Index`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
-pub(crate) struct DateTime {
+struct DateTime {
     /// Number of seconds since Unix epoch.
     seconds: u64,
     /// Number of nano sub-seconds, always less then 1 billion (the number of
@@ -644,7 +789,7 @@ pub(crate) struct DateTime {
 
 impl DateTime {
     /// Returns the current time as `DateTime`.
-    pub(crate) fn now() -> DateTime {
+    fn now() -> DateTime {
         SystemTime::now().into()
     }
 }

@@ -1,5 +1,6 @@
-use std::env::temp_dir;
-use std::fs::remove_file;
+use std::env;
+use std::fs::{remove_dir_all, remove_file};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 use crate::Key;
@@ -56,8 +57,37 @@ impl Drop for TempFile {
 }
 
 fn temp_file(name: &str) -> TempFile {
-    let path = temp_dir().join(name);
+    let path = env::temp_dir().join(name);
     TempFile { path }
+}
+
+struct TempDir {
+    path: PathBuf,
+}
+
+impl AsRef<Path> for TempDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.path
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = remove_dir_all(&self.path);
+    }
+}
+
+fn temp_dir(name: &str) -> TempDir {
+    let path = env::temp_dir().join(name);
+    TempDir { path }
 }
 
 mod date_time {
@@ -272,7 +302,10 @@ mod data {
         let path = test_data_path("001.db/data");
         let data = Data::open(&path).unwrap();
 
-        assert_eq!(data.file_length(), DATA.iter().map(|d| d.len()).sum());
+        assert_eq!(
+            data.file_length(),
+            DATA.iter().map(|d| d.len()).sum::<usize>() as u64
+        );
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
@@ -280,34 +313,34 @@ mod data {
 
         for (i, entry) in test_entries().iter().enumerate() {
             let value_address = data.address_for(entry.offset, entry.length).unwrap();
-            let value =
+            let blob =
                 unsafe { slice::from_raw_parts(value_address.as_ptr(), entry.length as usize) };
 
-            assert_eq!(value, DATA[i]);
+            assert_eq!(blob, DATA[i]);
         }
     }
 
     #[test]
-    fn add_value_grow_area() {
-        let path = temp_file("add_value_grow_area.data");
+    fn add_blob_grow_area() {
+        let path = temp_file("add_blob_grow_area.data");
         let mut data = Data::open(&path).unwrap();
         assert_eq!(data.areas.len(), 0);
         assert_eq!(data.file_length(), 0);
 
-        // Adding a first value should create a new area.
-        let (offset, address1) = data.add_value(DATA[0]).unwrap();
+        // Adding a first blob should create a new area.
+        let (offset, address1) = data.add_blob(DATA[0]).unwrap();
         assert_eq!(offset, 0);
         let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA[0].len()) };
         assert_eq!(got1, DATA[0]);
 
-        assert_eq!(data.file_length(), DATA[0].len());
+        assert_eq!(data.file_length(), DATA[0].len() as u64);
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
         assert_eq!(mmap_area.length, DATA[0].len());
 
         // Adding a second should grow the existing area.
-        let (offset, address2) = data.add_value(DATA[1]).unwrap();
+        let (offset, address2) = data.add_blob(DATA[1]).unwrap();
         // Check area grown.
         assert_eq!(
             unsafe { address1.as_ptr().add(DATA[0].len()) },
@@ -317,7 +350,10 @@ mod data {
         let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), DATA[1].len()) };
         assert_eq!(got2, DATA[1]);
 
-        assert_eq!(data.file_length(), DATA.iter().map(|d| d.len()).sum());
+        assert_eq!(
+            data.file_length(),
+            DATA.iter().map(|d| d.len()).sum::<usize>() as u64
+        );
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
@@ -364,7 +400,8 @@ mod data {
     }
 
     #[test]
-    fn add_value_new_area() {
+    #[ignore = "test is flaky due to the required memory placement"]
+    fn add_blob_new_area() {
         const DATA1: [u8; PAGE_SIZE] = [1; PAGE_SIZE];
         const DATA2: [u8; PAGE_SIZE] = [2; PAGE_SIZE];
         const DATA3: [u8; PAGE_SIZE] = [3; PAGE_SIZE];
@@ -388,16 +425,16 @@ mod data {
             let value2 = &DATA2[0..s2];
             let value3 = &DATA3[0..s3];
 
-            let path = temp_file("add_value_new_area.data");
+            let path = temp_file("add_blob_new_area.data");
             let mut data = Data::open(&path).unwrap();
 
-            // Adding a first value should create a new area.
-            let (offset, address1) = data.add_value(value1).unwrap();
+            // Adding a first blob should create a new area.
+            let (offset, address1) = data.add_blob(value1).unwrap();
             assert_eq!(offset, 0);
             let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), value1.len()) };
             assert_eq!(got1, value1);
 
-            assert_eq!(data.file_length(), value1.len());
+            assert_eq!(data.file_length(), value1.len() as u64);
             assert_eq!(data.areas.len(), 1);
             let mmap_area = &data.areas[0];
             assert_eq!(mmap_area.offset, 0);
@@ -407,15 +444,15 @@ mod data {
             // extended.
             let dummy_address1 = create_dummy_area_after(&data.areas);
 
-            // Adding a second value should create a new area.
-            let (offset, address2) = data.add_value(value2).unwrap();
+            // Adding a second blob should create a new area.
+            let (offset, address2) = data.add_blob(value2).unwrap();
             assert_eq!(offset, value1.len() as u64);
             let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), value2.len()) };
             assert_eq!(got2, value2);
             // Check that we didn't overwrite our dummy.
             assert_ne!(address2.as_ptr(), dummy_address1 as *mut _);
 
-            assert_eq!(data.file_length(), value1.len() + value2.len());
+            assert_eq!(data.file_length(), (value1.len() + value2.len()) as u64);
             assert_eq!(data.areas.len(), 2);
             let mmap_area = &data.areas[0];
             assert_eq!(mmap_area.offset, 0);
@@ -425,8 +462,8 @@ mod data {
             assert_eq!(mmap_area.length, value2.len());
 
             let dummy_address2 = create_dummy_area_after(&data.areas);
-            // Adding a second value should create a new area.
-            let (offset, address3) = data.add_value(value3).unwrap();
+            // Adding a second blob should create a new area.
+            let (offset, address3) = data.add_blob(value3).unwrap();
             assert_eq!(offset, (value1.len() + value2.len()) as u64);
             let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), value3.len()) };
             assert_eq!(got3, value3);
@@ -435,7 +472,7 @@ mod data {
 
             assert_eq!(
                 data.file_length(),
-                value1.len() + value2.len() + value3.len()
+                (value1.len() + value2.len() + value3.len()) as u64
             );
             assert_eq!(data.areas.len(), 3);
             let mmap_area = &data.areas[0];
@@ -458,5 +495,86 @@ mod data {
             munmap(dummy_address1, DUMMY_LENGTH).unwrap();
             munmap(dummy_address2, DUMMY_LENGTH).unwrap();
         }
+    }
+}
+
+mod storage {
+    use std::fs;
+    use std::mem::size_of;
+
+    use super::{temp_dir, test_data_path, test_entries, Blob, Entry, Storage, DATA};
+
+    #[test]
+    fn blob_size() {
+        // TODO: SystemTime has a different size on different OSes, this will
+        // fail somewhere.
+        assert_eq!(size_of::<Blob>(), 32);
+    }
+
+    #[test]
+    fn open_database() {
+        let path = test_data_path("001.db");
+        let storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), DATA.len());
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(storage.data_size(), data_metadata.len());
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(storage.index_size(), index_metadata.len());
+        assert_eq!(
+            storage.total_size(),
+            data_metadata.len() + index_metadata.len()
+        );
+
+        for (i, entry) in test_entries().iter().enumerate() {
+            let got = storage.lookup(&entry.key).unwrap();
+            let want = DATA[i];
+            assert_eq!(got.bytes(), want);
+            assert_eq!(got.created_at(), entry.created.into());
+        }
+    }
+
+    #[test]
+    fn add_blobs() {
+        let path = temp_dir("add_blobs.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.total_size(), 0);
+
+        let blobs = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
+
+        let mut keys = Vec::with_capacity(blobs.len());
+        for blob in blobs.iter().copied() {
+            let key = storage.add_blob(blob).unwrap();
+
+            let got = storage.lookup(&key).unwrap();
+            assert_eq!(got.bytes(), blob);
+            // TODO: check created_at data? SystemTime is not monotonic so the
+            // test will be flaky.
+            keys.push(key);
+        }
+
+        for (i, key) in keys.into_iter().enumerate() {
+            let got = storage.lookup(&key).unwrap();
+            assert_eq!(got.bytes(), blobs[i]);
+        }
+
+        assert_eq!(storage.len(), blobs.len());
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        let want_data_size = blobs.iter().map(|b| b.len()).sum::<usize>() as u64;
+        assert_eq!(storage.data_size(), data_metadata.len());
+        assert_eq!(storage.data_size(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        let want_index_size = (blobs.len() * size_of::<Entry>()) as u64;
+        assert_eq!(storage.index_size(), index_metadata.len());
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(
+            storage.total_size(),
+            data_metadata.len() + index_metadata.len()
+        );
+        assert_eq!(storage.total_size(), want_index_size + want_data_size,);
     }
 }
