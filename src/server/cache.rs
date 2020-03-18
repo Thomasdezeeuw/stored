@@ -24,7 +24,7 @@ pub struct Cache {
 impl Cache {
     /// Store `value`, returning the key.
     pub fn store(&mut self, value: Value) -> Key {
-        let key = Key::for_value(&*value);
+        let key = Key::for_blob(&*value);
         let msg = Message::Store(key.clone(), value);
         let _ = self.actor_ref.send(msg);
         todo!("Cache::store: get the stored cache value")

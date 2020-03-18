@@ -12,10 +12,10 @@ use std::task::{self, Poll};
 use futures_io::{AsyncRead, AsyncWrite};
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 
-/// The key of a value.
+/// The key of a blob.
 ///
-/// This is always the SHA-512 checksum of the value, which can be calculated
-/// using the [`Key::for_value`] method.
+/// This is always the SHA-512 checksum of the blob, which can be calculated
+/// using the [`Key::for_blob`] method.
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Key {
@@ -46,9 +46,9 @@ impl Key {
         }
     }
 
-    /// Calculate the `Key` for the provided `value`.
-    pub fn for_value<'a>(value: &'a [u8]) -> Key {
-        let result = digest(&SHA512, value);
+    /// Calculate the `Key` for the provided `blob`.
+    pub fn for_blob<'a>(blob: &'a [u8]) -> Key {
+        let result = digest(&SHA512, blob);
         Key::from_bytes(result.as_ref()).to_owned()
     }
 
@@ -60,7 +60,7 @@ impl Key {
     /// Create a `KeyCalculator`.
     ///
     /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
-    /// value, while streaming its contents.
+    /// blob, while streaming its contents.
     ///
     /// It can be used while [`Reading`] or [`Writing`], and even asynchronously
     /// with [`AsyncRead`] or [`AsyncWrite`].
@@ -84,19 +84,19 @@ impl Key {
     /// #
     /// # fn main() -> io::Result<()> {
     /// // Our `Write` implementation.
-    /// let mut streamed_value = Vec::new();
-    /// let mut calculator = Key::calculator(&mut streamed_value);
+    /// let mut streamed_blob = Vec::new();
+    /// let mut calculator = Key::calculator(&mut streamed_blob);
     ///
-    /// // We can now stream the value.
+    /// // We can now stream the blob.
     /// calculator.write(b"Hello")?;
     /// calculator.write_vectored(&mut [IoSlice::new(b" "), IoSlice::new(b"world")])?;
     ///
     /// let key = calculator.finish();
-    /// assert_eq!(key, Key::for_value(b"Hello world"));
+    /// assert_eq!(key, Key::for_blob(b"Hello world"));
     ///
     /// // Now the writer can be used again.
-    /// streamed_value.write(b"!")?;
-    /// assert_eq!(streamed_value, b"Hello world!");
+    /// streamed_blob.write(b"!")?;
+    /// assert_eq!(streamed_blob, b"Hello world!");
     /// # Ok(())
     /// # }
     /// ```
@@ -373,7 +373,7 @@ mod test {
 
     #[test]
     fn formatting() {
-        let key = Key::for_value(b"Hello world");
+        let key = Key::for_blob(b"Hello world");
         let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
                         5f79a942600f9725f58ce1f29c18139bf80b06c0f\
                         ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
@@ -384,7 +384,7 @@ mod test {
 
     #[test]
     fn parsing() {
-        let expected = Key::for_value(b"Hello world");
+        let expected = Key::for_blob(b"Hello world");
         let input = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
                      5f79a942600f9725f58ce1f29c18139bf80b06c0f\
                      ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";

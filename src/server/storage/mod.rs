@@ -167,7 +167,7 @@ impl<'s> Storage<'s> {
 
     /// Add `blob` to the database.
     pub fn add_blob<'b>(&mut self, blob: &'b [u8]) -> io::Result<Key> {
-        let key = Key::for_value(blob);
+        let key = Key::for_blob(blob);
 
         // Can't have double entries.
         if self.blobs.contains_key(&key) {
@@ -209,7 +209,7 @@ impl<'s> Storage<'s> {
 #[derive(Debug)]
 struct Data {
     /// Data file opened for reading and writing in append-only mode (for
-    /// adding new values).
+    /// adding new blobs).
     file: File,
     /// Current length of the file and all `mmap`ed areas.
     length: u64,
@@ -383,8 +383,8 @@ impl Data {
                     self.length += length as u64;
                     // The blob is located in the last `length` bytes.
                     let offset = area.offset as u64 + (area.length - length) as u64;
-                    let value_ptr = area.offset(offset);
-                    return Ok(value_ptr);
+                    let blob_ptr = area.offset(offset);
+                    return Ok(blob_ptr);
                 }
             }
         }
@@ -415,7 +415,7 @@ impl Data {
             (offset, 0)
         } else {
             // Offset is not page aligned, so we mmap the previous page again to
-            // ensure the value can be read from continuous memory.
+            // ensure the blob can be read from continuous memory.
             let aligned_offset = prev_page_aligned(offset as usize) as libc::off_t;
             let offset_alignment_diff = offset - aligned_offset;
             (aligned_offset, offset_alignment_diff as usize)
@@ -441,12 +441,12 @@ impl Data {
             offset,
             length,
         };
-        let value_address = area.offset(offset as u64);
+        let blob_address = area.offset(offset as u64);
         self.areas.push(area);
 
         // Not counting the overlapping length!
         self.length += length as u64;
-        Ok(value_address)
+        Ok(blob_address)
     }
 
     /// Returns the address for the blob at `offset`, with `length`. Or `None`

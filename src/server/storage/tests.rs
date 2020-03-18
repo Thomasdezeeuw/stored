@@ -17,10 +17,10 @@ const DATA: [&[u8]; 2] = [b"Hello world", b"Hello mars"];
 
 // Entries in "001.db" test data.
 fn test_entries() -> [Entry; 2] {
-    // `Key::for_value` isn't const, otherwise this could be a constant.
+    // `Key::for_blob` isn't const, otherwise this could be a constant.
     [
         Entry {
-            key: Key::for_value(DATA[0]),
+            key: Key::for_blob(DATA[0]),
             offset: 0,
             length: DATA[0].len() as u32,
             created: DateTime {
@@ -29,7 +29,7 @@ fn test_entries() -> [Entry; 2] {
             },
         },
         Entry {
-            key: Key::for_value(DATA[1]),
+            key: Key::for_blob(DATA[1]),
             offset: DATA[0].len() as u64,
             length: DATA[1].len() as u32,
             created: DateTime {
@@ -256,11 +256,11 @@ mod data {
             ((0, 10), (0, 12), false),
         ];
 
-        for ((offset, length), (value_offset, value_length), want) in tests.iter().copied() {
+        for ((offset, length), (blob_offset, blob_length), want) in tests.iter().copied() {
             area.offset = offset;
             area.length = length;
 
-            let got = area.in_area(value_offset, value_length);
+            let got = area.in_area(blob_offset, blob_length);
             assert_eq!(got, want);
         }
     }
@@ -312,9 +312,9 @@ mod data {
         assert_eq!(mmap_area.length, DATA.iter().map(|d| d.len()).sum());
 
         for (i, entry) in test_entries().iter().enumerate() {
-            let value_address = data.address_for(entry.offset, entry.length).unwrap();
+            let blob_address = data.address_for(entry.offset, entry.length).unwrap();
             let blob =
-                unsafe { slice::from_raw_parts(value_address.as_ptr(), entry.length as usize) };
+                unsafe { slice::from_raw_parts(blob_address.as_ptr(), entry.length as usize) };
 
             assert_eq!(blob, DATA[i]);
         }
@@ -421,76 +421,73 @@ mod data {
         ];
 
         for (s1, s2, s3) in tests.iter().copied() {
-            let value1 = &DATA1[0..s1];
-            let value2 = &DATA2[0..s2];
-            let value3 = &DATA3[0..s3];
+            let blob1 = &DATA1[0..s1];
+            let blob2 = &DATA2[0..s2];
+            let blob3 = &DATA3[0..s3];
 
             let path = temp_file("add_blob_new_area.data");
             let mut data = Data::open(&path).unwrap();
 
             // Adding a first blob should create a new area.
-            let (offset, address1) = data.add_blob(value1).unwrap();
+            let (offset, address1) = data.add_blob(blob1).unwrap();
             assert_eq!(offset, 0);
-            let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), value1.len()) };
-            assert_eq!(got1, value1);
+            let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), blob1.len()) };
+            assert_eq!(got1, blob1);
 
-            assert_eq!(data.file_length(), value1.len() as u64);
+            assert_eq!(data.file_length(), blob1.len() as u64);
             assert_eq!(data.areas.len(), 1);
             let mmap_area = &data.areas[0];
             assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, value1.len());
+            assert_eq!(mmap_area.length, blob1.len());
 
             // Create an new `mmap`ing so that the area created above can't be
             // extended.
             let dummy_address1 = create_dummy_area_after(&data.areas);
 
             // Adding a second blob should create a new area.
-            let (offset, address2) = data.add_blob(value2).unwrap();
-            assert_eq!(offset, value1.len() as u64);
-            let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), value2.len()) };
-            assert_eq!(got2, value2);
+            let (offset, address2) = data.add_blob(blob2).unwrap();
+            assert_eq!(offset, blob1.len() as u64);
+            let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), blob2.len()) };
+            assert_eq!(got2, blob2);
             // Check that we didn't overwrite our dummy.
             assert_ne!(address2.as_ptr(), dummy_address1 as *mut _);
 
-            assert_eq!(data.file_length(), (value1.len() + value2.len()) as u64);
+            assert_eq!(data.file_length(), (blob1.len() + blob2.len()) as u64);
             assert_eq!(data.areas.len(), 2);
             let mmap_area = &data.areas[0];
             assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, value1.len());
+            assert_eq!(mmap_area.length, blob1.len());
             let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, value1.len() as libc::off_t);
-            assert_eq!(mmap_area.length, value2.len());
+            assert_eq!(mmap_area.offset, blob1.len() as libc::off_t);
+            assert_eq!(mmap_area.length, blob2.len());
 
             let dummy_address2 = create_dummy_area_after(&data.areas);
             // Adding a second blob should create a new area.
-            let (offset, address3) = data.add_blob(value3).unwrap();
-            assert_eq!(offset, (value1.len() + value2.len()) as u64);
-            let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), value3.len()) };
-            assert_eq!(got3, value3);
+            let (offset, address3) = data.add_blob(blob3).unwrap();
+            assert_eq!(offset, (blob1.len() + blob2.len()) as u64);
+            let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), blob3.len()) };
+            assert_eq!(got3, blob3);
             // Check that we didn't overwrite our dummy.
             assert_ne!(address3.as_ptr(), dummy_address2 as *mut _);
 
             assert_eq!(
                 data.file_length(),
-                (value1.len() + value2.len() + value3.len()) as u64
+                (blob1.len() + blob2.len() + blob3.len()) as u64
             );
             assert_eq!(data.areas.len(), 3);
             let mmap_area = &data.areas[0];
             assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, value1.len());
+            assert_eq!(mmap_area.length, blob1.len());
             let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, value1.len() as libc::off_t);
-            assert_eq!(mmap_area.length, value2.len());
+            assert_eq!(mmap_area.offset, blob1.len() as libc::off_t);
+            assert_eq!(mmap_area.length, blob2.len());
             let mmap_area = &data.areas[2];
-            assert_eq!(
-                mmap_area.offset,
-                (value1.len() + value2.len()) as libc::off_t
-            );
-            assert_eq!(mmap_area.length, value3.len());
+            assert_eq!(mmap_area.offset, (blob1.len() + blob2.len()) as libc::off_t);
+            assert_eq!(mmap_area.length, blob3.len());
 
             // All returned addresses must still be valid.
-            assert_eq!(got1, value1);
-            assert_eq!(got2, value2);
+            assert_eq!(got1, blob1);
+            assert_eq!(got2, blob2);
 
             munmap(dummy_address1, DUMMY_LENGTH).unwrap();
             munmap(dummy_address2, DUMMY_LENGTH).unwrap();
