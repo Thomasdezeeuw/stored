@@ -51,6 +51,11 @@ impl Buffer {
         }
     }
 
+    /// Returns the number of unprocessed, read bytes.
+    pub fn len(&self) -> usize {
+        self.data.len() - self.processed
+    }
+
     /// Returns the unprocessed, read bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[self.processed..]
@@ -183,12 +188,14 @@ mod tests {
     fn buffer_simple_read() {
         let mut buf = Buffer::new();
 
+        assert_eq!(buf.len(), 0);
         assert_eq!(buf.as_bytes(), &[]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 
         let mut reader = io::Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
+        assert_eq!(buf.len(), 3);
         assert_eq!(buf.as_bytes(), &[1, 2, 3]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
     }
@@ -200,14 +207,17 @@ mod tests {
         let mut reader = io::Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
+        assert_eq!(buf.len(), 3);
         assert_eq!(buf.as_bytes(), &[1, 2, 3]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
 
         buf.processed(1);
+        assert_eq!(buf.len(), 2);
         assert_eq!(buf.as_bytes(), &[2, 3]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
 
         buf.processed(2);
+        assert_eq!(buf.len(), 0);
         assert_eq!(buf.as_bytes(), &[]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
     }
@@ -222,6 +232,7 @@ mod tests {
         assert_eq!(buf.as_bytes(), &[1, 2, 3]);
 
         buf.reset();
+        assert_eq!(buf.len(), 0);
         assert_eq!(buf.as_bytes(), &[]);
     }
 
@@ -253,11 +264,13 @@ mod tests {
         let mut reader = io::Cursor::new(data.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, data.len());
+        assert_eq!(buf.len(), data.len());
         assert_eq!(buf.as_bytes(), data.as_ref());
         assert_eq!(buf.capacity_left(), 1);
 
         // Should do nothing.
         buf.move_to_start();
+        assert_eq!(buf.len(), data.len());
         assert_eq!(buf.as_bytes(), data.as_ref());
         assert_eq!(buf.capacity_left(), 1);
 
