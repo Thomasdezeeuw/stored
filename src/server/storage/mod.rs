@@ -1,37 +1,76 @@
 //! Module with the `Storage` handle to a database.
-
-// # Design
-//
-// The database is split into two files: the data and an index. Both files are
-// append-only logs*. Adding new blobs to the database is done by 1) appending
-// the blob's byte to the data file, ensuring its fully synced, 2) adding a new
-// entry to the index file, again ensuring its fully synced.
-//
-// * Not really, but pretend like they are for now.
-//
-// ## In case of failures
-//
-// If there is a failure in step 1, for example if the application crashes
-// before the all bytes are written to disk it means that we have bytes in the
-// data file which don't have an entry in the index. But this should be fine.
-// TODO: do some kind of cleanup of unused bytes?
-//
-// In there is a failure is step 2 we need to make a choose: either dropping a
-// (possibly) corrupt entry or trying to restore it.
-//
-// # Validating the database
-//
-// Since all entries hold the key for the blob each blob can validated using the
-// key as checksum. This will point out any corruptions and could help in
-// restoring them. TODO: implement this.
-//
-// ## Append-only log, but not really
-//
-// In an ideal world the data and index files would actually be append-only
-// logs. However we don't live in an ideal world. In this less than ideal world
-// we also need to remove blobs, complying with laws such as GDPR. For this we
-// need to invalidate the entry in the index file and overwrite the bytes in the
-// data file, ensuring they can't be read anymore. TODO: implement this.
+//!
+//! # Design
+//!
+//! The database is split into two files: the data file and the index file. Both
+//! files are append-only logs [^1]. The index file determines what blobs are
+//! actually in the database, this means that even though the bytes might be in
+//! the data file it doesn't mean that those bytes are in the database. The
+//! index file has the final say in what blobs are and aren't in the database.
+//!
+//! [^1]: Not really, but pretend like they are for now.
+//!
+//! ## Adding blobs
+//!
+//! Adding new blobs to the database is done in two phases. First, by appending
+//! the blob's bytes to the data file, ensuring its fully stored on (synced to)
+//! disk. Second, adding a new entry to the index file, again ensuring its fully
+//! synced. Only after those two steps is a blob stored in the database.
+//!
+//! In the code this is done by first calling [`Storage::add_blob`]. This add
+//! the blob's bytes to the datafile and returns a [`AddBlob`] query. This query
+//! can then be committed (by calling [`Storage::commit`]) or aborted (by
+//! calling [`Storage::abort`]). If the query is committed an entry is added to
+//! the index file, ensuring the blob is stored in the database. Only after the
+//! query is commited the blob can be looked up (using [`Storage::lookup`]).
+//! However if the query is aborted, or never used again, no index entry will be
+//! created for the blob and it will thus not be stored in the database. The
+//! bytes stored in the data file for the blob will be left in place.
+//!
+//!
+//! ## Remove blobs
+//!
+//! TODO: document and implement this.
+//!
+//!
+//! ## In case of failures
+//!
+//! Any database storage implementation should be resistant against failures of
+//! various kinds. One assumption this implementation makes is that the
+//! underlying storage is reliable, that is if bytes are written and synced to
+//! disk we expect those bytes stored properly and to be returned (read) as is,
+//! without corruption. File systems implement various methods to avoid and
+//! recover from corruption, for that reason we don't and instead depend on the
+//! file system to take of this for us. Note however that is possible to
+//! validate the database, [see below](#validating-the-database).
+//!
+//! As documentation above storing blobs is a two step process. If there is a
+//! failure in step one, for example if the application crashes before the all
+//! bytes are written to disk, it means that we have bytes in the data file
+//! which don't have an entry in the index file. This is fine, the index file
+//! determines what blobs are in the database, and as there is no entry in the
+//! index that points to these possibly invalid bytes the database is not
+//! corrupted.
+//!
+//! If there is a failure is step two we need to make a choose: either dropping
+//! a (possibly) corrupt entry or trying to restore it. TODO: make and implement
+//! this choose.
+//!
+//! ## Append-only log, but not really
+//!
+//! In an ideal world the data and index files would actually be append-only
+//! logs. However we don't live in an ideal world. In this less than ideal world
+//! we also need to remove blobs, complying with laws such as GDPR. For this
+//! reason we need to invalidate the entry in the index file and overwrite the
+//! bytes in the data file, ensuring they can't be read anymore. TODO: implement
+//! this.
+//!
+//!
+//! # Validating the database
+//!
+//! Since all entries hold the key for the blob each blob can validated using the
+//! key as checksum. This will point out any corruptions and could help in
+//! restoring them. TODO: implement this.
 
 // TODO: add a magic string and version at the start of the index and data
 // files? To ensure we're opening a correct file?
