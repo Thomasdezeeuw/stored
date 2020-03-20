@@ -45,7 +45,7 @@
 //   - MAP_HUGE_1GB
 // - MAP_POPULATE
 
-use std::collections::HashMap;
+use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Write};
 use std::iter::FusedIterator;
@@ -166,42 +166,147 @@ impl<'s> Storage<'s> {
     }
 
     /// Add `blob` to the database.
-    pub fn add_blob<'b>(&mut self, blob: &'b [u8]) -> io::Result<Key> {
+    ///
+    /// Only after the returned [query] is [committed] is the blob stored in the
+    /// database.
+    ///
+    /// # Notes
+    ///
+    /// There is an implicit lifetime between the returned [`AddBlob`] query and
+    /// this `Storage`. The query can only be commit or aborted to this
+    /// `Storage`, the query may however safely outlive `Storage`.
+    ///
+    /// [query]: AddBlob
+    /// [committed]: Storage::commit
+    pub fn add_blob<'b>(&mut self, blob: &'b [u8]) -> AddResult {
         let key = Key::for_blob(blob);
 
         // Can't have double entries.
         if self.blobs.contains_key(&key) {
             debug_assert_eq!(self.lookup(&key).unwrap().bytes(), blob);
-            return Ok(key);
+            return AddResult::AlreadyPresent(key);
         }
 
         // First add the blob to the data file. If something happens the blob
         // will be written (or not), but its not *in* the database as the index
         // defines what is in the database.
-        let (offset, address) = self.data.add_blob(blob)?;
+        match self.data.add_blob(blob) {
+            Ok((offset, address)) => AddResult::Ok(AddBlob {
+                key,
+                offset,
+                length: blob.len() as u32,
+                address,
+            }),
+            Err(err) => AddResult::Err(err),
+        }
+    }
 
-        // Now the data is safely stored (we hope) we can add the blob to the
-        // index.
-        let entry = Entry {
-            key,
-            offset,
-            length: blob.len() as u32,
-            created: DateTime::now(),
-        };
-        self.index.add_entry(&entry)?;
+    /// Commit to `query`.
+    pub fn commit<Q>(&mut self, query: Q) -> io::Result<Q::Return>
+    where
+        Q: Query,
+    {
+        query.commit(self)
+    }
 
-        // Now that the data and index entry are stored we can return the blob
-        // to the user.
-        let blob = Blob {
-            // Safety: `Data` must outlive `blobs`.
-            bytes: unsafe { slice::from_raw_parts(address.as_ptr(), blob.len()) },
-            created: entry.created.into(),
-        };
+    /// Abort `query`.
+    pub fn abort<Q>(&mut self, query: Q) -> io::Result<()>
+    where
+        Q: Query,
+    {
+        query.abort(self)
+    }
+}
 
-        let old = self.blobs.insert(entry.key.clone(), blob);
-        // Checked this at the start as well.
-        assert!(old.is_none());
-        Ok(entry.key)
+/// Result returned by [`Storage::add_blob`].
+pub enum AddResult {
+    /// Blob was successfully stored, but not yet added to the index nor
+    /// database.
+    Ok(AddBlob),
+    /// Blob is already stored.
+    AlreadyPresent(Key),
+    /// I/O error.
+    Err(io::Error),
+}
+
+/// a `Query` is a partially prepared storage operation.
+///
+/// An example is [`AddBlob`] that already has the data of the blob stored, but
+/// the blob itself isn't yet in the database. Only after [committing] will the
+/// blob be stored (and thus accessible).
+///
+/// [committing]: Query::commit
+pub trait Query {
+    /// Type returned after a `Query` is [commited].
+    ///
+    /// [commited]: Storage::commit
+    type Return;
+
+    /// Commit to the query.
+    fn commit(self, storage: &mut Storage) -> io::Result<Self::Return>;
+
+    /// Abort the query.
+    fn abort(self, storage: &mut Storage) -> io::Result<()>;
+}
+
+/// A [`Query`] to [add a blob] to the [`Storage`].
+///
+/// [add a blob]: Storage::add_blob
+pub struct AddBlob {
+    key: Key,
+    offset: u64,
+    length: u32,
+    address: NonNull<u8>,
+}
+
+impl Query for AddBlob {
+    type Return = Key;
+
+    fn commit(self, storage: &mut Storage) -> io::Result<Self::Return> {
+        use hash_map::Entry::*;
+        match storage.blobs.entry(self.key.clone()) {
+            Occupied(_) => {
+                // If the blob has already been added we don't want to modify
+                // it.
+                // TODO: mark the blob bytes as unused and clean them up.
+            }
+            Vacant(entry) => {
+                // The data is already stored so we can add the blob to the
+                // index.
+                let index_entry = Entry {
+                    key: self.key.clone(),
+                    offset: self.offset,
+                    length: self.length,
+                    // TODO: should this be provided so that all stores have the
+                    // same created time?
+                    created: DateTime::now(),
+                };
+                storage.index.add_entry(&index_entry)?;
+
+                // Now that the data and index entry are stored we can insert
+                // the blob into our database.
+                debug_assert_eq!(
+                    storage.data.address_for(self.offset, self.length),
+                    Some(self.address)
+                );
+                let blob = Blob {
+                    // Safety: `Data` must outlive `blobs` in `Storage`.
+                    bytes: unsafe {
+                        slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
+                    },
+                    created: index_entry.created.into(),
+                };
+                entry.insert(blob);
+            }
+        }
+
+        Ok(self.key)
+    }
+
+    fn abort(self, _storage: &mut Storage) -> io::Result<()> {
+        // Since the blob isn't in the index, it also isn't in the database.
+        // TODO: cleanup the unused bytes.
+        Ok(())
     }
 }
 

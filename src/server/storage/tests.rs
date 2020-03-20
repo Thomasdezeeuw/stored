@@ -499,7 +499,10 @@ mod storage {
     use std::fs;
     use std::mem::size_of;
 
-    use super::{temp_dir, test_data_path, test_entries, Blob, Entry, Storage, DATA};
+    use super::{
+        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
+    };
+    use crate::Key;
 
     #[test]
     fn blob_size() {
@@ -531,6 +534,15 @@ mod storage {
         }
     }
 
+    fn unwrap(result: AddResult) -> AddBlob {
+        use AddResult::*;
+        match result {
+            Ok(query) => query,
+            AlreadyPresent(key) => panic!("blob already present: {}", key),
+            Err(err) => panic!("unexpected error: {}", err),
+        }
+    }
+
     #[test]
     fn add_blobs() {
         let path = temp_dir("add_blobs.db");
@@ -545,7 +557,8 @@ mod storage {
 
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
-            let key = storage.add_blob(blob).unwrap();
+            let query = unwrap(storage.add_blob(blob));
+            let key = storage.commit(query).unwrap();
 
             let got = storage.lookup(&key).unwrap();
             assert_eq!(got.bytes(), blob);
@@ -573,5 +586,140 @@ mod storage {
             data_metadata.len() + index_metadata.len()
         );
         assert_eq!(storage.total_size(), want_index_size + want_data_size,);
+    }
+
+    #[test]
+    fn uncommited_blobs() {
+        let path = temp_dir("uncommited_blobs.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.total_size(), 0);
+
+        let blob = DATA[0];
+        let key = Key::for_blob(blob);
+
+        let query = unwrap(storage.add_blob(blob));
+
+        // Blob shouldn't be accessible.
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key).is_none());
+        // But is should be stored.
+        assert_eq!(storage.data_size(), blob.len() as u64);
+
+        // After committing the blob should be accessible.
+        let got_key = storage.commit(query).unwrap();
+        assert_eq!(got_key, key);
+        assert_eq!(storage.lookup(&key).unwrap().bytes(), blob);
+    }
+
+    #[test]
+    fn concurrently_adding_blobs() {
+        let path = temp_dir("concurrently_adding_blobs.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.total_size(), 0);
+
+        let blob1 = DATA[0];
+        let key1 = Key::for_blob(blob1);
+        let blob2 = DATA[1];
+        let key2 = Key::for_blob(blob2);
+
+        let query1 = unwrap(storage.add_blob(blob1));
+
+        // Blob shouldn't be accessible.
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key1).is_none());
+        // But is should be stored.
+        assert_eq!(storage.data_size(), blob1.len() as u64);
+
+        let query2 = unwrap(storage.add_blob(blob2));
+
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key2).is_none());
+        assert_eq!(storage.data_size(), (blob1.len() + blob2.len()) as u64);
+
+        // We should be able to commit in any order.
+        let got_key2 = storage.commit(query2).unwrap();
+        assert_eq!(got_key2, key2);
+        assert_eq!(storage.lookup(&key2).unwrap().bytes(), blob2);
+
+        // After committing the blob should be accessible.
+        let got_key1 = storage.commit(query1).unwrap();
+        assert_eq!(got_key1, key1);
+        assert_eq!(storage.lookup(&key1).unwrap().bytes(), blob1);
+    }
+
+    #[test]
+    fn concurrently_adding_same_blob() {
+        let path = temp_dir("concurrently_adding_same_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.total_size(), 0);
+
+        let blob = DATA[0];
+        let key = Key::for_blob(blob);
+
+        let query1 = unwrap(storage.add_blob(blob));
+        let query2 = unwrap(storage.add_blob(blob));
+
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key).is_none());
+        assert_eq!(storage.data_size(), (blob.len() + blob.len()) as u64);
+
+        // We should be able to commit in any order.
+        let got_key1 = storage.commit(query2).unwrap();
+        assert_eq!(got_key1, key);
+        let got_blob1 = storage.lookup(&key).unwrap();
+        assert_eq!(got_blob1.bytes(), blob);
+
+        let got_key2 = storage.commit(query1).unwrap();
+        assert_eq!(got_key2, key);
+        let got_blob2 = storage.lookup(&key).unwrap();
+        // Blob should not be changed.
+        assert_eq!(got_blob2.bytes(), got_blob1.bytes());
+        assert_eq!(got_blob2.created_at(), got_blob1.created_at());
+
+        // Only a single blob should be in the database, and thus a single
+        // index, but the data should be stored twice (two queries).
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage.data_size(), (blob.len() * 2) as u64);
+        assert_eq!(storage.index_size(), size_of::<Entry>() as u64);
+    }
+
+    #[test]
+    fn aborting_adding_blob() {
+        let path = temp_dir("aborting_adding_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.total_size(), 0);
+
+        let blob = DATA[0];
+        let key = Key::for_blob(blob);
+
+        let query = unwrap(storage.add_blob(blob));
+
+        // Blob shouldn't be accessible.
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key).is_none());
+        // But is should be stored.
+        assert_eq!(storage.data_size(), blob.len() as u64);
+
+        // After committing the blob should be accessible.
+        storage.abort(query).unwrap();
+        assert_eq!(storage.len(), 0);
+        assert!(storage.lookup(&key).is_none());
+        assert_eq!(storage.index_size(), 0);
     }
 }
