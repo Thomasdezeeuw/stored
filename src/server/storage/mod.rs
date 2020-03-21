@@ -428,6 +428,64 @@ impl MmapArea {
         };
         NonNull::new(address as *mut u8).unwrap()
     }
+
+    /// Attempts to grow the `mmap`ed area by `length` bytes. Returns `Ok(None)`
+    /// if the area can't grow (e.g. if the page after this area is already
+    /// being used). Returns `Ok(Some(adress))`, where address is the starting
+    /// address at which the area is grown, if the area was successfully grown.
+    fn try_grow_by(
+        &mut self,
+        length: libc::size_t,
+        fd: libc::c_int,
+    ) -> io::Result<Option<NonNull<u8>>> {
+        let can_grow = if needs_next_page(self.mmap_length, length) {
+            // If we need another page we need to reserve it to ensure that
+            // we're not overwriting a mapping that we don't own.
+            reserve_next_page(&self)?
+        } else {
+            // Can grow inside the same page.
+            true
+        };
+
+        if can_grow {
+            // If we successfully reserved the next page, or we can grow
+            // within the next page, it is safe to overwrite our own mapping
+            // using `MAP_FIXED`.
+            let new_length = self.mmap_length + length;
+
+            let aligned_offset = if is_page_aligned(self.offset as usize) {
+                self.offset
+            } else {
+                prev_page_aligned(self.offset as usize) as libc::off_t
+            };
+            let res = mmap(
+                self.mmap_address.as_ptr(),
+                new_length,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
+                fd,
+                aligned_offset,
+            );
+
+            if let Ok(new_address) = res {
+                // Address and offset should remain unchanged.
+                assert_eq!(
+                    new_address,
+                    self.mmap_address.as_ptr(),
+                    "remapping the mmap area changed the address"
+                );
+                // Update `mmap` and effective length.
+                self.mmap_length = new_length;
+                self.length += length;
+                // The blob is located in the last `length` bytes.
+                let offset = self.offset as u64 + (self.length - length) as u64;
+                let blob_ptr = self.offset(offset);
+                return Ok(Some(blob_ptr));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 impl Data {
@@ -484,52 +542,10 @@ impl Data {
     fn grow_by(&mut self, length: libc::size_t) -> io::Result<NonNull<u8>> {
         // Try to grow the last `mmap`ed area.
         if let Some(area) = self.areas.last_mut() {
-            let can_grow = if needs_next_page(area.mmap_length, length) {
-                // If we need another page we need to reserve it to ensure that
-                // we're not overwriting a mapping that we don't own.
-                reserve_next_page(&area)?
-            } else {
-                // Can grow inside the same page.
-                true
-            };
-
-            if can_grow {
-                // If we successfully reserved the next page, or we can grow
-                // within the next page it is safe to overwrite our own mapping
-                // using `MAP_FIXED`.
-                let new_length = area.mmap_length + length;
-
-                let aligned_offset = if is_page_aligned(area.offset as usize) {
-                    area.offset
-                } else {
-                    prev_page_aligned(area.offset as usize) as libc::off_t
-                };
-                let res = mmap(
-                    area.mmap_address.as_ptr(),
-                    new_length,
-                    libc::PROT_READ,
-                    libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
-                    self.file.as_raw_fd(),
-                    aligned_offset,
-                );
-
-                if let Ok(new_address) = res {
-                    // Address and offset should remain unchanged.
-                    assert_eq!(
-                        new_address,
-                        area.mmap_address.as_ptr(),
-                        "remapping the mmap area changed the address"
-                    );
-                    // Update `mmap` and effective length.
-                    area.mmap_length = new_length;
-                    area.length += length;
-                    // Update total `Data` length .
-                    self.length += length as u64;
-                    // The blob is located in the last `length` bytes.
-                    let offset = area.offset as u64 + (area.length - length) as u64;
-                    let blob_ptr = area.offset(offset);
-                    return Ok(blob_ptr);
-                }
+            if let Some(address) = area.try_grow_by(length, self.file.as_raw_fd())? {
+                // Update total `Data` length .
+                self.length += length as u64;
+                return Ok(address);
             }
         }
 
