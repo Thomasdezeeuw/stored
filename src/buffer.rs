@@ -8,7 +8,7 @@ use std::{io, slice};
 use futures_io::AsyncRead;
 
 /// Size used as initial buffer size.
-const INITIAL_BUF_SIZE: usize = 16 * 1024;
+const INITIAL_BUF_SIZE: usize = 8 * 1024;
 
 /// Minimum size of a buffer passed to calls to read.
 const MIN_BUF_SIZE: usize = 2 * 1024;
@@ -180,6 +180,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{self, Poll};
 
+    use futures_util::io::Cursor;
     use futures_util::task::noop_waker;
 
     use super::{Buffer, INITIAL_BUF_SIZE, MIN_BUF_SIZE, MIN_SIZE_MOVE};
@@ -192,7 +193,7 @@ mod tests {
         assert_eq!(buf.as_bytes(), &[]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 
-        let mut reader = io::Cursor::new([1, 2, 3]);
+        let mut reader = Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
         assert_eq!(buf.len(), 3);
@@ -204,7 +205,7 @@ mod tests {
     fn buffer_processed() {
         let mut buf = Buffer::new();
 
-        let mut reader = io::Cursor::new([1, 2, 3]);
+        let mut reader = Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
         assert_eq!(buf.len(), 3);
@@ -226,7 +227,7 @@ mod tests {
     fn buffer_reset() {
         let mut buf = Buffer::new();
 
-        let mut reader = io::Cursor::new([1, 2, 3]);
+        let mut reader = Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
         assert_eq!(buf.as_bytes(), &[1, 2, 3]);
@@ -248,7 +249,7 @@ mod tests {
     fn marking_processed_beyond_read_range_after_reset() {
         let mut buf = Buffer::new();
 
-        let mut reader = io::Cursor::new([1, 2, 3]);
+        let mut reader = Cursor::new([1, 2, 3]);
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, 3);
 
@@ -261,7 +262,7 @@ mod tests {
         let mut buf = Buffer::new();
 
         let data = [1; INITIAL_BUF_SIZE - 1];
-        let mut reader = io::Cursor::new(data.as_ref());
+        let mut reader = Cursor::new(data.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, data.len());
         assert_eq!(buf.len(), data.len());
@@ -301,7 +302,7 @@ mod tests {
         unsafe { buf.available_bytes() }.copy_from_slice(&zero);
 
         let data1 = [1; INITIAL_BUF_SIZE - MIN_BUF_SIZE];
-        let mut reader = io::Cursor::new(data1.as_ref());
+        let mut reader = Cursor::new(data1.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, data1.len());
         assert_eq!(buf.as_bytes(), data1.as_ref());
@@ -316,7 +317,7 @@ mod tests {
         buf.processed(MIN_BUF_SIZE);
 
         let data2 = [2; 2 * MIN_BUF_SIZE];
-        let mut reader = io::Cursor::new(data2.as_ref());
+        let mut reader = Cursor::new(data2.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
                                               // Buffer should hold the old and new data.
@@ -327,7 +328,7 @@ mod tests {
 
         // Now the data should be moved to the start of the buffer.
         let data3 = [3; 2 * MIN_BUF_SIZE];
-        let mut reader = io::Cursor::new(data3.as_ref());
+        let mut reader = Cursor::new(data3.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
                                               // Buffer should hold the old and new data.
@@ -350,7 +351,7 @@ mod tests {
         // Now we have no capacity left and all bytes are unprocessed, so we
         // need to reallocate.
         let data4 = [4; MIN_BUF_SIZE];
-        let mut reader = io::Cursor::new(data4.as_ref());
+        let mut reader = Cursor::new(data4.as_ref());
         let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
         assert_eq!(bytes_read, data4.len());
         // Buffer should hold the old and new data.
