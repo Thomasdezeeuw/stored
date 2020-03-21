@@ -113,7 +113,7 @@ impl Key {
 pub struct InvalidKeyStr;
 
 impl InvalidKeyStr {
-    const DESC: &'static str = "invalid SHA-512 checksum string";
+    pub(crate) const DESC: &'static str = "invalid SHA-512 checksum string";
 }
 
 impl fmt::Display for InvalidKeyStr {

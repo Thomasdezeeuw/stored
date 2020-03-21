@@ -1,4 +1,4 @@
-#![feature(never_type)]
+#![feature(never_type, bool_to_option)]
 
 pub mod buffer;
 pub mod key;

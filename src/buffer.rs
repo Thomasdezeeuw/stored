@@ -176,7 +176,6 @@ where
 #[cfg(test)]
 mod tests {
     use std::future::Future;
-    use std::io;
     use std::pin::Pin;
     use std::task::{self, Poll};
 
