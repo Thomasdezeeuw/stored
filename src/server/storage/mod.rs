@@ -118,15 +118,6 @@ pub struct Blob {
     lifetime: MmapLifetime,
 }
 
-impl fmt::Debug for Blob {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Blob")
-            .field("bytes", &self.bytes)
-            .field("created", &self.created)
-            .finish()
-    }
-}
-
 impl Blob {
     /// Returns the bytes that make up the `Blob`.
     pub fn bytes<'b>(&'b self) -> &'b [u8] {
@@ -138,6 +129,18 @@ impl Blob {
     /// Returns the time at which the blob was added.
     pub fn created_at(&self) -> SystemTime {
         self.created
+    }
+}
+
+// Safety: the `lifetime` field ensures the `bytes` remains valid.
+unsafe impl Send for Blob {}
+
+impl fmt::Debug for Blob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Blob")
+            .field("bytes", &self.bytes)
+            .field("created", &self.created)
+            .finish()
     }
 }
 
@@ -376,6 +379,9 @@ impl Query for AddBlob {
         Ok(())
     }
 }
+
+// Safety: the `lifetime` field ensures the `address` remains valid.
+unsafe impl Send for AddBlob {}
 
 /// Handle for a data file.
 #[derive(Debug)]
