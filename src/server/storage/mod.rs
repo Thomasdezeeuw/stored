@@ -84,16 +84,19 @@
 //   - MAP_HUGE_1GB
 // - MAP_POPULATE
 
+use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Write};
 use std::iter::FusedIterator;
 use std::mem::{align_of, size_of};
+use std::ops::{Deref, DerefMut};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr::{self, NonNull};
+use std::sync::atomic::{self, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
-use std::{slice, thread};
+use std::{fmt, slice, thread};
 
 use log::error;
 
@@ -103,15 +106,32 @@ use crate::Key;
 mod tests;
 
 /// A Binary Large OBject (BLOB).
-#[derive(Debug, Clone)]
-pub struct Blob<'s> {
-    bytes: &'s [u8],
+#[derive(Clone)]
+pub struct Blob {
+    /// **The lifetime is a lie!** However the `lifetime` field ensures that the
+    /// bytes are alive.
+    bytes: &'static [u8],
+    /// Date at which the `Blob` was created/added.
     created: SystemTime,
+    /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
+    /// `Blob`, as that would invalidate the `bytes` field.
+    lifetime: MmapLifetime,
 }
 
-impl<'s> Blob<'s> {
+impl fmt::Debug for Blob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Blob")
+            .field("bytes", &self.bytes)
+            .field("created", &self.created)
+            .finish()
+    }
+}
+
+impl Blob {
     /// Returns the bytes that make up the `Blob`.
-    pub fn bytes(&self) -> &[u8] {
+    pub fn bytes<'b>(&'b self) -> &'b [u8] {
+        // This is safe because the lifetime `'b` can't outlive the lifetime of
+        // this `Blob`.
         self.bytes
     }
 
@@ -123,7 +143,7 @@ impl<'s> Blob<'s> {
 
 /// Handle to a database.
 #[derive(Debug)]
-pub struct Storage<'s> {
+pub struct Storage {
     index: Index,
     /// All blobs currently in `Index` and `Data`. The lifetime `'s` refers to
     /// the `mmap`ed areas in `Data`.
@@ -133,18 +153,18 @@ pub struct Storage<'s> {
     /// `blobs` must be declared before `data`because it must be dropped before
     /// `data`.
     // TODO: use different hashing algorithm.
-    blobs: HashMap<Key, Blob<'s>>,
+    blobs: HashMap<Key, Blob>,
     /// # Safety
     ///
     /// Must outlive `blobs`, the lifetime `'s` refers to this.
     data: Data,
 }
 
-impl<'s> Storage<'s> {
+impl Storage {
     /// Open a database.
     ///
     /// `path` must be a directory with the `index` and `data` files.
-    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Storage<'s>> {
+    pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Storage> {
         let path = path.as_ref();
 
         // Ensure the directory exists.
@@ -158,7 +178,7 @@ impl<'s> Storage<'s> {
         // Add all blobs currently in the database.
         let mut blobs = HashMap::with_capacity(entries.len());
         blobs.extend(entries.map(|entry| {
-            let address = data
+            let (address, lifetime) = data
                 .address_for(entry.offset, entry.length)
                 // TODO: handle this better. Think should happen. It it possible
                 // that there are more blobs in `Data` then the `Index`
@@ -172,6 +192,7 @@ impl<'s> Storage<'s> {
             let blob = Blob {
                 bytes,
                 created: entry.created.into(),
+                lifetime,
             };
             (entry.key.clone(), blob)
         }));
@@ -200,7 +221,7 @@ impl<'s> Storage<'s> {
     }
 
     /// Returns a reference to the `Blob` corresponding to the key, if stored.
-    pub fn lookup(&self, key: &Key) -> Option<Blob<'s>> {
+    pub fn lookup(&self, key: &Key) -> Option<Blob> {
         self.blobs.get(key).cloned()
     }
 
@@ -217,7 +238,7 @@ impl<'s> Storage<'s> {
     ///
     /// [query]: AddBlob
     /// [committed]: Storage::commit
-    pub fn add_blob<'b>(&mut self, blob: &'b [u8]) -> AddResult {
+    pub fn add_blob(&mut self, blob: &[u8]) -> AddResult {
         let key = Key::for_blob(blob);
 
         // Can't have double entries.
@@ -230,11 +251,12 @@ impl<'s> Storage<'s> {
         // will be written (or not), but its not *in* the database as the index
         // defines what is in the database.
         match self.data.add_blob(blob) {
-            Ok((offset, address)) => AddResult::Ok(AddBlob {
+            Ok((offset, address, lifetime)) => AddResult::Ok(AddBlob {
                 key,
                 offset,
                 length: blob.len() as u32,
                 address,
+                lifetime,
             }),
             Err(err) => AddResult::Err(err),
         }
@@ -296,6 +318,7 @@ pub struct AddBlob {
     offset: u64,
     length: u32,
     address: NonNull<u8>,
+    lifetime: MmapLifetime,
 }
 
 impl Query for AddBlob {
@@ -325,8 +348,12 @@ impl Query for AddBlob {
                 // Now that the data and index entry are stored we can insert
                 // the blob into our database.
                 debug_assert_eq!(
-                    storage.data.address_for(self.offset, self.length),
-                    Some(self.address)
+                    storage
+                        .data
+                        .address_for(self.offset, self.length)
+                        .unwrap()
+                        .0,
+                    self.address
                 );
                 let blob = Blob {
                     // Safety: `Data` must outlive `blobs` in `Storage`.
@@ -334,6 +361,7 @@ impl Query for AddBlob {
                         slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
                     },
                     created: index_entry.created.into(),
+                    lifetime: self.lifetime,
                 };
                 entry.insert(blob);
             }
@@ -359,7 +387,7 @@ struct Data {
     length: u64,
     /// `mmap`ed areas.
     /// See `check` for notes about safety.
-    areas: Vec<MmapArea>,
+    areas: Vec<MmapAreaControl>,
 }
 
 /// The size of a single page, used in probing `mmap`ing memory.
@@ -367,6 +395,110 @@ struct Data {
 // `data::page_size` test in the tests module.
 const PAGE_SIZE: usize = 1 << 12; // 4096.
 const PAGE_BITS: usize = 12;
+
+/// Control structure for a `mmap` area, see [`MmapArea`].
+///
+/// This has mutable access to all field, except for the `ref_count`, of the
+/// `MmapArea` it points to, as only a single `MmapAreaControl` may control the
+/// `MmapArea`. However operations on the `ref_count` must still use atomic
+/// operations, as `MmapLifetime` also has readable access to it.
+struct MmapAreaControl {
+    ptr: NonNull<UnsafeCell<MmapArea>>,
+}
+
+impl MmapAreaControl {
+    /// Create a new `MmapArea`, with a single `MmapAreaControl` pointing to it
+    /// and zero or more `MmapLifetime`.
+    fn new(
+        mmap_address: NonNull<libc::c_void>,
+        mmap_length: libc::size_t,
+        offset: libc::off_t,
+        length: libc::size_t,
+    ) -> MmapAreaControl {
+        let ptr = Box::new(UnsafeCell::new(MmapArea {
+            mmap_address,
+            mmap_length,
+            offset,
+            length,
+            ref_count: AtomicUsize::new(1),
+        }));
+
+        MmapAreaControl {
+            ptr: Box::into_raw_non_null(ptr),
+        }
+    }
+
+    /// Create a new lifetime structure for the `MmapArea`.
+    fn create_lifetime(&self) -> MmapLifetime {
+        // See `Arc::Clone` why relaxed ordering is sufficient here.
+        self.deref().ref_count.fetch_add(1, Ordering::Relaxed);
+        MmapLifetime {
+            ptr: self.ptr.cast(),
+        }
+    }
+}
+
+impl Deref for MmapAreaControl {
+    type Target = MmapArea;
+
+    fn deref(&self) -> &Self::Target {
+        // Safety: see docs of `MmapAreaControl`.
+        unsafe { &*self.ptr.as_ref().get() }
+    }
+}
+
+impl DerefMut for MmapAreaControl {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        // Safety: see docs of `MmapAreaControl`.
+        unsafe { &mut *self.ptr.as_mut().get() }
+    }
+}
+
+impl fmt::Debug for MmapAreaControl {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.deref().fmt(f)
+    }
+}
+
+impl Drop for MmapAreaControl {
+    fn drop(&mut self) {
+        unsafe {
+            // See `Arc::drop` to see why this is safe.
+            if self.deref().ref_count.fetch_sub(1, Ordering::Release) != 1 {
+                return;
+            }
+            atomic::fence(Ordering::Acquire);
+            drop(Box::from_raw(self.ptr.as_ptr()));
+        }
+    }
+}
+
+/// Lifetime reference to ensure `MmapArea` outlives any `Blob`s that point to
+/// them.
+struct MmapLifetime {
+    ptr: NonNull<MmapArea>,
+}
+
+impl Drop for MmapLifetime {
+    fn drop(&mut self) {
+        unsafe {
+            // See `MmapAreaControl`.
+            if self.ptr.as_ref().ref_count.fetch_sub(1, Ordering::Release) != 1 {
+                return;
+            }
+            atomic::fence(Ordering::Acquire);
+            drop(Box::from_raw(self.ptr.as_ptr()));
+        }
+    }
+}
+
+impl Clone for MmapLifetime {
+    fn clone(&self) -> MmapLifetime {
+        // See `Arc::Clone` why relaxed ordering is sufficient here.
+        unsafe { self.ptr.as_ref().ref_count.fetch_add(1, Ordering::Relaxed) };
+        MmapLifetime { ptr: self.ptr }
+    }
+}
 
 /// A `mmap`ed area.
 ///
@@ -390,6 +522,11 @@ struct MmapArea {
     /// `mmap_length` might be larger due to the page alignment requirement for
     /// the offset.
     length: libc::size_t,
+
+    /// Reference count, shared between one `MmapAreaControl` and zero or more
+    /// `MmapLifetime`s in `Blob`s. Only once this is zero this should be
+    /// dropped.
+    ref_count: AtomicUsize,
 }
 
 impl MmapArea {
@@ -520,7 +657,7 @@ impl Data {
     /// Add `blob` at the end of the data log.
     /// Returns the stored blob's offset in the data file and its `mmap`ed
     /// address.
-    fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>)> {
+    fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>, MmapLifetime)> {
         assert!(!blob.is_empty(), "tried to store an empty blob");
         // First add the blob to the file.
         self.file
@@ -529,9 +666,9 @@ impl Data {
 
         // Next grow our `mmap`ed area(s).
         let offset = self.length;
-        let address = self.grow_by(blob.len())?;
+        let (address, lifetime) = self.grow_by(blob.len())?;
         self.check();
-        Ok((offset as u64, address))
+        Ok((offset as u64, address, lifetime))
     }
 
     /// Grows the `mmap`ed data by `length` bytes.
@@ -539,13 +676,13 @@ impl Data {
     /// This either grows the last `mmap`ed area, or allocates a new one.
     /// Returns the starting address at which the area is grown, i.e. where the
     /// blob is mmaped into memory.
-    fn grow_by(&mut self, length: libc::size_t) -> io::Result<NonNull<u8>> {
+    fn grow_by(&mut self, length: libc::size_t) -> io::Result<(NonNull<u8>, MmapLifetime)> {
         // Try to grow the last `mmap`ed area.
         if let Some(area) = self.areas.last_mut() {
             if let Some(address) = area.try_grow_by(length, self.file.as_raw_fd())? {
                 // Update total `Data` length .
                 self.length += length as u64;
-                return Ok(address);
+                return Ok((address, area.create_lifetime()));
             }
         }
 
@@ -560,7 +697,7 @@ impl Data {
     /// Returns the starting address of the added blob. Note that this can
     /// different from the address of the `mmap`ed area (last
     /// `MmapArea.address`), as the blob offset might not be page aligned.
-    fn new_area(&mut self, length: libc::size_t) -> io::Result<NonNull<u8>> {
+    fn new_area(&mut self, length: libc::size_t) -> io::Result<(NonNull<u8>, MmapLifetime)> {
         // Get the file offset from the last `mmap`ed area.
         let offset = self
             .areas
@@ -569,7 +706,7 @@ impl Data {
             .unwrap_or(0);
 
         // Offset must be page aligned. This means we can have overlapping
-        // section in the entire mmaped area, but that is ok.
+        // sections in the entire mmaped area, but that is ok.
         let (aligned_offset, offset_alignment_diff) = if is_page_aligned(offset as usize) {
             // Already page aligned, neat! No overlapping areas.
             (offset, 0)
@@ -595,18 +732,14 @@ impl Data {
 
         // Safety: `mmap` doesn't return a null address.
         let address = NonNull::new(address).unwrap();
-        let area = MmapArea {
-            mmap_address: address,
-            mmap_length: aligned_length,
-            offset,
-            length,
-        };
+        let area = MmapAreaControl::new(address, aligned_length, offset, length);
         let blob_address = area.offset(offset as u64);
+        let lifetime = area.create_lifetime();
         self.areas.push(area);
 
         // Not counting the overlapping length!
         self.length += length as u64;
-        Ok(blob_address)
+        Ok((blob_address, lifetime))
     }
 
     /// Returns the address for the blob at `offset`, with `length`. Or `None`
@@ -615,12 +748,12 @@ impl Data {
     /// # Notes
     ///
     /// The returned address lifetime is tied to the `Data` struct.
-    fn address_for(&self, offset: u64, length: u32) -> Option<NonNull<u8>> {
+    fn address_for(&self, offset: u64, length: u32) -> Option<(NonNull<u8>, MmapLifetime)> {
         // TODO: return slice? What lifetime would that have?
         self.areas
             .iter()
             .find(|area| area.in_area(offset, length))
-            .map(|area| area.offset(offset))
+            .map(|area| (area.offset(offset), area.create_lifetime()))
     }
 
     /// Run all safety checks.
@@ -741,6 +874,7 @@ fn prev_page_aligned(address: usize) -> usize {
 
 impl Drop for MmapArea {
     fn drop(&mut self) {
+        debug_assert!(self.ref_count.load(Ordering::Relaxed) == 0);
         // Safety: both `address` and `length` are used in the call to `mmap`.
         if let Err(err) = munmap(self.mmap_address.as_ptr(), self.mmap_length) {
             // We can't really handle the error properly here so we'll log it

@@ -220,12 +220,13 @@ mod index {
 mod data {
     use std::mem::{size_of, ManuallyDrop};
     use std::ptr::NonNull;
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
     use std::{slice, thread};
 
     use super::{
         is_page_aligned, mmap, munmap, next_page_aligned, temp_file, test_data_path, test_entries,
-        Data, MmapArea, DATA, PAGE_BITS, PAGE_SIZE,
+        Data, MmapArea, MmapAreaControl, DATA, PAGE_BITS, PAGE_SIZE,
     };
 
     #[test]
@@ -242,6 +243,7 @@ mod data {
             mmap_length: 0,
             offset: 0,
             length: 0,
+            ref_count: AtomicUsize::new(1),
         });
 
         let tests: &[((libc::off_t, libc::size_t), (u64, u32), bool)] = &[
@@ -312,7 +314,7 @@ mod data {
         assert_eq!(mmap_area.length, DATA.iter().map(|d| d.len()).sum());
 
         for (i, entry) in test_entries().iter().enumerate() {
-            let blob_address = data.address_for(entry.offset, entry.length).unwrap();
+            let (blob_address, _) = data.address_for(entry.offset, entry.length).unwrap();
             let blob =
                 unsafe { slice::from_raw_parts(blob_address.as_ptr(), entry.length as usize) };
 
@@ -328,7 +330,7 @@ mod data {
         assert_eq!(data.file_length(), 0);
 
         // Adding a first blob should create a new area.
-        let (offset, address1) = data.add_blob(DATA[0]).unwrap();
+        let (offset, address1, _) = data.add_blob(DATA[0]).unwrap();
         assert_eq!(offset, 0);
         let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA[0].len()) };
         assert_eq!(got1, DATA[0]);
@@ -340,7 +342,7 @@ mod data {
         assert_eq!(mmap_area.length, DATA[0].len());
 
         // Adding a second should grow the existing area.
-        let (offset, address2) = data.add_blob(DATA[1]).unwrap();
+        let (offset, address2, _) = data.add_blob(DATA[1]).unwrap();
         // Check area grown.
         assert_eq!(
             unsafe { address1.as_ptr().add(DATA[0].len()) },
@@ -366,7 +368,7 @@ mod data {
     /// Length used in `create_dummy_area_after` to create dummy `mmap` areas.
     const DUMMY_LENGTH: usize = 100;
 
-    fn create_dummy_area_after(areas: &[MmapArea]) -> *mut libc::c_void {
+    fn create_dummy_area_after(areas: &[MmapAreaControl]) -> *mut libc::c_void {
         let area = areas.last().unwrap();
         let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
         let want_dummy_address = if is_page_aligned(end_address) {
@@ -429,7 +431,7 @@ mod data {
             let mut data = Data::open(&path).unwrap();
 
             // Adding a first blob should create a new area.
-            let (offset, address1) = data.add_blob(blob1).unwrap();
+            let (offset, address1, _) = data.add_blob(blob1).unwrap();
             assert_eq!(offset, 0);
             let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), blob1.len()) };
             assert_eq!(got1, blob1);
@@ -445,7 +447,7 @@ mod data {
             let dummy_address1 = create_dummy_area_after(&data.areas);
 
             // Adding a second blob should create a new area.
-            let (offset, address2) = data.add_blob(blob2).unwrap();
+            let (offset, address2, _) = data.add_blob(blob2).unwrap();
             assert_eq!(offset, blob1.len() as u64);
             let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), blob2.len()) };
             assert_eq!(got2, blob2);
@@ -463,7 +465,7 @@ mod data {
 
             let dummy_address2 = create_dummy_area_after(&data.areas);
             // Adding a second blob should create a new area.
-            let (offset, address3) = data.add_blob(blob3).unwrap();
+            let (offset, address3, _) = data.add_blob(blob3).unwrap();
             assert_eq!(offset, (blob1.len() + blob2.len()) as u64);
             let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), blob3.len()) };
             assert_eq!(got3, blob3);
@@ -508,7 +510,7 @@ mod storage {
     fn blob_size() {
         // TODO: SystemTime has a different size on different OSes, this will
         // fail somewhere.
-        assert_eq!(size_of::<Blob>(), 32);
+        assert_eq!(size_of::<Blob>(), 40);
     }
 
     #[test]
@@ -721,5 +723,24 @@ mod storage {
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
         assert_eq!(storage.index_size(), 0);
+    }
+
+    #[test]
+    fn blob_can_outlive_storage() {
+        // `Blob` can outlive `Data`.
+        let path = test_data_path("001.db");
+        let storage = Storage::open(&path).unwrap();
+
+        let entries = test_entries();
+        let entry = &entries[0];
+        let got = storage.lookup(&entry.key).unwrap();
+
+        // After we drop the storage the `Blob` (assigned to `got`) should still
+        // be valid.
+        drop(storage);
+
+        let want = DATA[0];
+        assert_eq!(got.bytes(), want);
+        assert_eq!(got.created_at(), entry.created.into());
     }
 }
