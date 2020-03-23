@@ -1,65 +1,52 @@
-#![feature(never_type)]
-
 use std::io;
+use std::path::{Path, PathBuf};
 
-use heph::{Runtime, RuntimeError, RuntimeRef};
+use heph::net::tcp;
+use heph::rt::options::{ActorOptions, Priority};
+use heph::{NewActor, Runtime, RuntimeError};
 use log::info;
 
-use stored::server::{cache, listener};
-
-use cache::Cache;
+use stored::server::actors::{db, http};
+use stored::server::storage::Storage;
+use stored::server::supervisors::{http_supervisor, DbSupervisor, ServerSupervisor};
 
 fn main() -> Result<(), RuntimeError<io::Error>> {
     heph::log::init();
 
-    let mut runtime = Runtime::new();
+    let mut runtime = Runtime::new().use_all_cores();
 
-    let cache = cache::start(&mut runtime).map_err(RuntimeError::map_type)?;
-    let options = Options { cache };
+    // Start our database actor.
+    // FIXME: replace with proper path.
+    let db_path: Box<Path> = PathBuf::from("./TMP_DB").into_boxed_path();
+    info!("opening database '{}'", db_path.display());
+    let storage = Storage::open(&*db_path)?;
+    let db_supervisor = DbSupervisor::new(db_path);
+    let db_ref = runtime
+        .spawn_sync_actor(db_supervisor, db::actor as fn(_, _) -> _, storage)
+        .map_err(RuntimeError::map_type)?;
+
+    // Setup our HTTP server.
+    // FIXME: replace with proper address.
+    let address = "127.0.0.1:8080".parse().unwrap();
+    let http_actor = (http::actor as fn(_, _, _, _) -> _)
+        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
+    let http_listener = tcp::Server::setup(
+        address,
+        http_supervisor,
+        http_actor,
+        ActorOptions::default(),
+    )?;
+
+    info!("listening on http://{}", address);
 
     runtime
-        .with_setup(move |runtime_ref| setup(runtime_ref, options))
-        //.use_all_cores() // FIXME: need to create listener before setup.
+        .with_setup(move |mut runtime_ref| {
+            // Start our HTTP server.
+            let options = ActorOptions::default().with_priority(Priority::LOW);
+            let server_ref = runtime_ref.try_spawn(ServerSupervisor, http_listener, (), options)?;
+            runtime_ref.receive_signals(server_ref.try_map());
+
+            Ok(())
+        })
         .start()
-        .map_err(|err| err.into())
 }
-
-#[derive(Clone)]
-struct Options {
-    cache: Cache,
-}
-
-fn setup(mut runtime_ref: RuntimeRef, options: Options) -> io::Result<()> {
-    // TODO: read this from a config file or something.
-    let address = "127.0.0.1:1234".parse().unwrap();
-    let listener_options = listener::Options {
-        cache: options.cache,
-        address,
-    };
-
-    listener::setup(&mut runtime_ref, listener_options)?;
-    info!("listening on address: {}", address);
-
-    Ok(())
-}
-
-/*
-// This is needed because the stupid `Termination` trait used the `fmt::Debug`
-// implementation for whatever reason.
-struct DisplayAsDebug<T>(T);
-
-impl<T> From<T> for DisplayAsDebug<T> {
-    fn from(t: T) -> DisplayAsDebug<T> {
-        DisplayAsDebug(t)
-    }
-}
-
-impl<T> fmt::Debug for DisplayAsDebug<T>
-where
-    T: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(&self.0, f)
-    }
-}
-*/
