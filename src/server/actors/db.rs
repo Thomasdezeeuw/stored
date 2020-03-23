@@ -4,6 +4,7 @@ use std::io;
 
 use heph::actor::sync::SyncContext;
 use heph::actor_ref::RpcMessage;
+use log::debug;
 
 use crate::server::storage::{AddBlob, AddResult, Blob, Storage};
 use crate::Key;
@@ -61,11 +62,20 @@ pub enum AddBlobResponse {
 
 /// Actor that handles storage [`Message`]s and applies them to [`Storage`].
 pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<()> {
-    while let Some(msg) = ctx.try_receive_next() {
+    debug!(
+        "storage actor started: data_size={}, index_size={}, total_size={}",
+        storage.data_size(),
+        storage.index_size(),
+        storage.total_size()
+    );
+
+    while let Ok(msg) = ctx.receive_next() {
         match msg {
             Message::AddBlob(RpcMessage { request, response }) => {
+                let blob = request;
+                debug!("adding new blob: size={}", blob.len());
                 use AddResult::*;
-                let result = match storage.add_blob(&request) {
+                let result = match storage.add_blob(&blob) {
                     Ok(query) => AddBlobResponse::Query(query),
                     AlreadyPresent(key) => AddBlobResponse::AlreadyPresent(key),
                     Err(err) => return Result::Err(err),
@@ -79,12 +89,15 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let _ = response.respond(key);
             }
             Message::GetBlob(RpcMessage { request, response }) => {
-                let result = storage.lookup(&request);
+                let key = request;
+                debug!("retrieve blob: key={}", key);
+                let result = storage.lookup(&key);
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(result);
             }
         }
     }
 
+    debug!("storage actor stopping");
     Ok(())
 }
