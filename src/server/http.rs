@@ -1,35 +1,24 @@
 //! Module that parses HTTP/1.1 requests.
 
-// TODO: handle body:
-// https://github.com/hyperium/hyper/blob/0eaf304644a396895a4ce1f0146e596640bb666a/src/proto/h1/role.rs#L72-L243
-
-// Example from FireFox:
-//
-// Host: github.com
-// User-Agent: Mozilla/5.0 (Windows NT 10.0; rv:68.0) Gecko/20100101 Firefox/68.0
-// Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8
-// Accept-Language: en-US,en;q=0.7,nl;q=0.3
-// Accept-Encoding: gzip, deflate, br
-// DNT: 1
-// Connection: keep-alive
-// Upgrade-Insecure-Requests: 1
-// Pragma: no-cache
-// Cache-Control: no-cache
-
 // TODO: add tests.
 
 use std::convert::TryFrom;
+use std::error::Error;
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
+use std::net::Shutdown;
 use std::pin::Pin;
-use std::str;
 use std::task::{self, Poll};
+use std::{fmt, str};
 
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_io::{AsyncRead, AsyncWrite};
+use heph::net::TcpStream;
 use httparse::EMPTY_HEADER;
 
 use crate::key::InvalidKeyStr;
+use crate::server::storage::Blob;
 use crate::{Buffer, Key};
 
 /// Maximum number of headers read from an incoming request.
@@ -54,6 +43,13 @@ impl<IO> Connection<IO> {
             write_buf: Vec::new(),
             io,
         }
+    }
+}
+
+impl Connection<TcpStream> {
+    /// Close the connection.
+    pub fn close(mut self) -> io::Result<()> {
+        self.io.shutdown(Shutdown::Both)
     }
 }
 
@@ -124,13 +120,21 @@ where
 #[derive(Debug, Eq, PartialEq)]
 pub enum Request {
     /// POST request to store a blob, returns the length of the blob.
-    /// Note: the length might be invalid as its user-supplied.
+    ///
+    /// Body is the blob to store, with length the length provided. Note: the
+    /// length might be invalid as its user-supplied (Content-Length header).
     Post(usize),
     /// GET request for the blob with `key`.
+    ///
+    /// No body.
     Get(Key),
     /// HEAD request for the blob with `key`.
+    ///
+    /// No body.
     Head(Key),
     /// DELETE request for the blob with `key`.
+    ///
+    /// No body.
     Delete(Key),
 }
 
@@ -193,6 +197,7 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
 }
 
 /// Error returned by [`ReadRequest`].
+#[derive(Debug)]
 pub enum RequestError {
     /// I/O error.
     Io(io::Error),
@@ -226,37 +231,68 @@ impl From<InvalidKeyStr> for RequestError {
     }
 }
 
+impl fmt::Display for RequestError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use RequestError::*;
+        match self {
+            Io(err) => write!(f, "I/O error: {}", err),
+            Parse(err) => write!(f, "HTTP parsing error: {}", err),
+            InvalidRoute => write!(f, "invalid route"),
+            MissingContentLength => write!(f, "request missing Content-Length header"),
+            InvalidContentLength => write!(f, "request's Content-Length header is invalid"),
+            InvalidKey(err) => write!(f, "key in route is invalid: {}", err),
+        }
+    }
+}
+
+impl Error for RequestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        use RequestError::*;
+        match self {
+            Io(err) => Some(err),
+            Parse(err) => Some(err),
+            InvalidKey(err) => Some(err),
+            InvalidRoute | MissingContentLength | InvalidContentLength => None,
+        }
+    }
+}
+
 impl<IO> Connection<IO>
 where
     IO: AsyncWrite,
 {
     /// Returns a [`Future`] that writes an HTTP/1.1 [`Response`].
-    pub fn write_response(&mut self, response: Response) -> WriteResponse<IO> {
+    pub fn write_response<'a>(&'a mut self, response: &'a Response) -> WriteResponse<'a, IO> {
         self.write_buf.clear();
         response.write_headers(&mut self.write_buf);
-        WriteResponse { io: &mut self.io }
+        // TODO: replace with `write_all_vectored`:
+        // https://github.com/rust-lang/futures-rs/pull/1741.
+        WriteResponse {
+            state: WrittenState::Both(&self.write_buf, response.body()),
+            io: &mut self.io,
+        }
     }
 }
 
 /// HTTP response.
-pub enum Response<'a> {
+pub enum Response {
     /// Blob was stored.
     /// Response to POST.
     ///
     /// 201 Created. No body, Location header set to "/blob/$key".
-    Stored(&'a Key),
+    Stored(Key),
 
     /// Blob found.
     /// Response to GET response.
     ///
     /// 200 Ok. Body is the blob (the passed bytes).
-    Ok(&'a [u8]),
+    Ok(Blob),
 
     /// Blob found.
     /// Response to HEAD response.
     ///
     /// 204 No Content. No body.
-    OkNobody,
+    OkNobody(Blob),
 
     /// Blob deleted.
     /// Response to DELETE.
@@ -271,6 +307,8 @@ pub enum Response<'a> {
     ///
     /// 404 Not found. No body.
     NotFound,
+    /// Same as `NotFound`, but to a HEAD request.
+    NotFoundNoBody,
     /// Too many headers.
     /// Response `RequestError::Parse(httparse::Error::TooManyHeaders)`.
     ///
@@ -297,23 +335,50 @@ pub enum Response<'a> {
     /// Response to all `httparse::Error` errors, except for `TooManyHeaders`.
     ///
     /// 400 Bad Request. Body is the provided error message.
-    BadRequest(&'a str),
+    BadRequest(&'static str),
+
+    /// Server error.
+    /// Response if something unexpected doesn't work.
+    ///
+    /// 500 Internal Server Error. No body.
+    ServerError,
+    /// Same as `ServerError`, but to a HEAD request.
+    ServerErrorNoBody,
 }
 
-impl<'a> Response<'a> {
+fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut Vec<u8>) {
+    static MONTHS: [&'static str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    write!(
+        buf,
+        // <header_name>: <day-name>, <day> <month> <year> <hour>:<minute>:<second> GMT
+        "{}: {}, {:02} {} {:004} {:02}:{:02}:{:02} GMT\r\n",
+        header_name,
+        timestamp.weekday(),
+        timestamp.day(),
+        MONTHS[timestamp.month0() as usize],
+        timestamp.year(),
+        timestamp.hour(),
+        timestamp.minute(),
+        timestamp.second(),
+    )
+    .unwrap()
+}
+
+impl Response {
     /// Write all headers to `buf`, including the last empty line.
     fn write_headers(&self, buf: &mut Vec<u8>) {
         let (status_code, status_msg) = self.status_code();
-        // TODO: use proper date!
-        let date = "Thu, 19 Mar 2020 13:37:07 GMT";
         let content_length = self.body().len();
 
         write!(
             buf,
-            "HTTP/1.1 {} {}\r\nData: {}\r\nServer: stored\r\nContent-Length: {}\r\n",
-            status_code, status_msg, date, content_length,
+            "HTTP/1.1 {} {}\r\nServer: stored\r\nContent-Length: {}\r\n",
+            status_code, status_msg, content_length,
         )
         .unwrap();
+        append_date_header(&Utc::now(), "Date", buf);
 
         use Response::*;
         match self {
@@ -326,15 +391,16 @@ impl<'a> Response<'a> {
                 )
                 .unwrap()
             }
-            Ok(_) | OkNobody => {
-                // TODO: set `Last-Modified` header.
-                todo!("Last-Modified: Tue, 15 Nov 1994 12:45:26 GMT");
+            Ok(blob) | OkNobody(blob) => {
+                let timestamp: DateTime<Utc> = blob.created_at().into();
+                append_date_header(&timestamp, "Last-Modified", buf);
             }
-            InvalidKey | BadRequest(_) => {
-                // The body will be the error message in plain text, UTF-8.
+            Deleted | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
+            | InvalidKey | BadRequest(_) => {
+                // The body will is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
-            _ => (),
+            NotFoundNoBody | ServerError | ServerErrorNoBody => {}
         }
 
         write!(buf, "\r\n").unwrap();
@@ -344,71 +410,83 @@ impl<'a> Response<'a> {
         use Response::*;
         match self {
             Stored(_) => (201, "Created"),
-            Ok(_) | OkNobody => (200, "OK"),
+            Ok(_) | OkNobody(_) => (200, "OK"),
             Deleted => (204, "No Content"),
-            NotFound => (404, "Not Found"),
+            NotFound | NotFoundNoBody => (404, "Not Found"),
             TooManyHeaders => (431, "Request Header Fields Too Large"),
             NoContentLength => (411, "Length Required"),
             TooLargePayload => (413, "Payload Too Large "),
             InvalidKey | BadRequest(_) => (400, "Bad Request"),
+            ServerError | ServerErrorNoBody => (500, "Internal Server Error"),
         }
     }
 
     fn body(&self) -> &[u8] {
         use Response::*;
         match self {
-            Ok(blob) => blob,
-            Stored(_) | OkNobody | Deleted | NotFound | TooManyHeaders | NoContentLength
-            | TooLargePayload => b"",
-            InvalidKey => InvalidKeyStr::DESC.as_bytes(),
+            Stored(_) | Deleted => b"Ok",
+            Ok(blob) => blob.bytes(),
+            OkNobody(_) | NotFoundNoBody | ServerErrorNoBody => b"", // Note: must be empty!
+            NotFound => b"Not found",
+            TooManyHeaders => b"Too many headers",
+            NoContentLength => b"Missing required content length header",
+            TooLargePayload => b"Blob too large",
+            InvalidKey => b"Invalid key",
             BadRequest(msg) => msg.as_bytes(),
+            ServerError => b"Internal server error",
         }
     }
 }
 
+/// [`Future`] to write a [`Response`] to a [`Connection`].
 pub struct WriteResponse<'c, IO> {
+    state: WrittenState<'c>,
     io: &'c mut IO,
+}
+
+/// Status of [`WriteResponse`].
+enum WrittenState<'c> {
+    /// Write the headers and body.
+    Both(&'c [u8], &'c [u8]),
+    /// Write the body.
+    Body(&'c [u8]),
 }
 
 impl<'c, IO> Future for WriteResponse<'c, IO>
 where
     IO: AsyncWrite + Unpin,
 {
-    type Output = Result<Request, RequestError>;
+    type Output = io::Result<()>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        todo!()
-        /*
         loop {
-            if self.buf.len() <= self.too_short {
-                // Don't have enough bytes to read the entire request, so we
-                // need to read some more.
-                let ReadRequest { buf, io, .. } = &mut *self;
-                let mut read_future = buf.read_from(io);
-                if Pin::new(&mut read_future).poll(ctx)?.is_pending() {
-                    // Didn't read any more bytes, try again later.
-                    return Poll::Pending;
-                }
-            }
-
-            let mut headers = [EMPTY_HEADER; MAX_HEADERS];
-            let mut req = httparse::Request::new(&mut headers);
-            match req.parse(self.buf.as_bytes()) {
-                Ok(httparse::Status::Complete(bytes_read)) => {
-                    // NOTE: don't early return here, we **always** need to mark
-                    // the bytes as processed so we don't process them again.
-                    let request = Request::try_from(req);
-                    self.buf.processed(bytes_read);
-                    return Poll::Ready(request);
-                }
-                Ok(httparse::Status::Partial) => {
-                    // Need to read some more bytes.
-                    self.too_short = self.buf.len();
-                    continue;
-                }
-                Err(err) => return Poll::Ready(Err(err.into())),
+            use WrittenState::*;
+            match self.state {
+                Both(headers, body) => match Pin::new(&mut self.io).poll_write(ctx, headers) {
+                    Poll::Ready(Ok(written)) if written >= headers.len() => {
+                        // Written all headers, just the body left.
+                        self.state = WrittenState::Body(body);
+                    }
+                    Poll::Ready(Ok(written)) => {
+                        // Only written part of the headers.
+                        self.state = WrittenState::Both(&headers[written..], body);
+                    }
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                },
+                Body(body) => match Pin::new(&mut self.io).poll_write(ctx, body) {
+                    Poll::Ready(Ok(written)) if written >= body.len() => {
+                        // Written the entire body.
+                        return Poll::Ready(Ok(()));
+                    }
+                    Poll::Ready(Ok(written)) => {
+                        // Only written part of the body.
+                        self.state = WrittenState::Body(&body[written..]);
+                    }
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                    Poll::Pending => return Poll::Pending,
+                },
             }
         }
-        */
     }
 }

@@ -132,9 +132,6 @@ impl Blob {
     }
 }
 
-// Safety: the `lifetime` field ensures the `bytes` remains valid.
-unsafe impl Send for Blob {}
-
 impl fmt::Debug for Blob {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Blob")
@@ -412,6 +409,10 @@ struct MmapAreaControl {
     ptr: NonNull<UnsafeCell<MmapArea>>,
 }
 
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl Send for MmapAreaControl {}
+
 impl MmapAreaControl {
     /// Create a new `MmapArea`, with a single `MmapAreaControl` pointing to it
     /// and zero or more `MmapLifetime`.
@@ -505,6 +506,10 @@ impl Clone for MmapLifetime {
         MmapLifetime { ptr: self.ptr }
     }
 }
+
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl Send for MmapLifetime {}
 
 /// A `mmap`ed area.
 ///
