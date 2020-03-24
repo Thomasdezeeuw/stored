@@ -7,6 +7,7 @@ use std::error::Error;
 use std::future::Future;
 use std::io::{self, Write};
 use std::marker::Unpin;
+use std::mem::replace;
 use std::net::Shutdown;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -64,6 +65,16 @@ where
             buf: &mut self.buf,
             io: &mut self.io,
             too_short: 0,
+        }
+    }
+
+    /// Read a body of `size`.
+    pub fn read_body(&mut self, size: usize) -> ReadBody<IO> {
+        self.buf.reserve_atleast(size);
+        ReadBody {
+            buf: Some(&mut self.buf),
+            io: &mut self.io,
+            want_length: size,
         }
     }
 }
@@ -267,6 +278,55 @@ impl Error for RequestError {
             InvalidKey(err) => Some(err),
             InvalidRoute | MissingContentLength | InvalidContentLength => None,
         }
+    }
+}
+
+/// [`Future`] to read the request's body from a [`Connection`].
+pub struct ReadBody<'c, IO> {
+    buf: Option<&'c mut Buffer>,
+    io: &'c mut IO,
+    want_length: usize,
+}
+
+/// The body of a HTTP request.
+pub struct Body<'c> {
+    buf: &'c mut Buffer,
+}
+
+impl<'c> Body<'c> {
+    /// Replace the current buffer with an empty `Buffer`. Returns the current
+    /// buffer.
+    pub fn take(&mut self) -> Buffer {
+        self.replace(Buffer::empty())
+    }
+
+    /// Replace the current buffer with `buf`. Returns the current buffer.
+    pub fn replace(&mut self, buf: Buffer) -> Buffer {
+        replace(self.buf, buf)
+    }
+}
+
+impl<'c, IO> Future for ReadBody<'c, IO>
+where
+    IO: AsyncRead + Unpin,
+{
+    type Output = io::Result<Body<'c>>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        // TODO: remove the `unwrap`s here.
+        while self.buf.as_ref().unwrap().len() < self.want_length {
+            // Need more bytes.
+            let ReadBody { buf, io, .. } = &mut *self;
+            let mut read_future = buf.as_mut().unwrap().read_from(io);
+            if Pin::new(&mut read_future).poll(ctx)?.is_pending() {
+                // Didn't read any more bytes, try again later.
+                return Poll::Pending;
+            }
+        }
+
+        return Poll::Ready(Ok(Body {
+            buf: self.buf.take().unwrap(),
+        }));
     }
 }
 

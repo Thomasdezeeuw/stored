@@ -32,11 +32,28 @@ pub struct Buffer {
 }
 
 impl Buffer {
-    /// Create an empty `Buffer`.
+    /// Create a empty `Buffer`.
+    pub const fn empty() -> Buffer {
+        Buffer {
+            data: Vec::new(),
+            processed: 0,
+        }
+    }
+
+    /// Create a new `Buffer` with a already allocated memory.
     pub fn new() -> Buffer {
         Buffer {
             data: Vec::with_capacity(INITIAL_BUF_SIZE),
             processed: 0,
+        }
+    }
+
+    /// Reserves an allocation that can read a buffer of at least `length`
+    /// bytes, including the unprocessed bytes already in the buffer.
+    pub fn reserve_atleast(&mut self, length: usize) {
+        self.move_to_start(true);
+        if length > self.data.capacity() {
+            self.data.reserve(length - self.data.capacity());
         }
     }
 
@@ -81,8 +98,11 @@ impl Buffer {
         self.data.capacity() - self.data.len()
     }
 
-    /// Move the read bytes to the start of the buffer.
-    fn move_to_start(&mut self) {
+    /// Move the read bytes to the start of the buffer, if needed.
+    ///
+    /// If `force` is true it always move the buffer to the start, ensuring that
+    /// `processed` is always 0.
+    fn move_to_start(&mut self, force: bool) {
         if self.processed == 0 {
             // No need to do anything.
             return;
@@ -90,7 +110,7 @@ impl Buffer {
             // All data is processed.
             self.data.clear();
             self.processed = 0;
-        } else if self.processed >= MIN_SIZE_MOVE {
+        } else if force || self.processed >= MIN_SIZE_MOVE {
             // Move unread bytes to the start of the buffer.
             drop(self.data.drain(..self.processed));
             self.processed = 0;
@@ -108,7 +128,7 @@ impl Buffer {
     unsafe fn available_bytes(&mut self) -> &mut [u8] {
         // Ensure we have some space to read into.
         if self.capacity_left() < MIN_BUF_SIZE {
-            self.move_to_start();
+            self.move_to_start(false);
 
             // If our buffer is filled with unhandled data we need to allocate
             // some more.
@@ -201,6 +221,30 @@ mod tests {
     }
 
     #[test]
+    fn buffer_reserve_atleast() {
+        let mut buf = Buffer::new();
+
+        let mut reader = Cursor::new([1, 2, 3]);
+        let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
+        assert_eq!(bytes_read, 3);
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+        assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
+
+        // Shouldn't expand the buffer as it already has enough capacity.
+        buf.reserve_atleast(2);
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+        assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
+
+        // This should grow the buffer.
+        buf.reserve_atleast(2 * INITIAL_BUF_SIZE);
+        assert_eq!(buf.len(), 3);
+        assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+        assert_eq!(buf.capacity_left(), 2 * INITIAL_BUF_SIZE - bytes_read);
+    }
+
+    #[test]
     fn buffer_processed() {
         let mut buf = Buffer::new();
 
@@ -269,25 +313,25 @@ mod tests {
         assert_eq!(buf.capacity_left(), 1);
 
         // Should do nothing.
-        buf.move_to_start();
+        buf.move_to_start(false);
         assert_eq!(buf.len(), data.len());
         assert_eq!(buf.as_bytes(), data.as_ref());
         assert_eq!(buf.capacity_left(), 1);
 
         buf.processed(MIN_SIZE_MOVE - 1);
         // Should again do nothing as a move would not be worth it.
-        buf.move_to_start();
+        buf.move_to_start(false);
         assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE - 1..]);
         assert_eq!(buf.capacity_left(), 1);
 
         buf.processed(1);
         // Finally the data should be moved to the start of the buffer.
-        buf.move_to_start();
+        buf.move_to_start(false);
         assert_eq!(buf.as_bytes(), &data[MIN_SIZE_MOVE..]);
         assert_eq!(buf.capacity_left(), MIN_SIZE_MOVE + 1);
 
         buf.processed(buf.as_bytes().len());
-        buf.move_to_start();
+        buf.move_to_start(false);
         assert_eq!(buf.as_bytes(), &[]);
         assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
     }

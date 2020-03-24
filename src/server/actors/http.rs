@@ -14,7 +14,7 @@ use heph::{actor, ActorRef};
 
 use crate::server::http::{Connection, Request, RequestError, Response};
 
-use super::db;
+use super::db::{self, AddBlobResponse};
 
 /// Actor that handles a single TCP `stream`.
 ///
@@ -76,8 +76,50 @@ pub async fn actor(
                 "request to store blob: size={}, address={}",
                 size_hint, address
             );
-            // TODO: implement this.
-            todo!("TODO: Post: size_hint={}", size_hint);
+
+            // TODO: get this from a configuration.
+            const MAX_SIZE: usize = 1024 * 1024; // 1MB.
+            if size_hint <= MAX_SIZE {
+                let mut body = conn.read_body(size_hint).await?;
+                let blob = body.take();
+
+                match db_ref.rpc(&mut ctx, blob) {
+                    Ok(rpc) => match rpc.await {
+                        Ok(AddBlobResponse::Query(query, mut buffer)) => {
+                            buffer.processed(buffer.len());
+                            body.replace(buffer);
+
+                            match db_ref.rpc(&mut ctx, query) {
+                                Ok(rpc) => match rpc.await {
+                                    Ok(key) => Response::Stored(key),
+                                    Err(err) => {
+                                        error!(
+                                            "error waiting for RPC response from database: {}",
+                                            err
+                                        );
+                                        Response::ServerError
+                                    }
+                                },
+                                Err(err) => {
+                                    error!("error making RPC call to database: {}", err);
+                                    Response::ServerError
+                                }
+                            }
+                        }
+                        Ok(AddBlobResponse::AlreadyPresent(key)) => Response::Stored(key),
+                        Err(err) => {
+                            error!("error waiting for RPC response from database: {}", err);
+                            Response::ServerError
+                        }
+                    },
+                    Err(err) => {
+                        error!("error making RPC call to database: {}", err);
+                        Response::ServerError
+                    }
+                }
+            } else {
+                Response::TooLargePayload
+            }
         }
         Request::Get(key) => {
             info!("request for blob: key={}, address={}", key, address);

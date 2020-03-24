@@ -7,7 +7,7 @@ use heph::actor_ref::RpcMessage;
 use log::debug;
 
 use crate::server::storage::{AddBlob, AddResult, Blob, Storage};
-use crate::Key;
+use crate::{Buffer, Key};
 
 /// Message type send to the storage [`actor`].
 pub enum Message {
@@ -17,7 +17,7 @@ pub enum Message {
     ///
     /// Responds with  a query to commit to adding the blob, or the key of the
     /// blob if the blob is already in the database.
-    AddBlob(RpcMessage<Box<[u8]>, AddBlobResponse>),
+    AddBlob(RpcMessage<Buffer, AddBlobResponse>),
 
     /// Commit to a blob being added.
     ///
@@ -34,8 +34,8 @@ pub enum Message {
     GetBlob(RpcMessage<Key, Option<Blob>>),
 }
 
-impl From<RpcMessage<Box<[u8]>, AddBlobResponse>> for Message {
-    fn from(msg: RpcMessage<Box<[u8]>, AddBlobResponse>) -> Message {
+impl From<RpcMessage<Buffer, AddBlobResponse>> for Message {
+    fn from(msg: RpcMessage<Buffer, AddBlobResponse>) -> Message {
         Message::AddBlob(msg)
     }
 }
@@ -54,8 +54,9 @@ impl From<RpcMessage<Key, Option<Blob>>> for Message {
 
 /// Response to [`Message::AddBlob`].
 pub enum AddBlobResponse {
-    /// Query to commit to adding a blob.
-    Query(AddBlob),
+    /// Query to commit to adding a blob. And the original, unchanged `Buffer`
+    /// in `Message::AddBlob`.
+    Query(AddBlob, Buffer),
     /// The blob is already stored.
     AlreadyPresent(Key),
 }
@@ -75,8 +76,8 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let blob = request;
                 debug!("adding new blob: size={}", blob.len());
                 use AddResult::*;
-                let result = match storage.add_blob(&blob) {
-                    Ok(query) => AddBlobResponse::Query(query),
+                let result = match storage.add_blob(&blob.as_bytes()) {
+                    Ok(query) => AddBlobResponse::Query(query, blob),
                     AlreadyPresent(key) => AddBlobResponse::AlreadyPresent(key),
                     Err(err) => return Result::Err(err),
                 };
