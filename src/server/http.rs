@@ -138,6 +138,19 @@ pub enum Request {
     Delete(Key),
 }
 
+impl Request {
+    /// Returns the HTTP method for the request.
+    pub fn method(&self) -> &'static str {
+        use Request::*;
+        match self {
+            Post(_) => "POST",
+            Get(_) => "GET",
+            Head(_) => "HEAD",
+            Delete(_) => "DELETE",
+        }
+    }
+}
+
 impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
     type Error = RequestError;
 
@@ -406,7 +419,7 @@ impl Response {
         write!(buf, "\r\n").unwrap();
     }
 
-    fn status_code(&self) -> (u16, &'static str) {
+    pub fn status_code(&self) -> (u16, &'static str) {
         use Response::*;
         match self {
             Stored(_) => (201, "Created"),

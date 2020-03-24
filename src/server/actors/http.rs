@@ -4,9 +4,11 @@
 
 use std::io;
 use std::net::SocketAddr;
+use std::time::Instant;
 
 use log::{debug, error, info, warn};
 
+use heph::log::request;
 use heph::net::TcpStream;
 use heph::{actor, ActorRef};
 
@@ -23,6 +25,7 @@ pub async fn actor(
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
 ) -> io::Result<()> {
+    let start = Instant::now();
     debug!("accepted connection: address={}", address);
     let mut conn = Connection::new(stream);
 
@@ -56,10 +59,17 @@ pub async fn actor(
             // Write the error response and close the connection. We don't want
             // to support pipelining here because we haven't read the body.
             conn.write_response(&response).await?;
+            request!(
+                "processed invalid request: status_code={}, address={}, elapsed={:?}",
+                response.status_code().0,
+                address,
+                start.elapsed()
+            );
             return conn.close();
         }
     };
 
+    let method = request.method();
     let response = match request {
         Request::Post(size_hint) => {
             info!(
@@ -119,5 +129,13 @@ pub async fn actor(
     };
 
     conn.write_response(&response).await?;
+    // TODO: add HTTP request path.
+    request!(
+        "processed request: method={} status_code={}, address={}, elapsed={:?}",
+        method,
+        response.status_code().0,
+        address,
+        start.elapsed()
+    );
     conn.close()
 }
