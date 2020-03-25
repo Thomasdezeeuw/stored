@@ -34,12 +34,14 @@ pub struct Proc {
 
 impl Drop for Proc {
     fn drop(&mut self) {
-        // We lock first to create a queue of tests that is done. After we got
-        // the lock we'll check if we're the last test, the lock holds another
-        // arc-ed reference to the child process, and take the last copy if this
-        // is the case.
+        // We `lock` first to create a queue of tests that is done. After we got
+        // the lock we'll check if we're the last test. If we did this without
+        // holding the lock two tests currently ending could both determine
+        // there not the last test and never stop the process.
         let mut child = self.lock.lock().unwrap();
         if Arc::strong_count(&self.child) == 2 {
+            // Take the (second to) last arc pointer to the process. Which means
+            // that if we get dropped the process is stopped.
             child.take();
         }
     }
@@ -152,7 +154,7 @@ pub mod http {
     use std::str::{self, FromStr};
 
     use chrono::{Datelike, Timelike, Utc};
-    use http::header::{HeaderName, DATE, SERVER};
+    use http::header::{HeaderMap, HeaderName, DATE, SERVER};
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
 
@@ -165,6 +167,9 @@ pub mod http {
 
         pub const NOT_FOUND: &[u8] = b"Not found";
         pub const NOT_FOUND_LEN: &str = "9";
+
+        pub const INVALID_KEY: &[u8] = b"Invalid key";
+        pub const INVALID_KEY_LEN: &str = "11";
     }
 
     pub mod header {
@@ -275,7 +280,12 @@ pub mod http {
                 }
             }
         }
-        assert_eq!(response.headers().len(), want_headers.len() + 2);
+        assert_eq!(
+            response.headers().len(),
+            want_headers.len() + 2,
+            "Missing headers: {:?}",
+            missing_headers(response.headers(), want_headers)
+        );
         let got_body: &[u8] = &*response.body();
         assert_eq!(
             got_body,
@@ -284,6 +294,19 @@ pub mod http {
             str::from_utf8(got_body),
             str::from_utf8(want_body)
         );
+    }
+
+    /// Returns header names in `want` but not in `got`.
+    fn missing_headers<'a>(got: &HeaderMap, want: &'a [(HeaderName, &str)]) -> Vec<&'a HeaderName> {
+        want.iter()
+            .filter_map(|(name, _)| {
+                if !got.iter().any(|(n, _)| n == name) {
+                    Some(name)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     /// Current time in correct "Date" header format.

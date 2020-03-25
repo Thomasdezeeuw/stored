@@ -160,18 +160,29 @@ impl Request {
             Delete(_) => "DELETE",
         }
     }
+
+    /// Returns `true` if this is a HEAD request.
+    pub fn is_head(&self) -> bool {
+        use Request::*;
+        match self {
+            Head(_) => true,
+            _ => false,
+        }
+    }
 }
 
 impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
     type Error = RequestError;
 
+    /// Returns an `(err, bool)` in case of an error, where the bool is `true`
+    /// if it was a HEAD request.
     fn try_from(req: httparse::Request<'_, '_>) -> Result<Self, Self::Error> {
         // Path prefix to post/get/head/delete a blob.
         const BLOB_PATH_PREFIX: &str = "/blob/";
         // Required content length header for post requests.
         const CONTENT_LENGTH: &str = "Content-Length";
 
-        match (req.method, req.path) {
+        let res: Result<Self, RequestErrorKind> = match (req.method, req.path) {
             (Some("POST"), Some("/blob")) | (Some("POST"), Some("/blob/")) => {
                 let text_length = req
                     .headers
@@ -180,15 +191,15 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
 
                 if let Some(text_length) = text_length {
                     str::from_utf8(text_length)
-                        .map_err(|_err| RequestError::InvalidContentLength)
+                        .map_err(|_err| RequestErrorKind::InvalidContentLength)
                         .and_then(|str_length| {
                             str_length
                                 .parse()
-                                .map_err(|_err| RequestError::InvalidContentLength)
+                                .map_err(|_err| RequestErrorKind::InvalidContentLength)
                         })
                         .map(|length| Request::Post(length))
                 } else {
-                    Err(RequestError::MissingContentLength)
+                    Err(RequestErrorKind::MissingContentLength)
                 }
             }
             // TODO: DRY the next three routes.
@@ -215,23 +226,87 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
             }
             // After parsing a request `method` and `path` should always be
             // some, so we're left with an invalid route, aka 404.
-            (Some("HEAD"), _) => Err(RequestError::InvalidRouteNoBody),
-            _ => Err(RequestError::InvalidRoute),
-        }
+            _ => Err(RequestErrorKind::InvalidRoute),
+        };
+
+        res.map_err(|kind| RequestError {
+            is_head: req.method == Some("HEAD"),
+            kind,
+        })
     }
 }
 
 /// Error returned by [`ReadRequest`].
 #[derive(Debug)]
-pub enum RequestError {
+pub struct RequestError {
+    is_head: bool,
+    kind: RequestErrorKind,
+}
+
+impl RequestError {
+    /// Returns `true` if the request was a HEAD request (and thus shouldn't
+    /// return a body).
+    ///
+    /// # Notes
+    ///
+    /// In case of an I/O error ([`RequestErrorKind::IO`]) or parsing error
+    /// ([`RequestErrorKind::Parse`]) this will likely always return `false`,
+    /// even if the request was a HEAD request.
+    pub const fn is_head(&self) -> bool {
+        self.is_head
+    }
+
+    /// Returns the kind of error.
+    pub fn kind(self) -> RequestErrorKind {
+        self.kind
+    }
+}
+
+impl From<io::Error> for RequestError {
+    fn from(err: io::Error) -> RequestError {
+        RequestError {
+            is_head: false,
+            kind: RequestErrorKind::Io(err),
+        }
+    }
+}
+
+impl From<httparse::Error> for RequestError {
+    fn from(err: httparse::Error) -> RequestError {
+        RequestError {
+            is_head: false,
+            kind: RequestErrorKind::Parse(err),
+        }
+    }
+}
+
+impl fmt::Display for RequestError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl Error for RequestError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        use RequestErrorKind::*;
+        match &self.kind {
+            Io(err) => Some(err),
+            Parse(err) => Some(err),
+            InvalidKey(err) => Some(err),
+            InvalidRoute | MissingContentLength | InvalidContentLength => None,
+        }
+    }
+}
+
+/// Kind of request error.
+#[derive(Debug)]
+pub enum RequestErrorKind {
     /// I/O error.
     Io(io::Error),
     /// Error parsing the HTTP response.
     Parse(httparse::Error),
     /// Invalid method/path combination.
     InvalidRoute,
-    /// Same as `InvalidRoute` but for a HEAD request.
-    InvalidRouteNoBody,
     /// Post request is missing the content length header.
     MissingContentLength,
     /// Post request has an invalid content length header.
@@ -240,46 +315,22 @@ pub enum RequestError {
     InvalidKey(InvalidKeyStr),
 }
 
-impl From<io::Error> for RequestError {
-    fn from(err: io::Error) -> RequestError {
-        RequestError::Io(err)
+impl From<InvalidKeyStr> for RequestErrorKind {
+    fn from(err: InvalidKeyStr) -> RequestErrorKind {
+        RequestErrorKind::InvalidKey(err)
     }
 }
 
-impl From<httparse::Error> for RequestError {
-    fn from(err: httparse::Error) -> RequestError {
-        RequestError::Parse(err)
-    }
-}
-
-impl From<InvalidKeyStr> for RequestError {
-    fn from(err: InvalidKeyStr) -> RequestError {
-        RequestError::InvalidKey(err)
-    }
-}
-
-impl fmt::Display for RequestError {
+impl fmt::Display for RequestErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use RequestError::*;
+        use RequestErrorKind::*;
         match self {
             Io(err) => write!(f, "I/O error: {}", err),
             Parse(err) => write!(f, "HTTP parsing error: {}", err),
-            InvalidRoute | InvalidRouteNoBody => write!(f, "invalid route"),
+            InvalidRoute => write!(f, "invalid route"),
             MissingContentLength => write!(f, "request missing Content-Length header"),
             InvalidContentLength => write!(f, "request's Content-Length header is invalid"),
             InvalidKey(err) => write!(f, "key in route is invalid: {}", err),
-        }
-    }
-}
-
-impl Error for RequestError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        use RequestError::*;
-        match self {
-            Io(err) => Some(err),
-            Parse(err) => Some(err),
-            InvalidKey(err) => Some(err),
-            InvalidRoute | InvalidRouteNoBody | MissingContentLength | InvalidContentLength => None,
         }
     }
 }
@@ -351,7 +402,14 @@ where
 }
 
 /// HTTP response.
-pub enum Response {
+pub struct Response {
+    /// Request was a HEAD request.
+    is_head: bool,
+    kind: ResponseKind,
+}
+
+/// HTTP response kind.
+pub enum ResponseKind {
     /// Blob was stored.
     /// Response to POST.
     ///
@@ -363,12 +421,6 @@ pub enum Response {
     ///
     /// 200 Ok. Body is the blob (the passed bytes).
     Ok(Blob),
-
-    /// Blob found.
-    /// Response to HEAD response.
-    ///
-    /// 204 No Content. No body.
-    OkNobody(Blob),
 
     /// Blob deleted.
     /// Response to DELETE.
@@ -383,8 +435,6 @@ pub enum Response {
     ///
     /// 404 Not found. No body.
     NotFound,
-    /// Same as `NotFound`, but to a HEAD request.
-    NotFoundNoBody,
     /// Too many headers.
     /// Response `RequestError::Parse(httparse::Error::TooManyHeaders)`.
     ///
@@ -418,8 +468,6 @@ pub enum Response {
     ///
     /// 500 Internal Server Error. No body.
     ServerError,
-    /// Same as `ServerError`, but to a HEAD request.
-    ServerErrorNoBody,
 }
 
 fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut Vec<u8>) {
@@ -443,6 +491,39 @@ fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut Ve
 }
 
 impl Response {
+    /// Returns a new `Response`.
+    pub const fn new(is_head: bool, kind: ResponseKind) -> Response {
+        Response { is_head, kind }
+    }
+
+    /// Returns the correct `Response` for a `RequestError`, returns an
+    /// [`io::Error`] if the request error kind is I/O
+    /// ([`RequestErrorKind::IO`])
+    pub fn for_error(req_err: RequestError) -> io::Result<Response> {
+        let is_head = req_err.is_head;
+        use RequestErrorKind::*;
+        let kind = match req_err.kind {
+            Io(err) => return Err(err),
+            // HTTP parsing errors.
+            Parse(httparse::Error::HeaderName) => ResponseKind::BadRequest("invalid header name"),
+            Parse(httparse::Error::HeaderValue) => ResponseKind::BadRequest("invalid header value"),
+            Parse(httparse::Error::NewLine)
+            | Parse(httparse::Error::Status)
+            | Parse(httparse::Error::Token)
+            | Parse(httparse::Error::Version) => {
+                ResponseKind::BadRequest("invalid HTTP request format")
+            }
+            Parse(httparse::Error::TooManyHeaders) => ResponseKind::TooManyHeaders,
+            // 404 Not found.
+            InvalidRoute => ResponseKind::NotFound,
+            // Always need a Content-Length header for `Post` requests.
+            MissingContentLength | InvalidContentLength => ResponseKind::NoContentLength,
+            // Invalid key format in "/blob/$key" path.
+            InvalidKey(_err) => ResponseKind::InvalidKey,
+        };
+        Ok(Response { is_head, kind })
+    }
+
     /// Write all headers to `buf`, including the last empty line.
     fn write_headers(&self, buf: &mut Vec<u8>) {
         let (status_code, status_msg) = self.status_code();
@@ -456,8 +537,8 @@ impl Response {
         .unwrap();
         append_date_header(&Utc::now(), "Date", buf);
 
-        use Response::*;
-        match self {
+        use ResponseKind::*;
+        match &self.kind {
             Stored(key) => {
                 // Binary content and set the location of the blob.
                 write!(
@@ -467,42 +548,55 @@ impl Response {
                 )
                 .unwrap()
             }
-            Ok(blob) | OkNobody(blob) => {
+            Ok(blob) => {
                 let timestamp: DateTime<Utc> = blob.created_at().into();
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
-            Deleted | NotFound | NotFoundNoBody | TooManyHeaders | NoContentLength
-            | TooLargePayload | InvalidKey | BadRequest(_) => {
+            Deleted | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
+            | InvalidKey | BadRequest(_) => {
                 // The body will is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
-            ServerError | ServerErrorNoBody => {}
+            ServerError => {}
         }
 
         write!(buf, "\r\n").unwrap();
     }
 
+    /// Returns the status code and reason.
     pub fn status_code(&self) -> (u16, &'static str) {
-        use Response::*;
-        match self {
+        use ResponseKind::*;
+        match &self.kind {
             Stored(_) => (201, "Created"),
-            Ok(_) | OkNobody(_) => (200, "OK"),
+            Ok(_) => (200, "OK"),
             Deleted => (204, "No Content"),
-            NotFound | NotFoundNoBody => (404, "Not Found"),
+            NotFound => (404, "Not Found"),
             TooManyHeaders => (431, "Request Header Fields Too Large"),
             NoContentLength => (411, "Length Required"),
             TooLargePayload => (413, "Payload Too Large "),
             InvalidKey | BadRequest(_) => (400, "Bad Request"),
-            ServerError | ServerErrorNoBody => (500, "Internal Server Error"),
+            ServerError => (500, "Internal Server Error"),
         }
     }
 
+    /// Returns the body for the response.
+    ///
+    /// For HEAD requests this will always be empty.
     fn body(&self) -> &[u8] {
-        use Response::*;
-        match self {
+        if self.is_head {
+            // Responses to HEAD request MUST NOT have a body.
+            b""
+        } else {
+            self.body_force()
+        }
+    }
+
+    /// Always returns the body for the response, ignoring the head request.
+    fn body_force(&self) -> &[u8] {
+        use ResponseKind::*;
+        match &self.kind {
             Stored(_) | Deleted => b"Ok",
             Ok(blob) => blob.bytes(),
-            OkNobody(_) | NotFoundNoBody | ServerErrorNoBody => b"", // Note: must be empty!
             NotFound => b"Not found",
             TooManyHeaders => b"Too many headers",
             NoContentLength => b"Missing required content length header",
@@ -520,13 +614,7 @@ impl Response {
     /// This is not the same as `body().len()`, as that will be 0 for bodies
     /// responding to HEAD requests, this will return the correct length.
     fn len(&self) -> usize {
-        use Response::*;
-        match self {
-            OkNobody(blob) => blob.bytes().len(),
-            NotFoundNoBody => NotFound.len(),
-            ServerErrorNoBody => ServerError.len(),
-            other => other.body().len(),
-        }
+        self.body_force().len()
     }
 }
 
