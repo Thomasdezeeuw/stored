@@ -215,6 +215,7 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
             }
             // After parsing a request `method` and `path` should always be
             // some, so we're left with an invalid route, aka 404.
+            (Some("HEAD"), _) => Err(RequestError::InvalidRouteNoBody),
             _ => Err(RequestError::InvalidRoute),
         }
     }
@@ -229,6 +230,8 @@ pub enum RequestError {
     Parse(httparse::Error),
     /// Invalid method/path combination.
     InvalidRoute,
+    /// Same as `InvalidRoute` but for a HEAD request.
+    InvalidRouteNoBody,
     /// Post request is missing the content length header.
     MissingContentLength,
     /// Post request has an invalid content length header.
@@ -261,7 +264,7 @@ impl fmt::Display for RequestError {
         match self {
             Io(err) => write!(f, "I/O error: {}", err),
             Parse(err) => write!(f, "HTTP parsing error: {}", err),
-            InvalidRoute => write!(f, "invalid route"),
+            InvalidRoute | InvalidRouteNoBody => write!(f, "invalid route"),
             MissingContentLength => write!(f, "request missing Content-Length header"),
             InvalidContentLength => write!(f, "request's Content-Length header is invalid"),
             InvalidKey(err) => write!(f, "key in route is invalid: {}", err),
@@ -276,7 +279,7 @@ impl Error for RequestError {
             Io(err) => Some(err),
             Parse(err) => Some(err),
             InvalidKey(err) => Some(err),
-            InvalidRoute | MissingContentLength | InvalidContentLength => None,
+            InvalidRoute | InvalidRouteNoBody | MissingContentLength | InvalidContentLength => None,
         }
     }
 }
@@ -443,7 +446,7 @@ impl Response {
     /// Write all headers to `buf`, including the last empty line.
     fn write_headers(&self, buf: &mut Vec<u8>) {
         let (status_code, status_msg) = self.status_code();
-        let content_length = self.body().len();
+        let content_length = self.len();
 
         write!(
             buf,
@@ -468,12 +471,12 @@ impl Response {
                 let timestamp: DateTime<Utc> = blob.created_at().into();
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
-            Deleted | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
-            | InvalidKey | BadRequest(_) => {
+            Deleted | NotFound | NotFoundNoBody | TooManyHeaders | NoContentLength
+            | TooLargePayload | InvalidKey | BadRequest(_) => {
                 // The body will is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
-            NotFoundNoBody | ServerError | ServerErrorNoBody => {}
+            ServerError | ServerErrorNoBody => {}
         }
 
         write!(buf, "\r\n").unwrap();
@@ -507,6 +510,22 @@ impl Response {
             InvalidKey => b"Invalid key",
             BadRequest(msg) => msg.as_bytes(),
             ServerError => b"Internal server error",
+        }
+    }
+
+    /// Returns the Content-Length.
+    ///
+    /// # Notes
+    ///
+    /// This is not the same as `body().len()`, as that will be 0 for bodies
+    /// responding to HEAD requests, this will return the correct length.
+    fn len(&self) -> usize {
+        use Response::*;
+        match self {
+            OkNobody(blob) => blob.bytes().len(),
+            NotFoundNoBody => NotFound.len(),
+            ServerErrorNoBody => ServerError.len(),
+            other => other.body().len(),
         }
     }
 }

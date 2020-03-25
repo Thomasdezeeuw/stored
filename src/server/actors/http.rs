@@ -50,6 +50,7 @@ pub async fn actor(
                 Parse(httparse::Error::TooManyHeaders) => Response::TooManyHeaders,
                 // 404 Not found.
                 InvalidRoute => Response::NotFound,
+                InvalidRouteNoBody => Response::NotFoundNoBody,
                 // Always need a Content-Length header for `Post` requests.
                 MissingContentLength | InvalidContentLength => Response::NoContentLength,
                 // Invalid key format in "/blob/$key" path.
