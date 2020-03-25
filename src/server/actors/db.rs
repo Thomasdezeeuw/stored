@@ -13,11 +13,17 @@ use crate::{Buffer, Key};
 pub enum Message {
     /// Add a blob to the database.
     ///
-    /// Request are the bytes that make up the blob.
+    /// Request is the `Buffer`, of which `length` (usize) are used bytes, that
+    /// makes up the blob.
     ///
     /// Responds with  a query to commit to adding the blob, or the key of the
     /// blob if the blob is already in the database.
-    AddBlob(RpcMessage<Buffer, AddBlobResponse>),
+    ///
+    /// # Panics
+    ///
+    /// This will panic if the `length` is larger then the bytes in the
+    /// `Buffer`.
+    AddBlob(RpcMessage<(Buffer, usize), AddBlobResponse>),
 
     /// Commit to a blob being added.
     ///
@@ -34,8 +40,8 @@ pub enum Message {
     GetBlob(RpcMessage<Key, Option<Blob>>),
 }
 
-impl From<RpcMessage<Buffer, AddBlobResponse>> for Message {
-    fn from(msg: RpcMessage<Buffer, AddBlobResponse>) -> Message {
+impl From<RpcMessage<(Buffer, usize), AddBlobResponse>> for Message {
+    fn from(msg: RpcMessage<(Buffer, usize), AddBlobResponse>) -> Message {
         Message::AddBlob(msg)
     }
 }
@@ -73,10 +79,10 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
     while let Ok(msg) = ctx.receive_next() {
         match msg {
             Message::AddBlob(RpcMessage { request, response }) => {
-                let blob = request;
-                debug!("adding new blob: size={}", blob.len());
+                let (blob, length) = request;
+                debug!("adding new blob: size={}", length);
                 use AddResult::*;
-                let result = match storage.add_blob(&blob.as_bytes()) {
+                let result = match storage.add_blob(&blob.as_bytes()[..length]) {
                     Ok(query) => AddBlobResponse::Query(query, blob),
                     AlreadyPresent(key) => AddBlobResponse::AlreadyPresent(key),
                     Err(err) => return Result::Err(err),

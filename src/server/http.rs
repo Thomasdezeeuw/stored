@@ -180,14 +180,13 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
         // Path prefix to post/get/head/delete a blob.
         const BLOB_PATH_PREFIX: &str = "/blob/";
         // Required content length header for post requests.
-        const CONTENT_LENGTH: &str = "Content-Length";
+        const CONTENT_LENGTH: &str = "content-length";
 
         let res: Result<Self, RequestErrorKind> = match (req.method, req.path) {
             (Some("POST"), Some("/blob")) | (Some("POST"), Some("/blob/")) => {
-                let text_length = req
-                    .headers
-                    .iter()
-                    .find_map(|header| (header.name == CONTENT_LENGTH).then_some(header.value));
+                let text_length = req.headers.iter().find_map(|header| {
+                    (header.name.to_lowercase() == CONTENT_LENGTH).then_some(header.value)
+                });
 
                 if let Some(text_length) = text_length {
                     str::from_utf8(text_length)
@@ -372,9 +371,12 @@ where
             // Need more bytes.
             let ReadBody { buf, io, .. } = &mut *self;
             let mut read_future = buf.as_mut().unwrap().read_from(io);
-            if Pin::new(&mut read_future).poll(ctx)?.is_pending() {
+            match Pin::new(&mut read_future).poll(ctx)? {
+                // Read all bytes.
+                Poll::Ready(0) => break,
+                Poll::Ready(_) => continue,
                 // Didn't read any more bytes, try again later.
-                return Poll::Pending;
+                Poll::Pending => return Poll::Pending,
             }
         }
 
@@ -540,10 +542,10 @@ impl Response {
         use ResponseKind::*;
         match &self.kind {
             Stored(key) => {
-                // Binary content and set the location of the blob.
+                // Set the Location header to point to the blob.
                 write!(
                     buf,
-                    "Content-Type: application/octet-stream\r\nLocation: /blob/{}\r\n",
+                    "Content-Type: text/plain; charset=utf-8\r\nLocation: /blob/{}\r\n",
                     key
                 )
                 .unwrap()
@@ -573,7 +575,7 @@ impl Response {
             NotFound => (404, "Not Found"),
             TooManyHeaders => (431, "Request Header Fields Too Large"),
             NoContentLength => (411, "Length Required"),
-            TooLargePayload => (413, "Payload Too Large "),
+            TooLargePayload => (413, "Payload Too Large"),
             InvalidKey | BadRequest(_) => (400, "Bad Request"),
             ServerError => (500, "Internal Server Error"),
         }
@@ -587,23 +589,7 @@ impl Response {
             // Responses to HEAD request MUST NOT have a body.
             b""
         } else {
-            self.body_force()
-        }
-    }
-
-    /// Always returns the body for the response, ignoring the head request.
-    fn body_force(&self) -> &[u8] {
-        use ResponseKind::*;
-        match &self.kind {
-            Stored(_) | Deleted => b"Ok",
-            Ok(blob) => blob.bytes(),
-            NotFound => b"Not found",
-            TooManyHeaders => b"Too many headers",
-            NoContentLength => b"Missing required content length header",
-            TooLargePayload => b"Blob too large",
-            InvalidKey => b"Invalid key",
-            BadRequest(msg) => msg.as_bytes(),
-            ServerError => b"Internal server error",
+            self.kind.body()
         }
     }
 
@@ -614,7 +600,25 @@ impl Response {
     /// This is not the same as `body().len()`, as that will be 0 for bodies
     /// responding to HEAD requests, this will return the correct length.
     fn len(&self) -> usize {
-        self.body_force().len()
+        self.kind.body().len()
+    }
+}
+
+impl ResponseKind {
+    /// Returns the body for the response.
+    fn body(&self) -> &[u8] {
+        use ResponseKind::*;
+        match &self {
+            Stored(_) | Deleted => b"",
+            Ok(blob) => blob.bytes(),
+            NotFound => b"Not found",
+            TooManyHeaders => b"Too many headers",
+            NoContentLength => b"Missing required content length header",
+            TooLargePayload => b"Blob too large",
+            InvalidKey => b"Invalid key",
+            BadRequest(msg) => msg.as_bytes(),
+            ServerError => b"Internal server error",
+        }
     }
 }
 

@@ -59,43 +59,51 @@ pub async fn actor(
             // TODO: get this from a configuration.
             const MAX_SIZE: usize = 1024 * 1024; // 1MB.
             if size_hint <= MAX_SIZE {
+                // TODO: put a timeout on reading this and response with a 408:
+                // https://tools.ietf.org/html/rfc7231#section-6.5.7.
                 let mut body = conn.read_body(size_hint).await?;
                 let blob = body.take();
 
-                match db_ref.rpc(&mut ctx, blob) {
-                    Ok(rpc) => match rpc.await {
-                        Ok(AddBlobResponse::Query(query, mut buffer)) => {
-                            buffer.processed(buffer.len());
-                            body.replace(buffer);
+                if blob.is_empty() {
+                    Response::new(false, ResponseKind::BadRequest("Can't store empty blob"))
+                } else if blob.len() < size_hint {
+                    Response::new(false, ResponseKind::BadRequest("Incomplete blob"))
+                } else {
+                    match db_ref.rpc(&mut ctx, (blob, size_hint)) {
+                        Ok(rpc) => match rpc.await {
+                            Ok(AddBlobResponse::Query(query, mut buffer)) => {
+                                buffer.processed(size_hint);
+                                body.replace(buffer);
 
-                            match db_ref.rpc(&mut ctx, query) {
-                                Ok(rpc) => match rpc.await {
-                                    Ok(key) => Response::new(false, ResponseKind::Stored(key)),
+                                match db_ref.rpc(&mut ctx, query) {
+                                    Ok(rpc) => match rpc.await {
+                                        Ok(key) => Response::new(false, ResponseKind::Stored(key)),
+                                        Err(err) => {
+                                            error!(
+                                                "error waiting for RPC response from database: {}",
+                                                err
+                                            );
+                                            Response::new(false, ResponseKind::ServerError)
+                                        }
+                                    },
                                     Err(err) => {
-                                        error!(
-                                            "error waiting for RPC response from database: {}",
-                                            err
-                                        );
+                                        error!("error making RPC call to database: {}", err);
                                         Response::new(false, ResponseKind::ServerError)
                                     }
-                                },
-                                Err(err) => {
-                                    error!("error making RPC call to database: {}", err);
-                                    Response::new(false, ResponseKind::ServerError)
                                 }
                             }
-                        }
-                        Ok(AddBlobResponse::AlreadyPresent(key)) => {
-                            Response::new(false, ResponseKind::Stored(key))
-                        }
+                            Ok(AddBlobResponse::AlreadyPresent(key)) => {
+                                Response::new(false, ResponseKind::Stored(key))
+                            }
+                            Err(err) => {
+                                error!("error waiting for RPC response from database: {}", err);
+                                Response::new(false, ResponseKind::ServerError)
+                            }
+                        },
                         Err(err) => {
-                            error!("error waiting for RPC response from database: {}", err);
+                            error!("error making RPC call to database: {}", err);
                             Response::new(false, ResponseKind::ServerError)
                         }
-                    },
-                    Err(err) => {
-                        error!("error making RPC call to database: {}", err);
-                        Response::new(false, ResponseKind::ServerError)
                     }
                 }
             } else {

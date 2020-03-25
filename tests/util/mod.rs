@@ -170,6 +170,15 @@ pub mod http {
 
         pub const INVALID_KEY: &[u8] = b"Invalid key";
         pub const INVALID_KEY_LEN: &str = "11";
+
+        pub const LENGTH_REQUIRED: &[u8] = b"Missing required content length header";
+        pub const LENGTH_REQUIRED_LEN: &str = "38";
+
+        pub const PAYLOAD_TOO_LARGE: &[u8] = b"Blob too large";
+        pub const PAYLOAD_TOO_LARGE_LEN: &str = "14";
+
+        pub const INCOMPLETE: &[u8] = b"Incomplete blob";
+        pub const INCOMPLETE_LEN: &str = "14";
     }
 
     pub mod header {
@@ -183,14 +192,20 @@ pub mod http {
         method: &'static str,
         path: &'static str,
         port: u16,
+        headers: &[(HeaderName, &'static str)],
         body: &[u8],
     ) -> io::Result<Response<Vec<u8>>> {
-        let req = Request::builder()
+        let mut req = Request::builder()
             .method(method)
             .uri(Uri::from_static(path))
-            .version(Version::HTTP_11)
-            .body(body)
-            .unwrap();
+            .version(Version::HTTP_11);
+
+        let req_headers = req.headers_mut().unwrap();
+        for (name, value) in headers {
+            req_headers.insert(name, HeaderValue::from_static(value));
+        }
+
+        let req = req.body(body).unwrap();
 
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let address = SocketAddr::new(ip, port);
@@ -268,7 +283,7 @@ pub mod http {
                 name => {
                     let want = want_headers.iter().find(|want| name == want.0);
                     if let Some(want) = want {
-                        assert_eq!(value, want.1);
+                        assert_eq!(value, want.1, "Different '{}' header", name);
                     } else {
                         panic!(
                             "unexpected header: \"{}\" = {:?}, not in: {:?}",
@@ -310,7 +325,7 @@ pub mod http {
     }
 
     /// Current time in correct "Date" header format.
-    fn date_header() -> String {
+    pub fn date_header() -> String {
         let timestamp = Utc::now();
         let mut buf = Vec::with_capacity(30);
         static MONTHS: [&'static str; 12] = [

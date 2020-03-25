@@ -73,6 +73,11 @@ impl Buffer {
         self.data.len() - self.processed
     }
 
+    /// Returns `true` if there are no unprocessed, read bytes.
+    pub fn is_empty(&self) -> bool {
+        self.data.len() == self.processed
+    }
+
     /// Returns the unprocessed, read bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[self.processed..]

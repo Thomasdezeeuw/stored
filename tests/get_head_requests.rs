@@ -14,7 +14,7 @@ use util::{Proc, ProcLock};
 
 const DB_PORT: u16 = 9001;
 const DB_PATH: &'static str = "tests/data/001.db";
-const FILTER: LevelFilter = LevelFilter::Off;
+const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
 fn start_stored() -> Proc {
@@ -24,24 +24,24 @@ fn start_stored() -> Proc {
     util::start_stored(DB_PORT, DB_PATH, &PROC, FILTER)
 }
 
-/// Make a GET request and check the response.
+/// Make a GET and HEAD request and check the response.
 macro_rules! request {
     (
         // Request path and body.
-        $path: expr, $req_body: expr,
+        $path: expr, $body: expr,
         // The wanted status, body and headers in the response.
-        expected: $status: expr, $body: expr,
-        $($name: ident => $want: expr),*,
+        expected: $want_status: expr, $want_body: expr,
+        $($header_name: ident => $header_value: expr),*,
     ) => {{
         let _p = start_stored();
 
-        let response = request("GET", $path, DB_PORT, $req_body).unwrap();
-        assert_response(response, $status, &[ $( ($name, $want),)* ], $body);
+        let response = request("GET", $path, DB_PORT, &[], $body).unwrap();
+        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], $want_body);
 
         // HEAD must always be the same as the response to a GET request, but
         // must return an empty body.
-        let response = request("HEAD", $path, DB_PORT, $req_body).unwrap();
-        assert_response(response, $status, &[ $( ($name, $want),)* ], body::EMPTY);
+        let response = request("HEAD", $path, DB_PORT, &[], $body).unwrap();
+        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], body::EMPTY);
     }};
 }
 
