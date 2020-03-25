@@ -69,7 +69,6 @@ fn store_hello_world() {
         CONTENT_LENGTH => "11";
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        CONTENT_TYPE => header::PLAIN_TEXT,
         LOCATION => url,
     );
 
@@ -94,7 +93,6 @@ fn store_hello_mars_twice() {
         CONTENT_LENGTH => blob_len;
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        CONTENT_TYPE => header::PLAIN_TEXT,
         LOCATION => url,
     );
 
@@ -112,7 +110,6 @@ fn store_hello_mars_twice() {
         CONTENT_LENGTH => blob_len;
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        CONTENT_TYPE => header::PLAIN_TEXT,
         LOCATION => url,
     );
 
@@ -196,7 +193,6 @@ fn body_larger_than_content_length() {
         CONTENT_LENGTH => "100";
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        CONTENT_TYPE => header::PLAIN_TEXT,
         LOCATION => url,
     );
 

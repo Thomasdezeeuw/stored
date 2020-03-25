@@ -543,23 +543,18 @@ impl Response {
         match &self.kind {
             Stored(key) => {
                 // Set the Location header to point to the blob.
-                write!(
-                    buf,
-                    "Content-Type: text/plain; charset=utf-8\r\nLocation: /blob/{}\r\n",
-                    key
-                )
-                .unwrap()
+                write!(buf, "Location: /blob/{}\r\n", key).unwrap()
             }
             Ok(blob) => {
                 let timestamp: DateTime<Utc> = blob.created_at().into();
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
-            Deleted | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
-            | InvalidKey | BadRequest(_) => {
+            NotFound | TooManyHeaders | NoContentLength | TooLargePayload | InvalidKey
+            | BadRequest(_) => {
                 // The body will is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
-            ServerError => {}
+            Deleted | ServerError => {}
         }
 
         write!(buf, "\r\n").unwrap();
