@@ -3,6 +3,5 @@
 pub mod actors;
 pub mod cache;
 pub mod http;
-pub mod listener;
 pub mod storage;
 pub mod supervisors;

@@ -248,7 +248,7 @@ impl RequestError {
     ///
     /// # Notes
     ///
-    /// In case of an I/O error ([`RequestErrorKind::IO`]) or parsing error
+    /// In case of an I/O error ([`RequestErrorKind::Io`]) or parsing error
     /// ([`RequestErrorKind::Parse`]) this will likely always return `false`,
     /// even if the request was a HEAD request.
     pub const fn is_head(&self) -> bool {
@@ -500,7 +500,7 @@ impl Response {
 
     /// Returns the correct `Response` for a `RequestError`, returns an
     /// [`io::Error`] if the request error kind is I/O
-    /// ([`RequestErrorKind::IO`])
+    /// ([`RequestErrorKind::Io`])
     pub fn for_error(req_err: RequestError) -> io::Result<Response> {
         let is_head = req_err.is_head;
         use RequestErrorKind::*;
