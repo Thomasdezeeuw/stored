@@ -1,5 +1,6 @@
-use std::io;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::{env, io};
 
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
@@ -15,9 +16,17 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
 
     let mut runtime = Runtime::new().use_all_cores();
 
+    // TODO: get this from a configuration file.
+    let port: u16 = env::var("PORT")
+        .map(|e| e.parse::<u16>().expect("invalid PORT env var"))
+        .unwrap_or(8080);
+    let address = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let db_path: Box<Path> = env::var("DB_PATH")
+        .map(|e| e.into())
+        .unwrap_or_else(|_| PathBuf::from("./TMP_DB"))
+        .into_boxed_path();
+
     // Start our database actor.
-    // FIXME: replace with proper path.
-    let db_path: Box<Path> = PathBuf::from("./TMP_DB").into_boxed_path();
     info!("opening database '{}'", db_path.display());
     let storage = Storage::open(&*db_path)?;
     let db_supervisor = DbSupervisor::new(db_path);
@@ -26,8 +35,7 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         .map_err(RuntimeError::map_type)?;
 
     // Setup our HTTP server.
-    // FIXME: replace with proper address.
-    let address = "127.0.0.1:8080".parse().unwrap();
+    info!("listening on http://{}", address);
     let http_actor = (http::actor as fn(_, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
     let http_listener = tcp::Server::setup(
@@ -36,8 +44,6 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         http_actor,
         ActorOptions::default(),
     )?;
-
-    info!("listening on http://{}", address);
 
     runtime
         .with_setup(move |mut runtime_ref| {
