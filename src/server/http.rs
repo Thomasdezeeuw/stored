@@ -1,6 +1,8 @@
 //! Module that parses HTTP/1.1 requests.
 
 // TODO: add tests.
+//
+// TODO: Add `Connection: close` on error responses.
 
 use std::convert::TryFrom;
 use std::error::Error;
@@ -20,7 +22,7 @@ use httparse::EMPTY_HEADER;
 
 use crate::key::InvalidKeyStr;
 use crate::server::storage::Blob;
-use crate::{Buffer, Key};
+use crate::{Buffer, Key, WriteBuffer};
 
 /// Maximum number of headers read from an incoming request.
 pub const MAX_HEADERS: usize = 16;
@@ -32,7 +34,6 @@ pub const MAX_HEADERS: usize = 16;
 /// The `IO` is not buffered.
 pub struct Connection<IO> {
     buf: Buffer,
-    write_buf: Vec<u8>,
     io: IO,
 }
 
@@ -41,7 +42,6 @@ impl<IO> Connection<IO> {
     pub fn new(io: IO) -> Connection<IO> {
         Connection {
             buf: Buffer::new(),
-            write_buf: Vec::new(),
             io,
         }
     }
@@ -95,15 +95,23 @@ where
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
         loop {
-            if self.buf.len() <= self.too_short {
-                // Don't have enough bytes to read the entire request, so we
-                // need to read some more.
-                let ReadRequest { buf, io, .. } = &mut *self;
-                let mut read_future = buf.read_from(io);
-                if Pin::new(&mut read_future).poll(ctx)?.is_pending() {
-                    // Didn't read any more bytes, try again later.
-                    return Poll::Pending;
+            // self.buf.len() <= self.too_short
+            // At the start we don't have enough bytes to read the entire
+            // request, so we need to read some more.
+            let ReadRequest { buf, io, .. } = &mut *self;
+            let mut read_future = buf.read_from(io);
+            match Pin::new(&mut read_future).poll(ctx)? {
+                // Read all bytes, but don't have a complete HTTP request yet.
+                Poll::Ready(0) => {
+                    let err = RequestError {
+                        is_head: false, // Don't know...
+                        kind: RequestErrorKind::Incomplete,
+                    };
+                    return Poll::Ready(Err(err));
                 }
+                Poll::Ready(_) => (),
+                // Didn't read any more bytes, try again later.
+                Poll::Pending => return Poll::Pending,
             }
 
             let mut headers = [EMPTY_HEADER; MAX_HEADERS];
@@ -292,7 +300,7 @@ impl Error for RequestError {
             Io(err) => Some(err),
             Parse(err) => Some(err),
             InvalidKey(err) => Some(err),
-            InvalidRoute | MissingContentLength | InvalidContentLength => None,
+            Incomplete | InvalidRoute | MissingContentLength | InvalidContentLength => None,
         }
     }
 }
@@ -304,6 +312,8 @@ pub enum RequestErrorKind {
     Io(io::Error),
     /// Error parsing the HTTP response.
     Parse(httparse::Error),
+    /// Retrieve an incomplete HTTP request.
+    Incomplete,
     /// Invalid method/path combination.
     InvalidRoute,
     /// Post request is missing the content length header.
@@ -326,6 +336,7 @@ impl fmt::Display for RequestErrorKind {
         match self {
             Io(err) => write!(f, "I/O error: {}", err),
             Parse(err) => write!(f, "HTTP parsing error: {}", err),
+            Incomplete => write!(f, "incomplete HTTP request"),
             InvalidRoute => write!(f, "invalid route"),
             MissingContentLength => write!(f, "request missing Content-Length header"),
             InvalidContentLength => write!(f, "request's Content-Length header is invalid"),
@@ -392,12 +403,13 @@ where
 {
     /// Returns a [`Future`] that writes an HTTP/1.1 [`Response`].
     pub fn write_response<'a>(&'a mut self, response: &'a Response) -> WriteResponse<'a, IO> {
-        self.write_buf.clear();
-        response.write_headers(&mut self.write_buf);
+        let mut write_buf = self.buf.write_buf();
+        write_buf.reserve_atleast(Response::MAX_HEADERS_SIZE);
+        response.write_headers(&mut write_buf);
         // TODO: replace with `write_all_vectored`:
         // https://github.com/rust-lang/futures-rs/pull/1741.
         WriteResponse {
-            state: WrittenState::Both(&self.write_buf, response.body()),
+            state: WrittenState::Both(write_buf, response.body()),
             io: &mut self.io,
         }
     }
@@ -472,7 +484,7 @@ pub enum ResponseKind {
     ServerError,
 }
 
-fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut Vec<u8>) {
+fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut WriteBuffer) {
     static MONTHS: [&'static str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -515,6 +527,7 @@ impl Response {
             | Parse(httparse::Error::Version) => {
                 ResponseKind::BadRequest("invalid HTTP request format")
             }
+            Incomplete => ResponseKind::BadRequest("incomplete HTTP request"),
             Parse(httparse::Error::TooManyHeaders) => ResponseKind::TooManyHeaders,
             // 404 Not found.
             InvalidRoute => ResponseKind::NotFound,
@@ -526,8 +539,17 @@ impl Response {
         Ok(Response { is_head, kind })
     }
 
+    /// Maximum size of `write_headers`.
+    const MAX_HEADERS_SIZE: usize =
+        // Status line, +31 for the longest reason (`TooManyHeaders`).
+        15 + 31 +
+        // Server and Content-Length (+39 max. length as text), Date headers.
+        16 + 18 + 39 + 37 +
+        // Extra headers: Location header (the longest).
+        149;
+
     /// Write all headers to `buf`, including the last empty line.
-    fn write_headers(&self, buf: &mut Vec<u8>) {
+    fn write_headers(&self, buf: &mut WriteBuffer) {
         let (status_code, status_msg) = self.status_code();
         let content_length = self.len();
 
@@ -626,7 +648,7 @@ pub struct WriteResponse<'c, IO> {
 /// Status of [`WriteResponse`].
 enum WrittenState<'c> {
     /// Write the headers and body.
-    Both(&'c [u8], &'c [u8]),
+    Both(WriteBuffer<'c>, &'c [u8]),
     /// Write the body.
     Body(&'c [u8]),
 }
@@ -637,30 +659,32 @@ where
 {
     type Output = io::Result<()>;
 
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let mut this = Pin::into_inner(self);
         loop {
+            let WriteResponse { state, io } = &mut this;
             use WrittenState::*;
-            match self.state {
-                Both(headers, body) => match Pin::new(&mut self.io).poll_write(ctx, headers) {
-                    Poll::Ready(Ok(written)) if written >= headers.len() => {
-                        // Written all headers, just the body left.
-                        self.state = WrittenState::Body(body);
-                    }
-                    Poll::Ready(Ok(written)) => {
+            match state {
+                Both(headers, body) => {
+                    match Pin::new(io).poll_write(ctx, headers.as_bytes()) {
+                        Poll::Ready(Ok(written)) if written >= headers.len() => {
+                            // Written all headers, just the body left.
+                            *state = WrittenState::Body(body);
+                        }
                         // Only written part of the headers.
-                        self.state = WrittenState::Both(&headers[written..], body);
+                        Poll::Ready(Ok(written)) => headers.processed(written),
+                        Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                        Poll::Pending => return Poll::Pending,
                     }
-                    Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                    Poll::Pending => return Poll::Pending,
-                },
-                Body(body) => match Pin::new(&mut self.io).poll_write(ctx, body) {
+                }
+                Body(body) => match Pin::new(io).poll_write(ctx, body) {
                     Poll::Ready(Ok(written)) if written >= body.len() => {
                         // Written the entire body.
                         return Poll::Ready(Ok(()));
                     }
                     Poll::Ready(Ok(written)) => {
                         // Only written part of the body.
-                        self.state = WrittenState::Body(&body[written..]);
+                        *state = WrittenState::Body(&body[written..]);
                     }
                     Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                     Poll::Pending => return Poll::Pending,

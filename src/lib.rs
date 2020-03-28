@@ -6,5 +6,5 @@ pub mod parse;
 pub mod serialise;
 pub mod server;
 
-pub use buffer::Buffer;
+pub use buffer::{Buffer, WriteBuffer};
 pub use key::Key;
