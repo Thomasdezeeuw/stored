@@ -154,7 +154,7 @@ pub mod http {
     use std::str::{self, FromStr};
 
     use chrono::{Datelike, Timelike, Utc};
-    use http::header::{HeaderMap, HeaderName, DATE, SERVER};
+    use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
 
@@ -301,7 +301,28 @@ pub mod http {
             "Missing headers: {:?}",
             missing_headers(response.headers(), want_headers)
         );
+        let got_content_length = response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .expect("missing 'Content-Length' header");
+        let got_content_length: usize = got_content_length.to_str().unwrap().parse().unwrap();
+        if got_content_length == 0 {
+            // No body -> no content type.
+            assert!(response.headers().get(CONTENT_TYPE).is_none());
+        }
         let got_body: &[u8] = &*response.body();
+        if !want_body.is_empty() {
+            // HEAD request expect an empty body, but with headers for a GET
+            // request, thus the Content-Length will be >= 0, with an empty body.
+            assert_eq!(
+                got_content_length,
+                got_body.len(),
+                "'Content-Length' header and actual body length differ. Got body: {:?}, expected: {:?}. Content-Length: {}",
+                str::from_utf8(got_body),
+                str::from_utf8(want_body),
+                got_content_length
+            );
+        }
         assert_eq!(
             got_body,
             want_body,
