@@ -130,6 +130,7 @@ fn index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -142,6 +143,7 @@ fn not_found() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -154,6 +156,7 @@ fn no_content_length() {
         expected: StatusCode::LENGTH_REQUIRED, body::LENGTH_REQUIRED,
         CONTENT_LENGTH => body::LENGTH_REQUIRED_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -166,6 +169,7 @@ fn invalid_content_length_text() {
         expected: StatusCode::LENGTH_REQUIRED, body::LENGTH_REQUIRED,
         CONTENT_LENGTH => body::LENGTH_REQUIRED_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -180,6 +184,7 @@ fn content_length_too_large() {
         expected: StatusCode::PAYLOAD_TOO_LARGE, body::PAYLOAD_TOO_LARGE,
         CONTENT_LENGTH => body::PAYLOAD_TOO_LARGE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -230,7 +235,7 @@ fn body_smaller_than_content_length_shutdown() {
         expected: StatusCode::BAD_REQUEST, body::INCOMPLETE,
         CONTENT_LENGTH => body::INCOMPLETE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => "close",
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -243,5 +248,6 @@ fn empty_blob() {
         expected: StatusCode::BAD_REQUEST, b"Can't store empty blob",
         CONTENT_LENGTH => "22",
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }

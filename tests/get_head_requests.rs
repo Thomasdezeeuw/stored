@@ -2,7 +2,7 @@
 
 use std::str;
 
-use http::header::{CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
+use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
 use http::status::StatusCode;
 use lazy_static::lazy_static;
 use log::LevelFilter;
@@ -52,6 +52,7 @@ fn index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -62,6 +63,7 @@ fn not_found() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -95,6 +97,7 @@ fn not_present_blob() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -105,6 +108,7 @@ fn blob_index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -115,6 +119,7 @@ fn empty_key_blob() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -125,6 +130,7 @@ fn invalid_key_blob_too_short() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -136,6 +142,7 @@ fn invalid_key_blob_too_long() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }
 
@@ -147,5 +154,6 @@ fn invalid_key_blob_too_not_hex() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
     );
 }

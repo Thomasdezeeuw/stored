@@ -572,11 +572,16 @@ impl Response {
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
             NotFound | TooManyHeaders | NoContentLength | TooLargePayload | InvalidKey
-            | BadRequest(_) => {
-                // The body will is an (error) message in plain text, UTF-8.
-                write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
+            | BadRequest(_) | ServerError => {
+                // The body will is an (error) message in plain text, UTF-8. For
+                // errors we want to close the connection.
+                write!(
+                    buf,
+                    "Content-Type: text/plain; charset=utf-8\r\nConnection: close\r\n"
+                )
+                .unwrap()
             }
-            Deleted | ServerError => {}
+            Deleted => {}
         }
 
         write!(buf, "\r\n").unwrap();

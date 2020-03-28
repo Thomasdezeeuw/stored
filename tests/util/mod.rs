@@ -154,7 +154,9 @@ pub mod http {
     use std::str::{self, FromStr};
 
     use chrono::{Datelike, Timelike, Utc};
-    use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
+    use http::header::{
+        HeaderMap, HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER,
+    };
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
 
@@ -185,6 +187,7 @@ pub mod http {
         //! Common headers values.
 
         pub const PLAIN_TEXT: &str = "text/plain; charset=utf-8";
+        pub const CLOSE: &str = "close";
     }
 
     /// Make a HTTP request.
@@ -301,6 +304,15 @@ pub mod http {
             "Missing headers: {:?}",
             missing_headers(response.headers(), want_headers)
         );
+        let status = response.status();
+        if status.is_client_error() || status.is_server_error() {
+            // In case of an error we expect an 'Connection: close' header.
+            let conn_header = response
+                .headers()
+                .get(CONNECTION)
+                .expect("missing 'Connection' header");
+            assert_eq!(conn_header, "close");
+        }
         let got_content_length = response
             .headers()
             .get(CONTENT_LENGTH)
@@ -309,6 +321,9 @@ pub mod http {
         if got_content_length == 0 {
             // No body -> no content type.
             assert!(response.headers().get(CONTENT_TYPE).is_none());
+        } else {
+            // TODO:
+            //assert!(response.headers().get(CONTENT_TYPE).is_some());
         }
         let got_body: &[u8] = &*response.body();
         if !want_body.is_empty() {
