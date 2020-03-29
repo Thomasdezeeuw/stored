@@ -1,13 +1,11 @@
 //! Module that parses HTTP/1.1 requests.
 
 // TODO: add tests.
-//
-// TODO: Add `Connection: close` on error responses.
 
 use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
-use std::io::{self, Write};
+use std::io::{self, IoSlice, Write};
 use std::marker::Unpin;
 use std::mem::replace;
 use std::net::Shutdown;
@@ -484,6 +482,7 @@ pub enum ResponseKind {
     ServerError,
 }
 
+/// Append a header with a date format to `buf`.
 fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut WriteBuffer) {
     static MONTHS: [&'static str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -671,13 +670,22 @@ where
             use WrittenState::*;
             match state {
                 Both(headers, body) => {
-                    match Pin::new(io).poll_write(ctx, headers.as_bytes()) {
-                        Poll::Ready(Ok(written)) if written >= headers.len() => {
-                            // Written all headers, just the body left.
-                            *state = WrittenState::Body(body);
+                    let bufs = &[IoSlice::new(headers.as_bytes()), IoSlice::new(body)];
+                    match Pin::new(io).poll_write_vectored(ctx, bufs) {
+                        Poll::Ready(Ok(written)) => {
+                            let headers_len = headers.len();
+                            if written >= headers_len + body.len() {
+                                // Written all headers and the body.
+                                return Poll::Ready(Ok(()));
+                            } else if written >= headers_len {
+                                // Written all headers, just (part of) the body
+                                // left.
+                                *state = WrittenState::Body(&body[written - headers_len..]);
+                            } else {
+                                // Only written part of the headers.
+                                headers.processed(written);
+                            }
                         }
-                        // Only written part of the headers.
-                        Poll::Ready(Ok(written)) => headers.processed(written),
                         Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                         Poll::Pending => return Poll::Pending,
                     }
