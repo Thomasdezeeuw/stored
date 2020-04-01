@@ -15,6 +15,7 @@ use util::{Proc, ProcLock};
 
 const DB_PORT: u16 = 9002;
 const DB_PATH: &'static str = "/tmp/stored_post_tests.db";
+const CONF_PATH: &'static str = "tests/config/post.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
@@ -29,7 +30,7 @@ fn start_stored() -> Proc {
         let _ = fs::remove_dir_all(DB_PATH);
     });
 
-    util::start_stored(DB_PORT, DB_PATH, &PROC, FILTER)
+    util::start_stored(CONF_PATH, &PROC, FILTER)
 }
 
 /// Make a POST request and check the response.

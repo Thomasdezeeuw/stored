@@ -13,7 +13,7 @@ use util::http::{assert_response, body, header, request};
 use util::{Proc, ProcLock};
 
 const DB_PORT: u16 = 9001;
-const DB_PATH: &'static str = "tests/data/001.db";
+const CONF_PATH: &'static str = "tests/config/get_head.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
@@ -21,7 +21,7 @@ fn start_stored() -> Proc {
     lazy_static! {
         static ref PROC: ProcLock = ProcLock::new(None);
     }
-    util::start_stored(DB_PORT, DB_PATH, &PROC, FILTER)
+    util::start_stored(CONF_PATH, &PROC, FILTER)
 }
 
 /// Make a GET and HEAD request and check the response.

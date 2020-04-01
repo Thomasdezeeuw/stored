@@ -1,0 +1,23 @@
+# Path to the database file.
+path = "stored.db"
+# Maximum size of a single blob (optional, default 1GB).
+max_blob_size = "100 MiB"
+# Maximum size of all blobs combined (optional, default no limit).
+max_store_size = "10 GiB"
+
+# Configuration for the HTTP server.
+[http]
+# The address to listen on for HTTP requests (optional, defaults to
+# "127.0.0.1:8080").
+address = "127.0.0.1:8080"
+
+# Peer configuration to make stored distributed.
+# This entire section is optional.
+[peer]
+# Address to listen on for peer connections.
+address = "127.0.0.1:9001"
+# Addresses of peers to connect to.
+peers = [
+	"127.0.0.1:9002",
+	"127.0.0.1:9003",
+]

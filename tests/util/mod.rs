@@ -56,12 +56,7 @@ pub type ProcLock = Mutex<Option<Arc<ChildCommand>>>;
 ///
 /// If `filter` is not `LevelFilter::Off` it will set the standard out and error
 /// to inherit from this process, making all logs available.
-pub fn start_stored(
-    port: u16,
-    db_path: &'static str,
-    lock: &'static ProcLock,
-    filter: LevelFilter,
-) -> Proc {
+pub fn start_stored(conf_path: &'static str, lock: &'static ProcLock, filter: LevelFilter) -> Proc {
     build_stored();
 
     let mut proc = lock.lock().unwrap();
@@ -82,8 +77,7 @@ pub fn start_stored(
 
         let child = child
             .stdin(Stdio::null())
-            .env("PORT", port.to_string())
-            .env("DB_PATH", db_path)
+            .arg(conf_path)
             .spawn()
             .map(|inner| ChildCommand { inner })
             .expect("unable to start server");

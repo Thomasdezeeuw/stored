@@ -1,0 +1,5 @@
+# Minimal stored configuration. See `config.example.toml` for all configuration
+# options and documentation of the options.
+
+# Only the path is required.
+path = "stored.db"
