@@ -1,0 +1,20 @@
+[package]
+name = "hashmap_hash_benchmarks"
+version = "0.0.0"
+authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+edition = "2018"
+publish = false
+
+[dependencies]
+stored = { path = "../../" }
+
+[dev-dependencies]
+ahash = "0.3.2"
+criterion = "0.3.1"
+fxhash = "0.2.1"
+rustc-hash = "1.1.0"
+seahash = "4.0.0"
+
+[[bench]]
+name = "hash_function"
+harness = false
