@@ -452,7 +452,7 @@ impl MmapAreaControl {
     fn new(
         mmap_address: NonNull<libc::c_void>,
         mmap_length: libc::size_t,
-        offset: libc::off_t,
+        offset: u64,
         length: libc::size_t,
     ) -> MmapAreaControl {
         let ptr = Box::new(UnsafeCell::new(MmapArea {
@@ -560,8 +560,7 @@ struct MmapArea {
 
     /// Absolute offset in the file. NOTE: **not** the offset used in the call
     /// to `mmap`, as that must be page aligned.
-    // TODO: just make this a `u64`?
-    offset: libc::off_t,
+    offset: u64,
     /// Length actually used of the mmap allocation, relative to `offset`.
     /// `mmap_length` might be larger due to the page alignment requirement for
     /// the offset.
@@ -588,14 +587,7 @@ impl MmapArea {
     /// MmapArea.length)`
     fn offset(&self, offset: u64) -> NonNull<u8> {
         // The offset in the `mmap`ed area.
-        let relative_offset = offset as libc::off_t - self.offset;
-        assert!(
-            relative_offset >= 0,
-            "want offset: {}, absolute offset: {}, relative offset: {}",
-            offset,
-            self.offset,
-            relative_offset
-        );
+        let relative_offset = offset - self.offset;
 
         // The ensure that the offset into the file is page aligned we might
         // having overlapping bytes at the start of this area, we need to ignore
@@ -637,7 +629,7 @@ impl MmapArea {
             let aligned_offset = if is_page_aligned(self.offset as usize) {
                 self.offset
             } else {
-                prev_page_aligned(self.offset as usize) as libc::off_t
+                prev_page_aligned(self.offset as usize) as u64
             };
             let res = mmap(
                 self.mmap_address.as_ptr(),
@@ -645,7 +637,7 @@ impl MmapArea {
                 libc::PROT_READ,
                 libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
                 fd,
-                aligned_offset,
+                aligned_offset as libc::off_t,
             );
 
             if let Ok(new_address) = res {
@@ -763,7 +755,7 @@ impl Data {
         let offset = self
             .areas
             .last()
-            .map(|area| area.offset + area.length as libc::off_t)
+            .map(|area| area.offset + area.length as u64)
             .unwrap_or(0);
 
         // Offset must be page aligned. This means we can have overlapping
@@ -774,7 +766,7 @@ impl Data {
         } else {
             // Offset is not page aligned, so we mmap the previous page again to
             // ensure the blob can be read from continuous memory.
-            let aligned_offset = prev_page_aligned(offset as usize) as libc::off_t;
+            let aligned_offset = prev_page_aligned(offset as usize) as u64;
             let offset_alignment_diff = offset - aligned_offset;
             (aligned_offset, offset_alignment_diff as usize)
         };
@@ -788,7 +780,7 @@ impl Data {
             libc::PROT_READ,
             libc::MAP_PRIVATE,
             self.file.as_raw_fd(),
-            aligned_offset,
+            aligned_offset as libc::off_t,
         )?;
 
         // Safety: `mmap` doesn't return a null address.
@@ -840,18 +832,15 @@ impl Data {
     fn check(&self) {
         if cfg!(debug_assertions) {
             let mut total_length: u64 = 0;
-            let mut last_offset: libc::off_t = -1;
+            let mut last_offset: u64 = 0;
             for area in &self.areas {
                 assert!(
                     area.mmap_address.as_ptr() as usize % PAGE_SIZE == 0,
                     "invalid mmap address alignment"
                 );
+                assert!(area.offset <= DATA_MAGIC.len() as u64, "invalid offset");
                 assert!(
-                    area.offset <= DATA_MAGIC.len() as libc::off_t,
-                    "invalid offset"
-                );
-                assert!(
-                    area.offset > last_offset,
+                    area.offset >= last_offset,
                     "mmaped areas not sorted by offset"
                 );
                 assert_eq!(

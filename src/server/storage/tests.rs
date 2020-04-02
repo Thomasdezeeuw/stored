@@ -305,7 +305,7 @@ mod data {
             ref_count: AtomicUsize::new(1),
         });
 
-        let tests: &[((libc::off_t, libc::size_t), (u64, u32), bool)] = &[
+        let tests: &[((u64, libc::size_t), (u64, u32), bool)] = &[
             ((0, 10), (0, 5), true),
             ((0, 5), (0, 5), true),
             ((0, 0), (0, 0), true),
@@ -545,7 +545,7 @@ mod data {
             assert_eq!(mmap_area.offset, 0);
             assert_eq!(mmap_area.length, blob1.len());
             let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, blob1.len() as libc::off_t);
+            assert_eq!(mmap_area.offset, blob1.len() as u64);
             assert_eq!(mmap_area.length, blob2.len());
 
             let dummy_address2 = create_dummy_area_after(&data.areas);
@@ -566,10 +566,10 @@ mod data {
             assert_eq!(mmap_area.offset, 0);
             assert_eq!(mmap_area.length, blob1.len());
             let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, blob1.len() as libc::off_t);
+            assert_eq!(mmap_area.offset, blob1.len() as u64);
             assert_eq!(mmap_area.length, blob2.len());
             let mmap_area = &data.areas[2];
-            assert_eq!(mmap_area.offset, (blob1.len() + blob2.len()) as libc::off_t);
+            assert_eq!(mmap_area.offset, (blob1.len() + blob2.len()) as u64);
             assert_eq!(mmap_area.length, blob3.len());
 
             // All returned addresses must still be valid.
