@@ -87,7 +87,7 @@
 use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::iter::FusedIterator;
 use std::mem::{align_of, size_of};
 use std::ops::{Deref, DerefMut};
@@ -104,6 +104,10 @@ use crate::Key;
 
 #[cfg(test)]
 mod tests;
+
+/// Magic header strings for the data and index files.
+const DATA_MAGIC: &[u8] = b"Stored data v01\0"; // Null padded to 16 bytes.
+const INDEX_MAGIC: &[u8] = b"Stored index v01";
 
 /// A Binary Large OBject (BLOB).
 #[derive(Clone)]
@@ -210,12 +214,12 @@ impl Storage {
         self.data.file_length() as u64
     }
 
-    /// Returns the size of the index in bytes.
+    /// Returns the size of the index file in bytes.
     pub fn index_size(&self) -> u64 {
-        self.len() as u64 * size_of::<Entry>() as u64
+        (self.len() as u64 * size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
     }
 
-    /// Returns the total size of the database (data and index).
+    /// Returns the total size of the database file (data and index).
     pub fn total_size(&self) -> u64 {
         self.data_size() + self.index_size()
     }
@@ -910,12 +914,29 @@ struct Index {
 impl Index {
     /// Open an index file.
     fn open<P: AsRef<Path>>(path: P) -> io::Result<Index> {
-        OpenOptions::new()
+        let mut file = OpenOptions::new()
             .create(true)
             .read(true)
             .append(true)
-            .open(path)
-            .map(|file| Index { file })
+            .open(path)?;
+
+        let metadata = file.metadata()?;
+        if metadata.len() == 0 {
+            // New file so we need to add our magic.
+            file.write_all(&INDEX_MAGIC)?;
+        } else {
+            // Existing file we'll check if it has the magic header.
+            let mut magic = [0; INDEX_MAGIC.len()];
+            let read_bytes = file.read(&mut magic)?;
+            if read_bytes != INDEX_MAGIC.len() || magic != INDEX_MAGIC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing magic header in index file",
+                ));
+            }
+        }
+
+        Ok(Index { file })
     }
 
     /// Returns an iterator for all entries remaining in the `Index`. If the
@@ -923,26 +944,28 @@ impl Index {
     /// file.
     fn entries<'i>(&'i mut self) -> io::Result<Entries<'i>> {
         let metadata = self.file.metadata()?;
-        let length = metadata.len() as libc::size_t;
-        if length == 0 {
+        let mmap_length = metadata.len() as libc::size_t;
+
+        let indices_length = mmap_length - INDEX_MAGIC.len();
+        if indices_length == 0 {
             // Can't call mmap with `length = 0`.
             return Ok(Entries {
-                address: ptr::null_mut(),
-                length: 0,
+                mmap_address: ptr::null_mut(),
+                mmap_length: 0,
                 iter: [].iter(),
             });
         }
 
-        if length % size_of::<Entry>() != 0 {
+        if indices_length % size_of::<Entry>() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid index size: is it corrupted?",
+                "invalid index file size",
             ));
         }
 
-        let address = mmap(
+        let mmap_address = mmap(
             ptr::null_mut(),
-            length,
+            mmap_length,
             libc::PROT_READ,
             libc::MAP_PRIVATE,
             self.file.as_raw_fd(),
@@ -951,12 +974,17 @@ impl Index {
 
         // For performance let the OS known we're going to read the entries
         // so it can prefetch the pages from disk.
-        madvise(address, length, libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)?;
+        madvise(
+            mmap_address,
+            mmap_length,
+            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
+        )?;
 
-        let slice: &'i [Entry] = mmap_slice(address, length);
+        let indices_address = unsafe { mmap_address.add(INDEX_MAGIC.len()) };
+        let slice: &'i [Entry] = mmap_slice(indices_address, indices_length);
         Ok(Entries {
-            address,
-            length,
+            mmap_address,
+            mmap_length,
             iter: slice.iter(),
         })
     }
@@ -1037,9 +1065,9 @@ fn mmap_slice<'a, T>(address: *mut libc::c_void, length: libc::size_t) -> &'a [T
 struct Entries<'i> {
     /// Mmap address. Safety: must be the `mmap` returned address, may be null
     /// in which case the address is not unmapped. If null `length` must be 0.
-    address: *mut libc::c_void,
+    mmap_address: *mut libc::c_void,
     /// Mmap allocation length. Safety: must be length used in `mmap`.
-    length: libc::size_t,
+    mmap_length: libc::size_t,
     /// Iterator based on a slice, so we don't have to do the heavy lifting.
     /// This points to the `mmap`ed memory `address`.
     iter: std::slice::Iter<'i, Entry>,
@@ -1069,9 +1097,9 @@ impl<'i> Drop for Entries<'i> {
     fn drop(&mut self) {
         // If the index file was empty `address` will be null as we can't create
         // a mmap with length 0.
-        if !self.address.is_null() {
+        if !self.mmap_address.is_null() {
             // Safety: both `address` and `length` are used in the call to `mmap`.
-            if let Err(err) = munmap(self.address, self.length) {
+            if let Err(err) = munmap(self.mmap_address, self.mmap_length) {
                 // We can't really handle the error properly here so we'll log
                 // it and if we're testing (and not panicking) we'll panic on
                 // it.
@@ -1082,7 +1110,7 @@ impl<'i> Drop for Entries<'i> {
                 }
             }
         } else {
-            debug_assert!(self.length == 0);
+            debug_assert!(self.mmap_length == 0);
         }
     }
 }

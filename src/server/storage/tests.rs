@@ -7,6 +7,12 @@ use crate::Key;
 
 use super::*;
 
+#[test]
+fn magic_headers() {
+    assert_eq!(DATA_MAGIC.len(), 16);
+    assert_eq!(INDEX_MAGIC.len(), 16);
+}
+
 /// Returns the path to the test data `file`.
 fn test_data_path(file: &str) -> PathBuf {
     Path::new("./tests/data/").join(file)
@@ -165,13 +171,26 @@ mod date_time {
 mod index {
     use std::io::{Seek, SeekFrom};
     use std::mem::size_of;
+    use std::{fs, io};
 
-    use super::{temp_file, test_data_path, test_entries, Entry, Index};
+    use super::{temp_file, test_data_path, test_entries, Entry, Index, INDEX_MAGIC};
 
     #[test]
     fn entry_size() {
         // Size and layout is fixed.
         assert_eq!(size_of::<Entry>(), 88);
+    }
+
+    #[test]
+    fn empty_index() {
+        let path = temp_file("empty_index.index");
+        fs::write(&path, INDEX_MAGIC).unwrap();
+
+        let mut index = Index::open(&path).unwrap();
+
+        let mut entries = index.entries().unwrap();
+        assert_eq!(entries.len(), 0);
+        assert!(entries.next().is_none());
     }
 
     #[test]
@@ -193,6 +212,10 @@ mod index {
         let path = temp_file("create_index.index");
         let mut index = Index::open(&path).unwrap();
 
+        // Magic header should be written.
+        let got = fs::read(&path).unwrap();
+        assert_eq!(got, INDEX_MAGIC);
+
         // Should be empty.
         let mut entries = index.entries().unwrap();
         assert_eq!(entries.len(), 0);
@@ -213,6 +236,34 @@ mod index {
         assert_eq!(entries.len(), 2);
         for (i, entry) in entries.enumerate() {
             assert_eq!(entry, &test_entries[i]);
+        }
+    }
+
+    #[test]
+    fn missing_magic() {
+        let path = test_data_path("002.db/index");
+        match Index::open(&path) {
+            Ok(_) => panic!("expected to fail opening index file"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err
+                    .to_string()
+                    .contains("missing magic header in index file"));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_length() {
+        let path = test_data_path("003.db/index");
+        let mut index = Index::open(&path).unwrap();
+        let res = index.entries();
+        match res {
+            Ok(_) => panic!("expected to fail to access index entries"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err.to_string().contains("invalid index file size"));
+            }
         }
     }
 }
@@ -503,6 +554,7 @@ mod storage {
 
     use super::{
         temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
+        INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -552,8 +604,8 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.data_size(), 0);
-        assert_eq!(storage.index_size(), 0);
-        assert_eq!(storage.total_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
 
         let blobs = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
 
@@ -580,7 +632,7 @@ mod storage {
         assert_eq!(storage.data_size(), data_metadata.len());
         assert_eq!(storage.data_size(), want_data_size);
         let index_metadata = fs::metadata(path.join("index")).unwrap();
-        let want_index_size = (blobs.len() * size_of::<Entry>()) as u64;
+        let want_index_size = (blobs.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
         assert_eq!(storage.index_size(), index_metadata.len());
         assert_eq!(storage.index_size(), want_index_size);
         assert_eq!(
@@ -597,8 +649,8 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.data_size(), 0);
-        assert_eq!(storage.index_size(), 0);
-        assert_eq!(storage.total_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -624,8 +676,8 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.data_size(), 0);
-        assert_eq!(storage.index_size(), 0);
-        assert_eq!(storage.total_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
 
         let blob1 = DATA[0];
         let key1 = Key::for_blob(blob1);
@@ -664,8 +716,8 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.data_size(), 0);
-        assert_eq!(storage.index_size(), 0);
-        assert_eq!(storage.total_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -694,7 +746,10 @@ mod storage {
         // index, but the data should be stored twice (two queries).
         assert_eq!(storage.len(), 1);
         assert_eq!(storage.data_size(), (blob.len() * 2) as u64);
-        assert_eq!(storage.index_size(), size_of::<Entry>() as u64);
+        assert_eq!(
+            storage.index_size(),
+            (size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
+        );
     }
 
     #[test]
@@ -704,8 +759,8 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert_eq!(storage.data_size(), 0);
-        assert_eq!(storage.index_size(), 0);
-        assert_eq!(storage.total_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -722,7 +777,7 @@ mod storage {
         storage.abort(query).unwrap();
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
-        assert_eq!(storage.index_size(), 0);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
     }
 
     #[test]
