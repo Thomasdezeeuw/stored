@@ -2,6 +2,9 @@ use std::env;
 use std::fs::{remove_dir_all, remove_file};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use lazy_static::lazy_static;
 
 use crate::Key;
 
@@ -16,6 +19,11 @@ fn magic_headers() {
 /// Returns the path to the test data `file`.
 fn test_data_path(file: &str) -> PathBuf {
     Path::new("./tests/data/").join(file)
+}
+
+lazy_static! {
+    /// Locks database located at "tests/data/001.db".
+    static ref DB_001: Mutex<()> = Mutex::new(());
 }
 
 // Data stored in "001.db" test data.
@@ -159,7 +167,7 @@ mod index {
     use std::mem::size_of;
     use std::{fs, io};
 
-    use super::{temp_file, test_data_path, test_entries, Entry, Index, INDEX_MAGIC};
+    use super::{temp_file, test_data_path, test_entries, Entry, Index, DB_001, INDEX_MAGIC};
 
     #[test]
     fn entry_size() {
@@ -182,6 +190,7 @@ mod index {
     #[test]
     fn entries() {
         let path = test_data_path("001.db/index");
+        let _guard = DB_001.lock().unwrap();
 
         let mut index = Index::open(&path).unwrap();
 
@@ -263,7 +272,7 @@ mod data {
 
     use super::{
         is_page_aligned, mmap, munmap, next_page_aligned, temp_file, test_data_path, test_entries,
-        Data, MmapArea, MmapAreaControl, DATA, DATA_MAGIC, PAGE_BITS, PAGE_SIZE,
+        Data, MmapArea, MmapAreaControl, DATA, DATA_MAGIC, DB_001, PAGE_BITS, PAGE_SIZE,
     };
 
     #[test]
@@ -355,6 +364,7 @@ mod data {
     #[test]
     fn open_data_file() {
         let path = test_data_path("001.db/data");
+        let _guard = DB_001.lock().unwrap();
         let data = Data::open(&path).unwrap();
 
         assert_eq!(
@@ -580,7 +590,7 @@ mod storage {
 
     use super::{
         temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
-        DATA_MAGIC, INDEX_MAGIC,
+        DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -594,6 +604,7 @@ mod storage {
     #[test]
     fn open_database() {
         let path = test_data_path("001.db");
+        let _guard = DB_001.lock().unwrap();
         let storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), DATA.len());
@@ -878,6 +889,7 @@ mod storage {
     fn blob_can_outlive_storage() {
         // `Blob` can outlive `Data`.
         let path = test_data_path("001.db");
+        let _guard = DB_001.lock().unwrap();
         let storage = Storage::open(&path).unwrap();
 
         let entries = test_entries();
@@ -897,6 +909,7 @@ mod storage {
     fn cloned_blob_can_outlive_storage() {
         // `Blob` can outlive `Data`.
         let path = test_data_path("001.db");
+        let _guard = DB_001.lock().unwrap();
         let storage = Storage::open(&path).unwrap();
 
         let entries = test_entries();
@@ -951,6 +964,20 @@ mod storage {
             Err(err) => {
                 assert_eq!(err.kind(), io::ErrorKind::InvalidData);
                 assert!(err.to_string().contains("invalid index entry"));
+            }
+        }
+    }
+
+    #[test]
+    fn database_locking() {
+        let path = temp_dir("database_locking.db");
+        let _storage1 = Storage::open(&path).unwrap();
+
+        match Storage::open(&path) {
+            Ok(_) => panic!("expected to fail opening storage"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+                assert!(err.to_string().contains("database already in used"));
             }
         }
     }

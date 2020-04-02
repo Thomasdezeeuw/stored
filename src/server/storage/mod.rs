@@ -175,12 +175,14 @@ impl Storage {
         // Ensure the directory exists.
         create_dir_all(path)?;
 
-        let data = Data::open(path.join("data"))?;
+        let mut data = Data::open(path.join("data"))?;
+        lock(&mut data.file)?;
 
         let mut index = Index::open(path.join("index"))?;
-        let entries = index.entries()?;
+        lock(&mut index.file)?;
 
         // All blobs currently in the database.
+        let entries = index.entries()?;
         let blobs = entries
             .map(|entry| {
                 data.address_for(entry.offset, entry.length)
@@ -283,6 +285,27 @@ impl Storage {
         Q: Query,
     {
         query.abort(self)
+    }
+}
+
+/// Lock `file` using `flock(2)`.
+///
+/// # Notes
+///
+/// Once the `file` is dropped it's automatically unlocked.
+fn lock(file: &mut File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "database already in used",
+            ))
+        } else {
+            Err(err)
+        }
+    } else {
+        Ok(())
     }
 }
 
