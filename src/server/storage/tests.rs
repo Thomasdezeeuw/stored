@@ -588,8 +588,8 @@ mod data {
 }
 
 mod storage {
-    use std::fs;
     use std::mem::size_of;
+    use std::{fs, io};
 
     use super::{
         temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
@@ -683,6 +683,49 @@ mod storage {
             data_metadata.len() + index_metadata.len()
         );
         assert_eq!(storage.total_size(), want_index_size + want_data_size,);
+    }
+
+    #[test]
+    fn add_same_blob_twice() {
+        let path = temp_dir("add_same_blob_twice.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let blob = DATA[0];
+        let want_key = Key::for_blob(blob);
+
+        // First time is normal procedure.
+        let query = unwrap(storage.add_blob(blob));
+        let key = storage.commit(query).unwrap();
+        assert_eq!(key, want_key);
+
+        // Second time it should already be present.
+        match storage.add_blob(blob) {
+            AddResult::AlreadyPresent(got_key) => {
+                assert_eq!(got_key, want_key);
+            }
+            AddResult::Ok(_) | AddResult::Err(_) => panic!("unexpected add_blob result"),
+        }
+    }
+
+    #[test]
+    fn query_can_outlive_storage() {
+        let path = temp_dir("add_same_blob_twice.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let blob = DATA[0];
+        let query = unwrap(storage.add_blob(blob));
+
+        // Dropping the storage before the query should not panic.
+        drop(storage);
+        drop(query);
     }
 
     #[test]
@@ -861,5 +904,67 @@ mod storage {
         let want = DATA[0];
         assert_eq!(got.bytes(), want);
         assert_eq!(got.created_at(), entry.created.into());
+    }
+
+    #[test]
+    fn cloned_blob_can_outlive_storage() {
+        // `Blob` can outlive `Data`.
+        let path = test_data_path("001.db");
+        let storage = Storage::open(&path).unwrap();
+
+        let entries = test_entries();
+        let entry = &entries[0];
+        let got = storage.lookup(&entry.key).unwrap();
+
+        // After we drop the storage the `Blob` (assigned to `got`) should still
+        // be valid.
+        drop(storage);
+
+        let want = DATA[0];
+        assert_eq!(got.bytes(), want);
+        assert_eq!(got.created_at(), entry.created.into());
+
+        let got2 = got.clone();
+        drop(got);
+        assert_eq!(got2.bytes(), want);
+        assert_eq!(got2.created_at(), entry.created.into());
+    }
+
+    #[test]
+    #[ignore = "index file get created on demand"]
+    fn missing_index_file() {
+        let path = test_data_path("004.db");
+        match Storage::open(&path) {
+            Ok(_) => panic!("expected to fail opening storage"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err.to_string().contains("missing index file"));
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "data file get created on demand"]
+    fn missing_data_file() {
+        let path = test_data_path("005.db");
+        match Storage::open(&path) {
+            Ok(_) => panic!("expected to fail opening storage"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err.to_string().contains("missing data file"));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_index_entries() {
+        let path = test_data_path("006.db");
+        match Storage::open(&path) {
+            Ok(_) => panic!("expected to fail opening storage"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err.to_string().contains("invalid index entry"));
+            }
+        }
     }
 }

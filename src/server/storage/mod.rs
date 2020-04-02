@@ -180,27 +180,29 @@ impl Storage {
         let mut index = Index::open(path.join("index"))?;
         let entries = index.entries()?;
 
-        // Add all blobs currently in the database.
-        let mut blobs = HashMap::with_capacity(entries.len());
-        blobs.extend(entries.map(|entry| {
-            let (address, lifetime) = data
-                .address_for(entry.offset, entry.length)
-                // TODO: handle this better. Think should happen. It it possible
-                // that there are more blobs in `Data` then the `Index`
-                // suggests.
-                .expect("missing blobs from data file");
+        // All blobs currently in the database.
+        let blobs = entries
+            .map(|entry| {
+                data.address_for(entry.offset, entry.length)
+                    .map(|(address, lifetime)| {
+                        // Safety: this is safe because `Data` outlives `blobs`, see
+                        // `Storage.blobs` docs.
+                        let bytes = unsafe {
+                            slice::from_raw_parts(address.as_ptr(), entry.length as usize)
+                        };
 
-            // Safety: this is safe because `Data` outlives `blobs`, see
-            // `Storage.blobs` docs.
-            let bytes = unsafe { slice::from_raw_parts(address.as_ptr(), entry.length as usize) };
-
-            let blob = Blob {
-                bytes,
-                created: entry.created.into(),
-                lifetime,
-            };
-            (entry.key.clone(), blob)
-        }));
+                        let blob = Blob {
+                            bytes,
+                            created: entry.created.into(),
+                            lifetime,
+                        };
+                        (entry.key.clone(), blob)
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
+                    })
+            })
+            .collect::<io::Result<_>>()?;
 
         Ok(Storage { data, index, blobs })
     }
@@ -335,7 +337,8 @@ impl Query for AddBlob {
             Occupied(_) => {
                 // If the blob has already been added we don't want to modify
                 // it.
-                // TODO: mark the blob bytes as unused and clean them up.
+                let key = self.key.clone();
+                return self.abort(storage).map(|()| key);
             }
             Vacant(entry) => {
                 // The data is already stored so we can add the blob to the
@@ -361,7 +364,8 @@ impl Query for AddBlob {
                     self.address
                 );
                 let blob = Blob {
-                    // Safety: `Data` must outlive `blobs` in `Storage`.
+                    // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
+                    // because of the `lifetime` added below.
                     bytes: unsafe {
                         slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
                     },
@@ -376,6 +380,8 @@ impl Query for AddBlob {
     }
 
     fn abort(self, _storage: &mut Storage) -> io::Result<()> {
+        // Note: this is also called by `commit` is the blob is already in the
+        // database when committing.
         // Since the blob isn't in the index, it also isn't in the database.
         // TODO: cleanup the unused bytes.
         Ok(())
