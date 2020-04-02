@@ -35,20 +35,20 @@ fn test_entries() -> [Entry; 2] {
     [
         Entry {
             key: Key::for_blob(DATA[0]),
-            offset: DATA_MAGIC.len() as u64,
-            length: DATA[0].len() as u32,
-            created: DateTime {
-                seconds: 5,
-                subsec_nanos: 0,
+            offset: (DATA_MAGIC.len() as u64).to_be(),
+            length: (DATA[0].len() as u32).to_be(),
+            created_at: DateTime {
+                seconds: 5u64.to_be(),
+                subsec_nanos: 0u32.to_be(),
             },
         },
         Entry {
             key: Key::for_blob(DATA[1]),
-            offset: (DATA_MAGIC.len() + DATA[0].len()) as u64,
-            length: DATA[1].len() as u32,
-            created: DateTime {
-                seconds: 50,
-                subsec_nanos: 100,
+            offset: ((DATA_MAGIC.len() + DATA[0].len()) as u64).to_be(),
+            length: (DATA[1].len() as u32).to_be(),
+            created_at: DateTime {
+                seconds: 50u64.to_be(),
+                subsec_nanos: 100u32.to_be(),
             },
         },
     ]
@@ -116,15 +116,15 @@ mod date_time {
         let tests = [
             (
                 DateTime {
-                    seconds: 1,
-                    subsec_nanos: 0,
+                    seconds: 1u64.to_be(),
+                    subsec_nanos: 0u32.to_be(),
                 },
                 Duration::from_secs(1),
             ),
             (
                 DateTime {
-                    seconds: u64::MAX / 2,
-                    subsec_nanos: 0,
+                    seconds: (u64::MAX / 2).to_be(),
+                    subsec_nanos: 0u32.to_be(),
                 },
                 Duration::from_secs(u64::MAX / 2),
             ),
@@ -173,6 +173,19 @@ mod index {
     fn entry_size() {
         // Size and layout is fixed.
         assert_eq!(size_of::<Entry>(), 88);
+    }
+
+    #[test]
+    fn new_entry() {
+        for entry in test_entries().iter() {
+            let got = Entry::new(
+                entry.key().clone(),
+                entry.offset(),
+                entry.length(),
+                entry.created_at(),
+            );
+            assert_eq!(got, *entry);
+        }
     }
 
     #[test]
@@ -380,9 +393,9 @@ mod data {
         );
 
         for (i, entry) in test_entries().iter().enumerate() {
-            let (blob_address, _) = data.address_for(entry.offset, entry.length).unwrap();
+            let (blob_address, _) = data.address_for(entry.offset(), entry.length()).unwrap();
             let blob =
-                unsafe { slice::from_raw_parts(blob_address.as_ptr(), entry.length as usize) };
+                unsafe { slice::from_raw_parts(blob_address.as_ptr(), entry.length() as usize) };
 
             assert_eq!(blob, DATA[i]);
         }
@@ -618,10 +631,10 @@ mod storage {
         );
 
         for (i, entry) in test_entries().iter().enumerate() {
-            let got = storage.lookup(&entry.key).unwrap();
+            let got = storage.lookup(entry.key()).unwrap();
             let want = DATA[i];
             assert_eq!(got.bytes(), want);
-            assert_eq!(got.created_at(), entry.created.into());
+            assert_eq!(got.created_at(), entry.created_at());
         }
     }
 
@@ -894,7 +907,7 @@ mod storage {
 
         let entries = test_entries();
         let entry = &entries[0];
-        let got = storage.lookup(&entry.key).unwrap();
+        let got = storage.lookup(entry.key()).unwrap();
 
         // After we drop the storage the `Blob` (assigned to `got`) should still
         // be valid.
@@ -902,7 +915,7 @@ mod storage {
 
         let want = DATA[0];
         assert_eq!(got.bytes(), want);
-        assert_eq!(got.created_at(), entry.created.into());
+        assert_eq!(got.created_at(), entry.created_at());
     }
 
     #[test]
@@ -914,7 +927,7 @@ mod storage {
 
         let entries = test_entries();
         let entry = &entries[0];
-        let got = storage.lookup(&entry.key).unwrap();
+        let got = storage.lookup(entry.key()).unwrap();
 
         // After we drop the storage the `Blob` (assigned to `got`) should still
         // be valid.
@@ -922,12 +935,12 @@ mod storage {
 
         let want = DATA[0];
         assert_eq!(got.bytes(), want);
-        assert_eq!(got.created_at(), entry.created.into());
+        assert_eq!(got.created_at(), entry.created_at());
 
         let got2 = got.clone();
         drop(got);
         assert_eq!(got2.bytes(), want);
-        assert_eq!(got2.created_at(), entry.created.into());
+        assert_eq!(got2.created_at(), entry.created_at());
     }
 
     #[test]

@@ -76,9 +76,6 @@
 //! key as checksum. This will point out any corruptions and could help in
 //! restoring them. TODO: implement this.
 
-// FIXME: endian of integers. Currently moving an index from little- to
-// big-endian is invalid.
-
 // TODO: benchmark the following flags to mmap:
 // - MAP_HUGETLB, with:
 //   - MAP_HUGE_2MB, or
@@ -185,20 +182,20 @@ impl Storage {
         let entries = index.entries()?;
         let blobs = entries
             .map(|entry| {
-                data.address_for(entry.offset, entry.length)
+                data.address_for(entry.offset(), entry.length())
                     .map(|(address, lifetime)| {
                         // Safety: this is safe because `Data` outlives `blobs`, see
                         // `Storage.blobs` docs.
                         let bytes = unsafe {
-                            slice::from_raw_parts(address.as_ptr(), entry.length as usize)
+                            slice::from_raw_parts(address.as_ptr(), entry.length() as usize)
                         };
 
                         let blob = Blob {
                             bytes,
-                            created: entry.created.into(),
+                            created: entry.created_at(),
                             lifetime,
                         };
-                        (entry.key.clone(), blob)
+                        (entry.key().clone(), blob)
                     })
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
@@ -372,12 +369,8 @@ impl Query for AddBlob {
             Vacant(entry) => {
                 // The data is already stored so we can add the blob to the
                 // index.
-                let index_entry = Entry {
-                    key: self.key.clone(),
-                    offset: self.offset,
-                    length: self.length,
-                    created: created_at.into(),
-                };
+                let index_entry =
+                    Entry::new(self.key.clone(), self.offset, self.length, created_at);
                 storage.index.add_entry(&index_entry)?;
 
                 // Now that the data and index entry are stored we can insert
@@ -396,7 +389,7 @@ impl Query for AddBlob {
                     bytes: unsafe {
                         slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
                     },
-                    created: index_entry.created.into(),
+                    created: index_entry.created_at(),
                     lifetime: self.lifetime,
                 };
                 entry.insert(blob);
@@ -1181,6 +1174,11 @@ impl<'i> Drop for Entries<'i> {
 /// Entry in the [`Index`].
 ///
 /// The layout of the `Entry` is fixed as it must be loaded from disk.
+///
+/// # Notes
+///
+/// Integers in `Entry` (and `DateTime`) are stored in big-endian format on
+/// disk. Use the getters (e.g. `offset`) to get the value in native endian.
 #[repr(C)]
 #[derive(Eq, PartialEq, Debug)]
 struct Entry {
@@ -1188,12 +1186,45 @@ struct Entry {
     key: Key,
     /// Offset into the data file.
     ///
-    /// If this is `u64::MAX` the blbo has been removed.
+    /// If this is `u64::MAX` the blob has been removed.
     offset: u64,
     /// Length of the blob in bytes.
     length: u32,
     /// Time at which the blob is created.
-    created: DateTime,
+    created_at: DateTime,
+}
+
+impl Entry {
+    /// Create a new `Entry` formatted correctly to be stored on disk, i.e.
+    /// integer set to use big-endian.
+    fn new(key: Key, offset: u64, length: u32, created_at: SystemTime) -> Entry {
+        Entry {
+            key,
+            offset: u64::from_ne_bytes(offset.to_be_bytes()),
+            length: u32::from_ne_bytes(length.to_be_bytes()),
+            created_at: created_at.into(),
+        }
+    }
+
+    /// Returns the `Key` for the entry.
+    fn key(&self) -> &Key {
+        &self.key
+    }
+
+    /// Returns the offset for the entry, in native endian.
+    fn offset(&self) -> u64 {
+        u64::from_be_bytes(self.offset.to_ne_bytes())
+    }
+
+    /// Returns the length for the entry, in native endian.
+    fn length(&self) -> u32 {
+        u32::from_be_bytes(self.length.to_ne_bytes())
+    }
+
+    /// Returns the time at which this entry was created.
+    fn created_at(&self) -> SystemTime {
+        self.created_at.into()
+    }
 }
 
 /// Layout stable date-time format.
@@ -1206,6 +1237,7 @@ struct Entry {
 /// # Notes
 ///
 /// Can't represent times before Unix epoch.
+/// Integers are stored in big-endian format on disk.
 #[repr(C, packed)] // Packed to reduce the size of `Index`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct DateTime {
@@ -1228,15 +1260,17 @@ impl From<SystemTime> for DateTime {
             .unwrap_or_else(|_| Duration::new(0, 0));
 
         DateTime {
-            seconds: elapsed.as_secs(),
-            subsec_nanos: elapsed.subsec_nanos(),
+            seconds: u64::from_ne_bytes(elapsed.as_secs().to_be_bytes()),
+            subsec_nanos: u32::from_ne_bytes(elapsed.subsec_nanos().to_be_bytes()),
         }
     }
 }
 
 impl Into<SystemTime> for DateTime {
     fn into(self) -> SystemTime {
-        let elapsed = Duration::new(self.seconds, self.subsec_nanos);
+        let seconds = u64::from_be_bytes(self.seconds.to_ne_bytes());
+        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        let elapsed = Duration::new(seconds, subsec_nanos);
         SystemTime::UNIX_EPOCH + elapsed
     }
 }
