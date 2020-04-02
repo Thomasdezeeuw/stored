@@ -27,7 +27,7 @@ fn test_entries() -> [Entry; 2] {
     [
         Entry {
             key: Key::for_blob(DATA[0]),
-            offset: 0,
+            offset: DATA_MAGIC.len() as u64,
             length: DATA[0].len() as u32,
             created: DateTime {
                 seconds: 5,
@@ -36,7 +36,7 @@ fn test_entries() -> [Entry; 2] {
         },
         Entry {
             key: Key::for_blob(DATA[1]),
-            offset: DATA[0].len() as u64,
+            offset: (DATA_MAGIC.len() + DATA[0].len()) as u64,
             length: DATA[1].len() as u32,
             created: DateTime {
                 seconds: 50,
@@ -271,13 +271,13 @@ mod index {
 mod data {
     use std::mem::{size_of, ManuallyDrop};
     use std::ptr::NonNull;
-    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
-    use std::{slice, thread};
+    use std::{fs, io, slice, thread};
 
     use super::{
         is_page_aligned, mmap, munmap, next_page_aligned, temp_file, test_data_path, test_entries,
-        Data, MmapArea, MmapAreaControl, DATA, PAGE_BITS, PAGE_SIZE,
+        Data, MmapArea, MmapAreaControl, DATA, DATA_MAGIC, PAGE_BITS, PAGE_SIZE,
     };
 
     #[test]
@@ -351,18 +351,37 @@ mod data {
     }
 
     #[test]
+    fn empty_data() {
+        let path = temp_file("empty_data.data");
+        fs::write(&path, DATA_MAGIC).unwrap();
+
+        let data = Data::open(&path).unwrap();
+        assert_eq!(data.length, DATA_MAGIC.len() as u64);
+        // Should already `mmap` the magic header bytes.
+        assert_eq!(data.areas.len(), 1);
+        let area = &data.areas[0];
+        assert_eq!(area.mmap_length, DATA_MAGIC.len());
+        assert_eq!(area.offset, 0);
+        assert_eq!(area.length, DATA_MAGIC.len());
+        assert_eq!(area.ref_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
     fn open_data_file() {
         let path = test_data_path("001.db/data");
         let data = Data::open(&path).unwrap();
 
         assert_eq!(
             data.file_length(),
-            DATA.iter().map(|d| d.len()).sum::<usize>() as u64
+            (DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()) as u64
         );
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.iter().map(|d| d.len()).sum());
+        assert_eq!(
+            mmap_area.length,
+            DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()
+        );
 
         for (i, entry) in test_entries().iter().enumerate() {
             let (blob_address, _) = data.address_for(entry.offset, entry.length).unwrap();
@@ -377,20 +396,23 @@ mod data {
     fn add_blob_grow_area() {
         let path = temp_file("add_blob_grow_area.data");
         let mut data = Data::open(&path).unwrap();
-        assert_eq!(data.areas.len(), 0);
-        assert_eq!(data.file_length(), 0);
+        assert_eq!(data.areas.len(), 1);
+        assert_eq!(data.file_length(), DATA_MAGIC.len() as u64);
 
         // Adding a first blob should create a new area.
         let (offset, address1, _) = data.add_blob(DATA[0]).unwrap();
-        assert_eq!(offset, 0);
+        assert_eq!(offset, DATA_MAGIC.len() as u64);
         let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA[0].len()) };
         assert_eq!(got1, DATA[0]);
 
-        assert_eq!(data.file_length(), DATA[0].len() as u64);
+        assert_eq!(
+            data.file_length(),
+            (DATA[0].len() + DATA_MAGIC.len()) as u64
+        );
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA[0].len());
+        assert_eq!(mmap_area.length, DATA[0].len() + DATA_MAGIC.len());
 
         // Adding a second should grow the existing area.
         let (offset, address2, _) = data.add_blob(DATA[1]).unwrap();
@@ -399,18 +421,21 @@ mod data {
             unsafe { address1.as_ptr().add(DATA[0].len()) },
             address2.as_ptr()
         );
-        assert_eq!(offset, DATA[0].len() as u64);
+        assert_eq!(offset, (DATA[0].len() + DATA_MAGIC.len()) as u64);
         let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), DATA[1].len()) };
         assert_eq!(got2, DATA[1]);
 
         assert_eq!(
             data.file_length(),
-            DATA.iter().map(|d| d.len()).sum::<usize>() as u64
+            (DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()) as u64
         );
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas.first().unwrap();
         assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA.iter().map(|d| d.len()).sum());
+        assert_eq!(
+            mmap_area.length,
+            DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()
+        );
 
         // Original address must still be valid.
         assert_eq!(got1, DATA[0]);
@@ -546,6 +571,20 @@ mod data {
             munmap(dummy_address2, DUMMY_LENGTH).unwrap();
         }
     }
+
+    #[test]
+    fn missing_magic() {
+        let path = test_data_path("002.db/data");
+        match Data::open(&path) {
+            Ok(_) => panic!("expected to fail opening data file"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert!(err
+                    .to_string()
+                    .contains("missing magic header in data file"));
+            }
+        }
+    }
 }
 
 mod storage {
@@ -554,7 +593,7 @@ mod storage {
 
     use super::{
         temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
-        INDEX_MAGIC,
+        DATA_MAGIC, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -603,9 +642,12 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
-        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
         assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
-        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
 
         let blobs = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
 
@@ -628,7 +670,8 @@ mod storage {
 
         assert_eq!(storage.len(), blobs.len());
         let data_metadata = fs::metadata(path.join("data")).unwrap();
-        let want_data_size = blobs.iter().map(|b| b.len()).sum::<usize>() as u64;
+        let want_data_size =
+            (blobs.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
         assert_eq!(storage.data_size(), data_metadata.len());
         assert_eq!(storage.data_size(), want_data_size);
         let index_metadata = fs::metadata(path.join("index")).unwrap();
@@ -648,9 +691,12 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
-        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
         assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
-        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -661,7 +707,7 @@ mod storage {
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
         // But is should be stored.
-        assert_eq!(storage.data_size(), blob.len() as u64);
+        assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob.len()) as u64);
 
         // After committing the blob should be accessible.
         let got_key = storage.commit(query).unwrap();
@@ -675,9 +721,12 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
-        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
         assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
-        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
 
         let blob1 = DATA[0];
         let key1 = Key::for_blob(blob1);
@@ -690,13 +739,16 @@ mod storage {
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key1).is_none());
         // But is should be stored.
-        assert_eq!(storage.data_size(), blob1.len() as u64);
+        assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob1.len()) as u64);
 
         let query2 = unwrap(storage.add_blob(blob2));
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key2).is_none());
-        assert_eq!(storage.data_size(), (blob1.len() + blob2.len()) as u64);
+        assert_eq!(
+            storage.data_size(),
+            (DATA_MAGIC.len() + blob1.len() + blob2.len()) as u64
+        );
 
         // We should be able to commit in any order.
         let got_key2 = storage.commit(query2).unwrap();
@@ -715,9 +767,12 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
-        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
         assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
-        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -727,7 +782,10 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
-        assert_eq!(storage.data_size(), (blob.len() + blob.len()) as u64);
+        assert_eq!(
+            storage.data_size(),
+            (DATA_MAGIC.len() + blob.len() + blob.len()) as u64
+        );
 
         // We should be able to commit in any order.
         let got_key1 = storage.commit(query2).unwrap();
@@ -745,7 +803,10 @@ mod storage {
         // Only a single blob should be in the database, and thus a single
         // index, but the data should be stored twice (two queries).
         assert_eq!(storage.len(), 1);
-        assert_eq!(storage.data_size(), (blob.len() * 2) as u64);
+        assert_eq!(
+            storage.data_size(),
+            (DATA_MAGIC.len() + (blob.len() * 2)) as u64
+        );
         assert_eq!(
             storage.index_size(),
             (size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
@@ -758,9 +819,12 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
-        assert_eq!(storage.data_size(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
         assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
-        assert_eq!(storage.total_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
 
         let blob = DATA[0];
         let key = Key::for_blob(blob);
@@ -771,7 +835,7 @@ mod storage {
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
         // But is should be stored.
-        assert_eq!(storage.data_size(), blob.len() as u64);
+        assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob.len()) as u64);
 
         // After committing the blob should be accessible.
         storage.abort(query).unwrap();

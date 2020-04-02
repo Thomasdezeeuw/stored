@@ -68,12 +68,13 @@
 //!
 //! # Validating the database
 //!
+//! Each file in the database, that is the index and data files, start with a
+//! magic header that is checked each time the database is opened to ensure the
+//! correct files are opened.
+//!
 //! Since all entries hold the key for the blob each blob can validated using the
 //! key as checksum. This will point out any corruptions and could help in
 //! restoring them. TODO: implement this.
-
-// TODO: add a magic string and version at the start of the index and data
-// files? To ensure we're opening a correct file?
 
 // FIXME: endian of integers. Currently moving an index from little- to
 // big-endian is invalid.
@@ -389,6 +390,8 @@ unsafe impl Send for AddBlob {}
 struct Data {
     /// Data file opened for reading and writing in append-only mode (for
     /// adding new blobs).
+    ///
+    /// Note: the seek position is unlikely to be correct after opening.
     file: File,
     /// Current length of the file and all `mmap`ed areas.
     length: u64,
@@ -405,7 +408,7 @@ const PAGE_BITS: usize = 12;
 
 /// Control structure for a `mmap` area, see [`MmapArea`].
 ///
-/// This has mutable access to all field, except for the `ref_count`, of the
+/// This has mutable access to all fields, except for the `ref_count`, of the
 /// `MmapArea` it points to, as only a single `MmapAreaControl` may control the
 /// `MmapArea`. However operations on the `ref_count` must still use atomic
 /// operations, as `MmapLifetime` also has readable access to it.
@@ -655,11 +658,24 @@ impl Data {
             })?;
 
         let metadata = data.file.metadata()?;
-        let length = metadata.len() as libc::size_t;
-        if length != 0 {
-            data.new_area(length)?;
+        let mut length = metadata.len() as libc::size_t;
+        if length == 0 {
+            // New file so we need to add our magic.
+            data.file.write_all(&DATA_MAGIC)?;
+            length = DATA_MAGIC.len();
+        } else {
+            // Existing file; we'll check if it has the magic header.
+            let mut magic = [0; DATA_MAGIC.len()];
+            let read_bytes = data.file.read(&mut magic)?;
+            if read_bytes != DATA_MAGIC.len() || magic != DATA_MAGIC {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing magic header in data file",
+                ));
+            }
         }
 
+        data.new_area(length)?;
         data.check();
         Ok(data)
     }
@@ -672,6 +688,10 @@ impl Data {
     /// Add `blob` at the end of the data log.
     /// Returns the stored blob's offset in the data file and its `mmap`ed
     /// address.
+    ///
+    /// # Notes
+    ///
+    /// Can't store an empty blob!
     fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>, MmapLifetime)> {
         assert!(!blob.is_empty(), "tried to store an empty blob");
         // First add the blob to the file.
@@ -764,7 +784,10 @@ impl Data {
     ///
     /// The returned address lifetime is tied to the `Data` struct.
     fn address_for(&self, offset: u64, length: u32) -> Option<(NonNull<u8>, MmapLifetime)> {
-        // TODO: return slice? What lifetime would that have?
+        debug_assert!(
+            offset >= DATA_MAGIC.len() as u64,
+            "offset inside magic header"
+        );
         self.areas
             .iter()
             .find(|area| area.in_area(offset, length))
@@ -795,9 +818,12 @@ impl Data {
             for area in &self.areas {
                 assert!(
                     area.mmap_address.as_ptr() as usize % PAGE_SIZE == 0,
-                    "invalid mmap address alignment, maybe invalid PAGE_SIZE?"
+                    "invalid mmap address alignment"
                 );
-                assert!(area.offset >= 0, "negative offset");
+                assert!(
+                    area.offset <= DATA_MAGIC.len() as libc::off_t,
+                    "invalid offset"
+                );
                 assert!(
                     area.offset > last_offset,
                     "mmaped areas not sorted by offset"
@@ -836,7 +862,7 @@ fn needs_next_page(area_length: libc::size_t, grow_by_length: libc::size_t) -> b
 fn reserve_next_page(area: &MmapArea) -> io::Result<bool> {
     // The address of the next page to reserve, aligned to the page size.
     let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
-    let reserve_address: *mut libc::c_void = if is_page_aligned(end_address) {
+    let reserve_address = if is_page_aligned(end_address) {
         // If end_address is already page aligned it means we filled the entire
         // previous page.
         end_address as *mut libc::c_void
@@ -925,7 +951,7 @@ impl Index {
             // New file so we need to add our magic.
             file.write_all(&INDEX_MAGIC)?;
         } else {
-            // Existing file we'll check if it has the magic header.
+            // Existing file; we'll check if it has the magic header.
             let mut magic = [0; INDEX_MAGIC.len()];
             let read_bytes = file.read(&mut magic)?;
             if read_bytes != INDEX_MAGIC.len() || magic != INDEX_MAGIC {
@@ -991,6 +1017,10 @@ impl Index {
 
     /// Add a new `entry` to the `Index`.
     fn add_entry(&mut self, entry: &Entry) -> io::Result<()> {
+        debug_assert!(
+            entry.offset >= DATA_MAGIC.len() as u64,
+            "offset inside magic header"
+        );
         // Safety: because `u8` doesn't have any invalid bit patterns this is
         // OK. We're also ensured at least `size_of::<Entry>` bytes are valid.
         let bytes: &[u8] =
