@@ -103,20 +103,6 @@ mod date_time {
 
     use super::DateTime;
 
-    const MARGIN: Duration = Duration::from_millis(1);
-
-    #[test]
-    fn now() {
-        let now1 = SystemTime::now();
-        let now2 = DateTime::now();
-
-        let diff = now1
-            .duration_since(now2.into())
-            .unwrap_or_else(|err| err.duration());
-        assert_eq!(diff.as_secs(), 0);
-        assert!(diff.as_nanos() < MARGIN.as_nanos());
-    }
-
     #[test]
     fn from_and_into_sys_time() {
         let tests = [
@@ -148,7 +134,7 @@ mod date_time {
 
     #[test]
     fn from_bytes() {
-        let tests = [DateTime::now(), SystemTime::UNIX_EPOCH.into()];
+        let tests = [SystemTime::now().into(), SystemTime::UNIX_EPOCH.into()];
 
         fn copy(dst: &mut [u8], src: &DateTime) {
             assert!(dst.len() >= size_of::<DateTime>());
@@ -589,6 +575,7 @@ mod data {
 
 mod storage {
     use std::mem::size_of;
+    use std::time::SystemTime;
     use std::{fs, io};
 
     use super::{
@@ -654,7 +641,7 @@ mod storage {
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
             let query = unwrap(storage.add_blob(blob));
-            let key = storage.commit(query).unwrap();
+            let key = storage.commit(query, SystemTime::now()).unwrap();
 
             let got = storage.lookup(&key).unwrap();
             assert_eq!(got.bytes(), blob);
@@ -703,7 +690,7 @@ mod storage {
 
         // First time is normal procedure.
         let query = unwrap(storage.add_blob(blob));
-        let key = storage.commit(query).unwrap();
+        let key = storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(key, want_key);
 
         // Second time it should already be present.
@@ -717,7 +704,7 @@ mod storage {
 
     #[test]
     fn query_can_outlive_storage() {
-        let path = temp_dir("add_same_blob_twice.db");
+        let path = temp_dir("query_can_outlive_storage.db");
         let mut storage = Storage::open(&path).unwrap();
 
         let blob = DATA[0];
@@ -753,7 +740,7 @@ mod storage {
         assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob.len()) as u64);
 
         // After committing the blob should be accessible.
-        let got_key = storage.commit(query).unwrap();
+        let got_key = storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
         assert_eq!(storage.lookup(&key).unwrap().bytes(), blob);
     }
@@ -794,12 +781,12 @@ mod storage {
         );
 
         // We should be able to commit in any order.
-        let got_key2 = storage.commit(query2).unwrap();
+        let got_key2 = storage.commit(query2, SystemTime::now()).unwrap();
         assert_eq!(got_key2, key2);
         assert_eq!(storage.lookup(&key2).unwrap().bytes(), blob2);
 
         // After committing the blob should be accessible.
-        let got_key1 = storage.commit(query1).unwrap();
+        let got_key1 = storage.commit(query1, SystemTime::now()).unwrap();
         assert_eq!(got_key1, key1);
         assert_eq!(storage.lookup(&key1).unwrap().bytes(), blob1);
     }
@@ -831,12 +818,12 @@ mod storage {
         );
 
         // We should be able to commit in any order.
-        let got_key1 = storage.commit(query2).unwrap();
+        let got_key1 = storage.commit(query2, SystemTime::now()).unwrap();
         assert_eq!(got_key1, key);
         let got_blob1 = storage.lookup(&key).unwrap();
         assert_eq!(got_blob1.bytes(), blob);
 
-        let got_key2 = storage.commit(query1).unwrap();
+        let got_key2 = storage.commit(query1, SystemTime::now()).unwrap();
         assert_eq!(got_key2, key);
         let got_blob2 = storage.lookup(&key).unwrap();
         // Blob should not be changed.

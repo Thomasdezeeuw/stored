@@ -1,6 +1,7 @@
 //! Module with the database actor.
 
 use std::io;
+use std::time::SystemTime;
 
 use heph::actor::sync::SyncContext;
 use heph::actor_ref::RpcMessage;
@@ -91,7 +92,8 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let _ = response.respond(result);
             }
             Message::CommitBlob(RpcMessage { request, response }) => {
-                let key = storage.commit(request)?;
+                let created_at = SystemTime::now();
+                let key = storage.commit(request, created_at)?;
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(key);
             }

@@ -270,11 +270,11 @@ impl Storage {
     }
 
     /// Commit to `query`.
-    pub fn commit<Q>(&mut self, query: Q) -> io::Result<Q::Return>
+    pub fn commit<Q>(&mut self, query: Q, arg: Q::Arg) -> io::Result<Q::Return>
     where
         Q: Query,
     {
-        query.commit(self)
+        query.commit(self, arg)
     }
 
     /// Abort `query`.
@@ -305,13 +305,18 @@ pub enum AddResult {
 ///
 /// [committing]: Query::commit
 pub trait Query {
+    /// Argument provided when [committing] to a `Query`.
+    ///
+    /// [committing]: Storage::commit
+    type Arg;
+
     /// Type returned after a `Query` is [commited].
     ///
     /// [commited]: Storage::commit
     type Return;
 
     /// Commit to the query.
-    fn commit(self, storage: &mut Storage) -> io::Result<Self::Return>;
+    fn commit(self, storage: &mut Storage, arg: Self::Arg) -> io::Result<Self::Return>;
 
     /// Abort the query.
     fn abort(self, storage: &mut Storage) -> io::Result<()>;
@@ -329,9 +334,10 @@ pub struct AddBlob {
 }
 
 impl Query for AddBlob {
+    type Arg = SystemTime;
     type Return = Key;
 
-    fn commit(self, storage: &mut Storage) -> io::Result<Self::Return> {
+    fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
         use hash_map::Entry::*;
         match storage.blobs.entry(self.key.clone()) {
             Occupied(_) => {
@@ -347,9 +353,7 @@ impl Query for AddBlob {
                     key: self.key.clone(),
                     offset: self.offset,
                     length: self.length,
-                    // TODO: should this be provided so that all stores have the
-                    // same created time?
-                    created: DateTime::now(),
+                    created: created_at.into(),
                 };
                 storage.index.add_entry(&index_entry)?;
 
@@ -1187,13 +1191,6 @@ struct DateTime {
     /// Number of nano sub-seconds, always less then 1 billion (the number of
     /// nanoseconds in a second).
     subsec_nanos: u32,
-}
-
-impl DateTime {
-    /// Returns the current time as `DateTime`.
-    fn now() -> DateTime {
-        SystemTime::now().into()
-    }
 }
 
 impl From<SystemTime> for DateTime {
