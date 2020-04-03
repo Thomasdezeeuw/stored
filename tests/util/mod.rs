@@ -148,9 +148,7 @@ pub mod http {
     use std::str::{self, FromStr};
 
     use chrono::{Datelike, Timelike, Utc};
-    use http::header::{
-        HeaderMap, HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER,
-    };
+    use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
 
@@ -175,6 +173,9 @@ pub mod http {
 
         pub const INCOMPLETE: &[u8] = b"Incomplete blob";
         pub const INCOMPLETE_LEN: &str = "14";
+
+        pub const UNEXPECTED_BODY: &[u8] = b"Unexpected request body";
+        pub const UNEXPECTED_BODY_LEN: &str = "23";
     }
 
     pub mod header {
@@ -182,6 +183,7 @@ pub mod http {
 
         pub const PLAIN_TEXT: &str = "text/plain; charset=utf-8";
         pub const CLOSE: &str = "close";
+        pub const KEEP_ALIVE: &str = "keep-alive";
     }
 
     /// Make a HTTP request.
@@ -298,15 +300,6 @@ pub mod http {
             "Missing headers: {:?}",
             missing_headers(response.headers(), want_headers)
         );
-        let status = response.status();
-        if status.is_client_error() || status.is_server_error() {
-            // In case of an error we expect an 'Connection: close' header.
-            let conn_header = response
-                .headers()
-                .get(CONNECTION)
-                .expect("missing 'Connection' header");
-            assert_eq!(conn_header, "close");
-        }
         let got_content_length = response
             .headers()
             .get(CONTENT_LENGTH)

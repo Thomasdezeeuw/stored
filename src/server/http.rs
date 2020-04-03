@@ -138,8 +138,8 @@ where
 pub enum Request {
     /// POST request to store a blob, returns the length of the blob.
     ///
-    /// Body is the blob to store, with length the length provided. Note: the
-    /// length might be invalid as its user-supplied (Content-Length header).
+    /// The length comes from the "Content-Length" header and thus can't be
+    /// trusted.
     Post(usize),
     /// GET request for the blob with `key`.
     ///
@@ -177,57 +177,42 @@ impl Request {
     }
 }
 
+/// Path prefix to GET/HEAD/DELETE a blob.
+const BLOB_PATH_PREFIX: &str = "/blob/";
+
 impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
     type Error = RequestError;
 
-    /// Returns an `(err, bool)` in case of an error, where the bool is `true`
-    /// if it was a HEAD request.
     fn try_from(req: httparse::Request<'_, '_>) -> Result<Self, Self::Error> {
-        // Path prefix to post/get/head/delete a blob.
-        const BLOB_PATH_PREFIX: &str = "/blob/";
-        // Required content length header for post requests.
-        const CONTENT_LENGTH: &str = "content-length";
+        let content_length = parse_content_length(&req.headers).map_err(|kind| RequestError {
+            is_head: req.method == Some("HEAD"),
+            kind,
+        })?;
 
-        let res: Result<Self, RequestErrorKind> = match (req.method, req.path) {
+        let res = match (req.method, req.path) {
             (Some("POST"), Some("/blob")) | (Some("POST"), Some("/blob/")) => {
-                let text_length = req.headers.iter().find_map(|header| {
-                    (header.name.to_lowercase() == CONTENT_LENGTH).then_some(header.value)
-                });
-
-                if let Some(text_length) = text_length {
-                    str::from_utf8(text_length)
-                        .map_err(|_err| RequestErrorKind::InvalidContentLength)
-                        .and_then(|str_length| {
-                            str_length
-                                .parse()
-                                .map_err(|_err| RequestErrorKind::InvalidContentLength)
-                        })
-                        .map(|length| Request::Post(length))
-                } else {
-                    Err(RequestErrorKind::MissingContentLength)
+                match content_length {
+                    Some(length) => Ok(Request::Post(length)),
+                    None => Err(RequestErrorKind::MissingContentLength),
                 }
             }
             // TODO: DRY the next three routes.
-            (Some("GET"), Some(path)) if path.starts_with(BLOB_PATH_PREFIX) => {
-                // Safety: just check the prefix.
-                path[BLOB_PATH_PREFIX.len()..]
-                    .parse()
-                    .map(|key| Request::Get(key))
-                    .map_err(Into::into)
-            }
+            (Some("GET"), Some(path)) if path.starts_with(BLOB_PATH_PREFIX) => match content_length
+            {
+                Some(0) | None => parse_blob_path(path).map(|key| Request::Get(key)),
+                _ => Err(RequestErrorKind::UnexpectedBody),
+            },
             (Some("HEAD"), Some(path)) if path.starts_with(BLOB_PATH_PREFIX) => {
-                // Safety: just check the prefix.
-                path[BLOB_PATH_PREFIX.len()..]
-                    .parse()
-                    .map(|key| Request::Head(key))
-                    .map_err(Into::into)
+                match content_length {
+                    Some(0) | None => parse_blob_path(path).map(|key| Request::Head(key)),
+                    _ => Err(RequestErrorKind::UnexpectedBody),
+                }
             }
             (Some("DELETE"), Some(path)) if path.starts_with(BLOB_PATH_PREFIX) => {
-                // Safety: just check the prefix.
-                path[BLOB_PATH_PREFIX.len()..]
-                    .parse()
-                    .map(|key| Request::Delete(key))
-                    .map_err(Into::into)
+                match content_length {
+                    Some(0) | None => parse_blob_path(path).map(|key| Request::Delete(key)),
+                    _ => Err(RequestErrorKind::UnexpectedBody),
+                }
             }
             // After parsing a request `method` and `path` should always be
             // some, so we're left with an invalid route, aka 404.
@@ -239,6 +224,33 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
             kind,
         })
     }
+}
+
+/// Parse the "Content-Length" headers. Returns `Some(usize)` if its present and
+/// valid, `None` if not present and `Err(InvalidContentLength)` if the header
+/// is set, but invalid.
+fn parse_content_length(headers: &[httparse::Header]) -> Result<Option<usize>, RequestErrorKind> {
+    const CONTENT_LENGTH: &str = "content-length";
+    headers
+        .iter()
+        .find_map(|header| (header.name.to_lowercase() == CONTENT_LENGTH).then_some(header.value))
+        .map(|text_length| {
+            str::from_utf8(text_length)
+                .map_err(|_err| RequestErrorKind::InvalidContentLength)
+                .and_then(|str_length| {
+                    str_length
+                        .parse()
+                        .map_err(|_err| RequestErrorKind::InvalidContentLength)
+                })
+        })
+        .transpose()
+}
+
+/// Parse a blob path path.
+/// Note: path must start with `BLOB_PATH_PREFIX`.
+fn parse_blob_path(path: &str) -> Result<Key, RequestErrorKind> {
+    debug_assert!(path.starts_with(BLOB_PATH_PREFIX));
+    path[BLOB_PATH_PREFIX.len()..].parse().map_err(Into::into)
 }
 
 /// Error returned by [`ReadRequest`].
@@ -298,7 +310,8 @@ impl Error for RequestError {
             Io(err) => Some(err),
             Parse(err) => Some(err),
             InvalidKey(err) => Some(err),
-            Incomplete | InvalidRoute | MissingContentLength | InvalidContentLength => None,
+            Incomplete | InvalidRoute | MissingContentLength | InvalidContentLength
+            | UnexpectedBody => None,
         }
     }
 }
@@ -320,6 +333,8 @@ pub enum RequestErrorKind {
     InvalidContentLength,
     /// Invalid key in path.
     InvalidKey(InvalidKeyStr),
+    /// Request contained a body, but didn't expect any.
+    UnexpectedBody,
 }
 
 impl From<InvalidKeyStr> for RequestErrorKind {
@@ -339,6 +354,7 @@ impl fmt::Display for RequestErrorKind {
             MissingContentLength => write!(f, "request missing Content-Length header"),
             InvalidContentLength => write!(f, "request's Content-Length header is invalid"),
             InvalidKey(err) => write!(f, "key in route is invalid: {}", err),
+            UnexpectedBody => write!(f, "unexpected request body"),
         }
     }
 }
@@ -417,6 +433,7 @@ where
 pub struct Response {
     /// Request was a HEAD request.
     is_head: bool,
+    should_close: bool,
     kind: ResponseKind,
 }
 
@@ -505,8 +522,13 @@ fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut Wr
 
 impl Response {
     /// Returns a new `Response`.
+    /// Sets `should_close` to false.
     pub const fn new(is_head: bool, kind: ResponseKind) -> Response {
-        Response { is_head, kind }
+        Response {
+            is_head,
+            should_close: false,
+            kind,
+        }
     }
 
     /// Returns the correct `Response` for a `RequestError`, returns an
@@ -515,18 +537,24 @@ impl Response {
     pub fn for_error(req_err: RequestError) -> io::Result<Response> {
         let is_head = req_err.is_head;
         use RequestErrorKind::*;
+        let should_close = match &req_err.kind {
+            // Can't read the entire body so we're going to close the
+            // connection.
+            Incomplete | MissingContentLength | InvalidContentLength => true,
+            _ => false,
+        };
         let kind = match req_err.kind {
             Io(err) => return Err(err),
             // HTTP parsing errors.
-            Parse(httparse::Error::HeaderName) => ResponseKind::BadRequest("invalid header name"),
-            Parse(httparse::Error::HeaderValue) => ResponseKind::BadRequest("invalid header value"),
+            Parse(httparse::Error::HeaderName) => ResponseKind::BadRequest("Invalid header name"),
+            Parse(httparse::Error::HeaderValue) => ResponseKind::BadRequest("Invalid header value"),
             Parse(httparse::Error::NewLine)
             | Parse(httparse::Error::Status)
             | Parse(httparse::Error::Token)
             | Parse(httparse::Error::Version) => {
-                ResponseKind::BadRequest("invalid HTTP request format")
+                ResponseKind::BadRequest("Invalid HTTP request format")
             }
-            Incomplete => ResponseKind::BadRequest("incomplete HTTP request"),
+            Incomplete => ResponseKind::BadRequest("Incomplete HTTP request"),
             Parse(httparse::Error::TooManyHeaders) => ResponseKind::TooManyHeaders,
             // 404 Not found.
             InvalidRoute => ResponseKind::NotFound,
@@ -534,17 +562,26 @@ impl Response {
             MissingContentLength | InvalidContentLength => ResponseKind::NoContentLength,
             // Invalid key format in "/blob/$key" path.
             InvalidKey(_err) => ResponseKind::InvalidKey,
+            // A request with a body to a route we don't process a body.
+            UnexpectedBody => ResponseKind::BadRequest("Unexpected request body"),
         };
-        Ok(Response { is_head, kind })
+        Ok(Response {
+            is_head,
+            should_close,
+            kind,
+        })
     }
 
-    /// Maximum size of `write_headers`.
+    /// Hint of the maximum size of `write_headers`, use in reserving buffer
+    /// capacity, never as actual maximum (it gets outdated easily).
     const MAX_HEADERS_SIZE: usize =
         // Status line, +31 for the longest reason (`TooManyHeaders`).
         15 + 31 +
         // Server and Content-Length (+39 max. length as text), Date headers.
         16 + 18 + 39 + 37 +
-        // Extra headers: Location header (the longest).
+        // Connection header (keep-alive).
+        24 +
+        // Extra headers: Location header (the longest) and ending "\r\n".
         149;
 
     /// Write all headers to `buf`, including the last empty line.
@@ -560,6 +597,14 @@ impl Response {
         .unwrap();
         append_date_header(&Utc::now(), "Date", buf);
 
+        // For some errors, where we can't process the body properly, we want to
+        // close the connection as we don't know where the next request begins.
+        if self.should_close() {
+            write!(buf, "Connection: close\r\n").unwrap();
+        } else {
+            write!(buf, "Connection: keep-alive\r\n").unwrap();
+        }
+
         use ResponseKind::*;
         match &self.kind {
             Stored(key) => {
@@ -572,13 +617,8 @@ impl Response {
             }
             NotFound | TooManyHeaders | NoContentLength | TooLargePayload | InvalidKey
             | BadRequest(_) | ServerError => {
-                // The body will is an (error) message in plain text, UTF-8. For
-                // errors we want to close the connection.
-                write!(
-                    buf,
-                    "Content-Type: text/plain; charset=utf-8\r\nConnection: close\r\n"
-                )
-                .unwrap()
+                // The body is an (error) message in plain text, UTF-8.
+                write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
             Deleted => {}
         }
@@ -622,6 +662,11 @@ impl Response {
     /// responding to HEAD requests, this will return the correct length.
     fn len(&self) -> usize {
         self.kind.body().len()
+    }
+
+    /// Returns `true` if the connection should be closed.
+    pub fn should_close(&self) -> bool {
+        self.should_close
     }
 }
 

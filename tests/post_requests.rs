@@ -71,6 +71,7 @@ fn store_hello_world() {
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
     );
 
     let last_modified = date_header();
@@ -79,6 +80,7 @@ fn store_hello_world() {
         expected: StatusCode::OK, b"Hello world",
         CONTENT_LENGTH => "11",
         LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -95,6 +97,7 @@ fn store_hello_mars_twice() {
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
     );
 
     let last_modified = date_header();
@@ -103,6 +106,7 @@ fn store_hello_mars_twice() {
         expected: StatusCode::OK, blob,
         CONTENT_LENGTH => blob_len,
         LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
     );
 
     // Storing the blob a second time shouldn't change anything.
@@ -112,6 +116,7 @@ fn store_hello_mars_twice() {
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
     );
 
     request!(
@@ -119,6 +124,7 @@ fn store_hello_mars_twice() {
         expected: StatusCode::OK, blob,
         CONTENT_LENGTH => blob_len,
         LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -131,7 +137,7 @@ fn index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -144,7 +150,7 @@ fn not_found() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -185,7 +191,7 @@ fn content_length_too_large() {
         expected: StatusCode::PAYLOAD_TOO_LARGE, body::PAYLOAD_TOO_LARGE,
         CONTENT_LENGTH => body::PAYLOAD_TOO_LARGE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -200,6 +206,7 @@ fn body_larger_than_content_length() {
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
     );
 
     let last_modified = date_header();
@@ -208,6 +215,7 @@ fn body_larger_than_content_length() {
         expected: StatusCode::OK, &body[..100],
         CONTENT_LENGTH => "100",
         LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -236,7 +244,7 @@ fn body_smaller_than_content_length_shutdown() {
         expected: StatusCode::BAD_REQUEST, body::INCOMPLETE,
         CONTENT_LENGTH => body::INCOMPLETE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -249,6 +257,6 @@ fn empty_blob() {
         expected: StatusCode::BAD_REQUEST, b"Can't store empty blob",
         CONTENT_LENGTH => "22",
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }

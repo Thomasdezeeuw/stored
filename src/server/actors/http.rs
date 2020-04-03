@@ -1,7 +1,5 @@
 //! Module with the HTTP actor.
 
-// TODO: support pipelining.
-
 use std::io;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -29,6 +27,9 @@ pub async fn actor(
     debug!("accepted connection: address={}", address);
     let mut conn = Connection::new(stream);
 
+    // TODO: pipeline.
+    // check response.should_close -> close connection.
+
     let request = match conn.read_header().await {
         Ok(request) => request,
         Err(err) => {
@@ -52,7 +53,7 @@ pub async fn actor(
     let response = match request {
         Request::Post(size_hint) => {
             info!(
-                "POST request to store blob: size={}, address={}",
+                "POST request to store blob: content_length={}, address={}",
                 size_hint, address
             );
 

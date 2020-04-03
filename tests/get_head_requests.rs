@@ -52,7 +52,7 @@ fn index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -63,7 +63,7 @@ fn not_found() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -75,7 +75,34 @@ fn hello_world_blob() {
         expected: StatusCode::OK, b"Hello world",
         CONTENT_LENGTH => "11",
         LAST_MODIFIED => "Thu, 01 Jan 1970 00:00:05 GMT",
+        CONNECTION => header::KEEP_ALIVE,
     );
+}
+
+#[test]
+fn zero_content_length() {
+    let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+
+    let _p = start_stored();
+
+    for method in &["GET", "HEAD"] {
+        let response =
+            request(method, url, DB_PORT, &[(CONTENT_LENGTH, "0")], body::EMPTY).unwrap();
+        assert_response(
+            response,
+            StatusCode::OK,
+            &[
+                (CONTENT_LENGTH, "11"),
+                (LAST_MODIFIED, "Thu, 01 Jan 1970 00:00:05 GMT"),
+                (CONNECTION, header::KEEP_ALIVE),
+            ],
+            if *method == "GET" {
+                b"Hello world"
+            } else {
+                body::EMPTY
+            },
+        );
+    }
 }
 
 #[test]
@@ -86,6 +113,7 @@ fn hello_mars_blob() {
         expected: StatusCode::OK, b"Hello mars",
         CONTENT_LENGTH => "10",
         LAST_MODIFIED => "Thu, 01 Jan 1970 00:00:50 GMT",
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -97,7 +125,7 @@ fn not_present_blob() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -108,7 +136,7 @@ fn blob_index() {
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -119,7 +147,7 @@ fn empty_key_blob() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -130,7 +158,7 @@ fn invalid_key_blob_too_short() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -142,7 +170,7 @@ fn invalid_key_blob_too_long() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
 }
 
@@ -154,6 +182,32 @@ fn invalid_key_blob_too_not_hex() {
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::CLOSE,
+        CONNECTION => header::KEEP_ALIVE,
     );
+}
+
+#[test]
+fn with_body() {
+    let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+
+    let _p = start_stored();
+
+    for method in &["GET", "HEAD"] {
+        let response =
+            request(method, url, DB_PORT, &[(CONTENT_LENGTH, "9")], b"some body").unwrap();
+        assert_response(
+            response,
+            StatusCode::BAD_REQUEST,
+            &[
+                (CONTENT_LENGTH, body::UNEXPECTED_BODY_LEN),
+                (CONTENT_TYPE, header::PLAIN_TEXT),
+                (CONNECTION, header::KEEP_ALIVE),
+            ],
+            if *method == "GET" {
+                body::UNEXPECTED_BODY
+            } else {
+                body::EMPTY
+            },
+        );
+    }
 }
