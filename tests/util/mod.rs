@@ -144,8 +144,10 @@ pub mod http {
     //! Simple http client.
 
     use std::io::{self, Read, Write};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+    use std::mem::replace;
+    use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
     use std::str::{self, FromStr};
+    use std::time::Duration;
 
     use chrono::{Datelike, Timelike, Utc};
     use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
@@ -186,7 +188,7 @@ pub mod http {
         pub const KEEP_ALIVE: &str = "keep-alive";
     }
 
-    /// Make a HTTP request.
+    /// Make a single HTTP request.
     pub fn request(
         method: &'static str,
         path: &'static str,
@@ -194,6 +196,28 @@ pub mod http {
         headers: &[(HeaderName, &'static str)],
         body: &[u8],
     ) -> io::Result<Response<Vec<u8>>> {
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let address = SocketAddr::new(ip, port);
+        let mut stream = TcpStream::connect(address)?;
+
+        // Write the request and shutdown the writing side to indicate we're
+        // only sending a single request.
+        write_request(&mut stream, method, path, headers, body)?;
+        stream.shutdown(Shutdown::Write).unwrap();
+
+        let mut responses = read_responses(&mut stream, method == "HEAD")?;
+        assert_eq!(responses.len(), 1);
+        Ok(responses.pop().unwrap())
+    }
+
+    /// Write a HTTP request to `stream`.
+    pub fn write_request(
+        stream: &mut TcpStream,
+        method: &'static str,
+        path: &'static str,
+        headers: &[(HeaderName, &'static str)],
+        body: &[u8],
+    ) -> io::Result<()> {
         let mut req = Request::builder()
             .method(method)
             .uri(Uri::from_static(path))
@@ -206,59 +230,83 @@ pub mod http {
 
         let req = req.body(body).unwrap();
 
-        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
-        let address = SocketAddr::new(ip, port);
-        let mut stream = TcpStream::connect(address)?;
+        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
 
         // Write the Status line.
-        write!(
-            &mut stream,
-            "{} {} HTTP/1.1\r\n",
-            req.method(),
-            req.uri().path()
-        )?;
+        write!(stream, "{} {} HTTP/1.1\r\n", req.method(), req.uri().path())?;
         // Headers.
         for (name, value) in req.headers() {
-            write!(&mut stream, "{}: {}\r\n", name, value.to_str().unwrap())?;
+            write!(stream, "{}: {}\r\n", name, value.to_str().unwrap())?;
         }
-        write!(&mut stream, "\r\n")?;
+        write!(stream, "\r\n")?;
         // Body.
-        stream.write(req.body())?;
-        stream.flush()?;
+        stream.write_all(req.body())?;
+        stream.flush()
+    }
 
-        // Read the entire response.
+    /// Read a number of HTTP response from `stream`.
+    pub fn read_responses(
+        stream: &mut TcpStream,
+        was_head: bool,
+    ) -> io::Result<Vec<Response<Vec<u8>>>> {
+        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+
+        // Read the all the responses.
         let mut bytes = Vec::new();
         stream.read_to_end(&mut bytes)?;
 
-        // Parse the HTTP headers.
-        let mut headers = [httparse::EMPTY_HEADER; 8];
-        let mut raw_resp = httparse::Response::new(&mut headers);
-        let header_bytes = raw_resp
-            .parse(&*bytes)
-            .expect("invalid HTTP response")
-            .unwrap();
-        assert_eq!(raw_resp.version, Some(1));
+        let mut responses = Vec::new();
+        while !bytes.is_empty() {
+            // Parse a  HTTP headers.
+            let mut headers = [httparse::EMPTY_HEADER; 8];
+            let mut raw_resp = httparse::Response::new(&mut headers);
+            let header_bytes = raw_resp
+                .parse(&*bytes)
+                .expect("invalid HTTP response")
+                .unwrap();
+            assert_eq!(raw_resp.version, Some(1));
 
-        // Build an own HTTP response.
-        let mut resp = Response::builder()
-            .version(Version::HTTP_11)
-            .status(raw_resp.code.unwrap_or(0));
-        {
-            let headers = resp.headers_mut().unwrap();
-            for header in raw_resp.headers {
-                let value = HeaderValue::from_bytes(header.value).unwrap();
-                let name = HeaderName::from_str(header.name).unwrap();
-                assert!(
-                    headers.insert(name, value).is_none(),
-                    "send '{}' header twice",
-                    header.name
-                );
+            // Build an owned HTTP response.
+            let mut resp = Response::builder()
+                .version(Version::HTTP_11)
+                .status(raw_resp.code.unwrap_or(0));
+            {
+                let headers = resp.headers_mut().unwrap();
+                for header in raw_resp.headers {
+                    let value = HeaderValue::from_bytes(header.value).unwrap();
+                    let name = HeaderName::from_str(header.name).unwrap();
+                    assert!(
+                        headers.insert(name, value).is_none(),
+                        "send '{}' header twice",
+                        header.name
+                    );
+                }
             }
+
+            let content_length: usize = if was_head {
+                0
+            } else {
+                // Sorry, :)
+                resp.headers_ref()
+                    .unwrap()
+                    .get(CONTENT_LENGTH)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .parse()
+                    .unwrap()
+            };
+
+            let remaining_bytes = bytes.split_off(header_bytes + content_length);
+            let mut request_bytes = replace(&mut bytes, remaining_bytes);
+
+            // Drop the header bytes and use the remainder as body.
+            drop(request_bytes.drain(..header_bytes));
+            let response = resp.body(request_bytes).unwrap();
+            responses.push(response);
         }
 
-        // Drop the header bytes and use the remainder as body.
-        drop(bytes.drain(..header_bytes));
-        Ok(resp.body(bytes).unwrap())
+        Ok(responses)
     }
 
     /// Assert that `response` has all the `want`ed fields.
@@ -273,12 +321,13 @@ pub mod http {
         want_headers: &[(HeaderName, &str)],
         want_body: &[u8],
     ) {
+        let want_date_header = date_header();
         assert_eq!(response.status(), want_status);
         assert_eq!(response.version(), Version::HTTP_11);
         for (name, value) in response.headers() {
             match name {
                 &SERVER => assert_eq!(value, "stored"),
-                &DATE => assert_eq!(value, &*date_header()),
+                &DATE => assert_eq!(value, &*want_date_header),
                 name => {
                     let want = want_headers.iter().find(|want| name == want.0);
                     if let Some(want) = want {

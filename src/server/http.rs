@@ -8,14 +8,12 @@ use std::future::Future;
 use std::io::{self, IoSlice, Write};
 use std::marker::Unpin;
 use std::mem::replace;
-use std::net::Shutdown;
 use std::pin::Pin;
 use std::task::{self, Poll};
 use std::{fmt, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_io::{AsyncRead, AsyncWrite};
-use heph::net::TcpStream;
 use httparse::EMPTY_HEADER;
 
 use crate::key::InvalidKeyStr;
@@ -30,6 +28,7 @@ pub const MAX_HEADERS: usize = 16;
 /// # Notes
 ///
 /// The `IO` is not buffered.
+#[derive(Debug)]
 pub struct Connection<IO> {
     buf: Buffer,
     io: IO,
@@ -42,13 +41,6 @@ impl<IO> Connection<IO> {
             buf: Buffer::new(),
             io,
         }
-    }
-}
-
-impl Connection<TcpStream> {
-    /// Close the connection.
-    pub fn close(mut self) -> io::Result<()> {
-        self.io.shutdown(Shutdown::Both)
     }
 }
 
@@ -78,6 +70,7 @@ where
 }
 
 /// [`Future`] to read a [`Request`] from a [`Connection`].
+#[derive(Debug)]
 pub struct ReadRequest<'c, IO> {
     buf: &'c mut Buffer,
     io: &'c mut IO,
@@ -89,45 +82,52 @@ impl<'c, IO> Future for ReadRequest<'c, IO>
 where
     IO: AsyncRead + Unpin,
 {
-    type Output = Result<Request, RequestError>;
+    /// Returns `None` if no bytes are read.
+    type Output = Result<Option<Request>, RequestError>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
         loop {
-            // self.buf.len() <= self.too_short
-            // At the start we don't have enough bytes to read the entire
-            // request, so we need to read some more.
+            // At the start we likely don't have enough bytes to read the entire
+            // request, however it could be that we read (part of) a request in
+            // reading the previous request, so we need to check.
+            if self.buf.len() > self.too_short {
+                let mut headers = [EMPTY_HEADER; MAX_HEADERS];
+                let mut req = httparse::Request::new(&mut headers);
+                match req.parse(self.buf.as_bytes()) {
+                    Ok(httparse::Status::Complete(bytes_read)) => {
+                        // NOTE: don't early return here, we **always** need to mark
+                        // the bytes as processed so we don't process them again.
+                        let request = Request::try_from(req);
+                        self.buf.processed(bytes_read);
+                        return Poll::Ready(request.map(Some));
+                    }
+                    Ok(httparse::Status::Partial) => {
+                        // Need to read some more bytes.
+                        self.too_short = self.buf.len();
+                        continue;
+                    }
+                    Err(err) => return Poll::Ready(Err(err.into())),
+                }
+            }
+
             let ReadRequest { buf, io, .. } = &mut *self;
             let mut read_future = buf.read_from(io);
             match Pin::new(&mut read_future).poll(ctx)? {
                 // Read all bytes, but don't have a complete HTTP request yet.
                 Poll::Ready(0) => {
-                    let err = RequestError {
-                        is_head: false, // Don't know...
-                        kind: RequestErrorKind::Incomplete,
-                    };
-                    return Poll::Ready(Err(err));
+                    if buf.is_empty() {
+                        return Poll::Ready(Ok(None));
+                    } else {
+                        let err = RequestError {
+                            is_head: false, // Don't know...
+                            kind: RequestErrorKind::Incomplete,
+                        };
+                        return Poll::Ready(Err(err));
+                    }
                 }
                 Poll::Ready(_) => (),
                 // Didn't read any more bytes, try again later.
                 Poll::Pending => return Poll::Pending,
-            }
-
-            let mut headers = [EMPTY_HEADER; MAX_HEADERS];
-            let mut req = httparse::Request::new(&mut headers);
-            match req.parse(self.buf.as_bytes()) {
-                Ok(httparse::Status::Complete(bytes_read)) => {
-                    // NOTE: don't early return here, we **always** need to mark
-                    // the bytes as processed so we don't process them again.
-                    let request = Request::try_from(req);
-                    self.buf.processed(bytes_read);
-                    return Poll::Ready(request);
-                }
-                Ok(httparse::Status::Partial) => {
-                    // Need to read some more bytes.
-                    self.too_short = self.buf.len();
-                    continue;
-                }
-                Err(err) => return Poll::Ready(Err(err.into())),
             }
         }
     }
@@ -360,6 +360,7 @@ impl fmt::Display for RequestErrorKind {
 }
 
 /// [`Future`] to read the request's body from a [`Connection`].
+#[derive(Debug)]
 pub struct ReadBody<'c, IO> {
     buf: Option<&'c mut Buffer>,
     io: &'c mut IO,
@@ -430,6 +431,7 @@ where
 }
 
 /// HTTP response.
+#[derive(Debug)]
 pub struct Response {
     /// Request was a HEAD request.
     is_head: bool,
@@ -438,6 +440,7 @@ pub struct Response {
 }
 
 /// HTTP response kind.
+#[derive(Debug)]
 pub enum ResponseKind {
     /// Blob was stored.
     /// Response to POST.
@@ -540,9 +543,11 @@ impl Response {
         let should_close = match &req_err.kind {
             // Can't read the entire body so we're going to close the
             // connection.
-            Incomplete | MissingContentLength | InvalidContentLength => true,
+            Parse(_) | Incomplete | MissingContentLength | InvalidContentLength
+            | UnexpectedBody => true,
             _ => false,
         };
+
         let kind = match req_err.kind {
             Io(err) => return Err(err),
             // HTTP parsing errors.
@@ -689,12 +694,14 @@ impl ResponseKind {
 }
 
 /// [`Future`] to write a [`Response`] to a [`Connection`].
+#[derive(Debug)]
 pub struct WriteResponse<'c, IO> {
     state: WrittenState<'c>,
     io: &'c mut IO,
 }
 
 /// Status of [`WriteResponse`].
+#[derive(Debug)]
 enum WrittenState<'c> {
     /// Write the headers and body.
     Both(WriteBuffer<'c>, &'c [u8]),

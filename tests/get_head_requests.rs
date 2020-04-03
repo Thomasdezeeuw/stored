@@ -201,7 +201,7 @@ fn with_body() {
             &[
                 (CONTENT_LENGTH, body::UNEXPECTED_BODY_LEN),
                 (CONTENT_TYPE, header::PLAIN_TEXT),
-                (CONNECTION, header::KEEP_ALIVE),
+                (CONNECTION, header::CLOSE),
             ],
             if *method == "GET" {
                 body::UNEXPECTED_BODY
