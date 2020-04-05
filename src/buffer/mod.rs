@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::io::{self, IoSlice, Write};
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::slice;
 use std::task::{self, Poll};
@@ -149,12 +150,7 @@ impl Buffer {
     /// Bytes available to read into.
     ///
     /// This ensures that the slice has a length of at least `MIN_BUF_SIZE`.
-    ///
-    /// # Unsafety
-    ///
-    /// The contents of the returned bytes is undefined, as such it's only valid
-    /// to write into, **not** read from.
-    unsafe fn available_bytes(&mut self) -> &mut [u8] {
+    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
         // Ensure we have some space to read into.
         if self.capacity_left() < MIN_BUF_SIZE {
             self.move_to_start(false);
@@ -172,7 +168,7 @@ impl Buffer {
 
         #[allow(unused_unsafe)]
         unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len());
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
             slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         }
     }
@@ -211,7 +207,10 @@ where
             ref mut reader,
         } = &mut *self;
         Pin::new(reader)
-            .poll_read(ctx, unsafe { buffer.available_bytes() })
+            .poll_read(ctx, unsafe {
+                // TODO: should use a `read_unitialised` kind of method here.
+                MaybeUninit::slice_get_mut(buffer.available_bytes())
+            })
             .map_ok(|bytes_read| {
                 // Safe because we just read into the buffer.
                 unsafe {

@@ -161,9 +161,12 @@ fn buffer_move_to_start() {
 fn buffer_available_bytes() {
     let mut buf = Buffer::new();
 
-    assert_eq!(unsafe { buf.available_bytes().len() }, INITIAL_BUF_SIZE);
-    let zero = [0; INITIAL_BUF_SIZE];
-    unsafe { buf.available_bytes() }.copy_from_slice(&zero);
+    assert_eq!(buf.available_bytes().len(), INITIAL_BUF_SIZE);
+    unsafe {
+        buf.available_bytes()
+            .as_mut_ptr()
+            .write_bytes(0u8, INITIAL_BUF_SIZE)
+    }
 
     let data1 = [1; INITIAL_BUF_SIZE - MIN_BUF_SIZE];
     let mut reader = Cursor::new(data1.as_ref());
@@ -173,7 +176,7 @@ fn buffer_available_bytes() {
     assert_eq!(buf.capacity_left(), MIN_BUF_SIZE);
 
     // No need to move the buffer yet.
-    assert_eq!(unsafe { buf.available_bytes().len() }, MIN_BUF_SIZE);
+    assert_eq!(buf.available_bytes().len(), MIN_BUF_SIZE);
     assert_eq!(buf.capacity_left(), MIN_BUF_SIZE);
 
     // Marking some data as processed so the data can be moved by
