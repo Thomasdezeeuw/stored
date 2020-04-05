@@ -6,7 +6,11 @@ use std::task::{self, Poll};
 use futures_util::io::Cursor;
 use futures_util::task::noop_waker;
 
-use super::{Buffer, INITIAL_BUF_SIZE, MIN_BUF_SIZE, MIN_SIZE_MOVE};
+use super::{Buffer, INITIAL_BUF_SIZE, MIN_SIZE_MOVE};
+
+/// Minimum size of a buffer passed to calls to read.
+/// Note: no longer used in the implementation, but still in the tests below.
+const MIN_BUF_SIZE: usize = 2 * 1024;
 
 #[test]
 fn buffer_simple_read() {
@@ -173,69 +177,12 @@ fn buffer_available_bytes() {
     let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
     assert_eq!(bytes_read, data1.len());
     assert_eq!(buf.as_bytes(), data1.as_ref());
-    assert_eq!(buf.capacity_left(), MIN_BUF_SIZE);
-
-    // No need to move the buffer yet.
     assert_eq!(buf.available_bytes().len(), MIN_BUF_SIZE);
     assert_eq!(buf.capacity_left(), MIN_BUF_SIZE);
 
-    // Marking some data as processed so the data can be moved by
-    // `available_bytes`.
-    buf.processed(MIN_BUF_SIZE);
-
-    let data2 = [2; 2 * MIN_BUF_SIZE];
-    let mut reader = Cursor::new(data2.as_ref());
-    let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
-    assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
-                                          // Buffer should hold the old and new data.
-    let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-    assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
-    assert_eq!(buf.as_bytes()[old_data_length..], data2[..MIN_BUF_SIZE]);
-    assert_eq!(buf.capacity_left(), 0);
-
-    // Now the data should be moved to the start of the buffer.
-    let data3 = [3; 2 * MIN_BUF_SIZE];
-    let mut reader = Cursor::new(data3.as_ref());
-    let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
-    assert_eq!(bytes_read, MIN_BUF_SIZE); // Partial write.
-                                          // Buffer should hold the old and new data.
-    let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-    assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
-    assert_eq!(
-        buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
-        data2[..MIN_BUF_SIZE]
-    );
-    assert_eq!(
-        buf.as_bytes()[old_data_length + MIN_BUF_SIZE..],
-        data3[..MIN_BUF_SIZE]
-    );
-    assert_eq!(buf.capacity_left(), 0);
-
-    // Ensure no additional allocation.
-    assert_eq!(buf.data.capacity(), INITIAL_BUF_SIZE);
-    assert_eq!(buf.processed, 0);
-
-    // Now we have no capacity left and all bytes are unprocessed, so we
-    // need to reallocate.
-    let data4 = [4; MIN_BUF_SIZE];
-    let mut reader = Cursor::new(data4.as_ref());
-    let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
-    assert_eq!(bytes_read, data4.len());
-    // Buffer should hold the old and new data.
-    let old_data_length = INITIAL_BUF_SIZE - 2 * MIN_BUF_SIZE;
-    assert_eq!(buf.as_bytes()[..old_data_length], data1[MIN_BUF_SIZE..]);
-    assert_eq!(
-        buf.as_bytes()[old_data_length..old_data_length + MIN_BUF_SIZE],
-        data2[..MIN_BUF_SIZE]
-    );
-    assert_eq!(
-        buf.as_bytes()[old_data_length + MIN_BUF_SIZE..old_data_length + 2 * MIN_BUF_SIZE],
-        data3[..MIN_BUF_SIZE]
-    );
-    assert_eq!(
-        buf.as_bytes()[old_data_length + 2 * MIN_BUF_SIZE..],
-        data4[..MIN_BUF_SIZE]
-    );
+    buf.processed(1);
+    assert_eq!(buf.available_bytes().len(), MIN_BUF_SIZE);
+    assert_eq!(buf.capacity_left(), MIN_BUF_SIZE);
 }
 
 #[test]
@@ -246,7 +193,8 @@ fn write_buffer_drops_writen_bytes() {
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
 
-    let mut wbuf = buf.write_buf();
+    let (buf_bytes, mut wbuf) = buf.split(10);
+    assert_eq!(buf_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
 
@@ -264,7 +212,8 @@ fn write_buffer_drops_writen_bytes() {
 fn write_buffer_drops_writen_bytes_original_empty() {
     let mut buf = Buffer::new();
 
-    let mut wbuf = buf.write_buf();
+    let (bytes, mut wbuf) = buf.split(10);
+    assert_eq!(bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
 
@@ -287,7 +236,8 @@ fn write_buffer_length() {
     assert_eq!(buf.len(), bytes.len());
     assert_eq!(buf.as_bytes(), bytes);
 
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
     wbuf.write_all(wbytes).unwrap();
@@ -296,7 +246,8 @@ fn write_buffer_length() {
     drop(wbuf);
 
     buf.processed(100);
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    assert_eq!(original_bytes, &bytes[100..]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
     wbuf.write_all(wbytes).unwrap();
@@ -305,7 +256,8 @@ fn write_buffer_length() {
     drop(wbuf);
 
     buf.processed(100);
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    assert_eq!(original_bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
     wbuf.write_all(wbytes).unwrap();
@@ -324,7 +276,8 @@ fn write_buffer_processed() {
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
 
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(3);
+    assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
 
@@ -341,6 +294,7 @@ fn write_buffer_processed() {
     assert_eq!(wbuf.len(), 1);
     assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
 
+    assert_eq!(original_bytes, bytes);
     drop(wbuf);
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
@@ -350,7 +304,8 @@ fn write_buffer_processed() {
 fn write_buffer_processed_original_empty() {
     let mut buf = Buffer::new();
 
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(3);
+    assert_eq!(original_bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
 
@@ -367,65 +322,18 @@ fn write_buffer_processed_original_empty() {
     assert_eq!(wbuf.len(), 1);
     assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
 
+    assert_eq!(original_bytes, &[]);
     drop(wbuf);
     assert_eq!(buf.len(), 0);
     assert_eq!(buf.as_bytes(), &[]);
 }
 
 #[test]
-fn empty_buffer_write_buffer_reserve_atleast() {
-    let mut buf = Buffer::new();
-
-    // Shouldn't expand the buffer as it already has enough capacity.
-    let mut wbuf = buf.write_buf();
-    wbuf.reserve_atleast(2);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
-    drop(wbuf);
-    assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
-
-    // This should grow the buffer.
-    let mut wbuf = buf.write_buf();
-    wbuf.reserve_atleast(2 * INITIAL_BUF_SIZE);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
-    drop(wbuf);
-    assert_eq!(buf.capacity_left(), 2 * INITIAL_BUF_SIZE);
-}
-
-#[test]
-fn write_buffer_reserve_atleast() {
-    let mut buf = Buffer::new();
-    let bytes = &[1, 2, 3];
-    add_bytes(&mut buf, bytes);
-    assert_eq!(buf.len(), bytes.len());
-    assert_eq!(buf.as_bytes(), bytes);
-
-    // Shouldn't expand the buffer as it already has enough capacity.
-    let mut wbuf = buf.write_buf();
-    wbuf.reserve_atleast(2);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
-    drop(wbuf);
-    assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes.len());
-
-    // This should grow the buffer.
-    let mut wbuf = buf.write_buf();
-    wbuf.reserve_atleast(2 * INITIAL_BUF_SIZE);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
-    drop(wbuf);
-    assert_eq!(buf.capacity_left(), 2 * INITIAL_BUF_SIZE);
-
-    assert_eq!(buf.len(), bytes.len());
-    assert_eq!(buf.as_bytes(), bytes);
-}
-
-#[test]
 #[should_panic(expected = "marking bytes as processed beyond read range")]
 fn marking_processed_write_buffer_beyond_read_range() {
     let mut buf = Buffer::new();
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(20);
+    assert_eq!(original_bytes, &[]);
     wbuf.processed(1);
 }
 
@@ -433,13 +341,15 @@ fn marking_processed_write_buffer_beyond_read_range() {
 #[should_panic(expected = "marking bytes as processed beyond read range")]
 fn marking_processed_write_buffer_beyond_read_range_after_reset() {
     let mut buf = Buffer::new();
-    add_bytes(&mut buf, &[1, 2, 3]);
+    let bytes = &[1, 2, 3];
+    add_bytes(&mut buf, bytes);
 
-    let mut wbuf = buf.write_buf();
+    let (original_bytes, mut wbuf) = buf.split(10);
+    assert_eq!(original_bytes, bytes);
     wbuf.write_all(&[4, 5, 6]).unwrap();
     wbuf.processed(2); // Ok.
 
-    wbuf.processed(2);
+    wbuf.processed(2); // Should panic.
 }
 
 fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output

@@ -16,9 +16,9 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_io::{AsyncRead, AsyncWrite};
 use httparse::EMPTY_HEADER;
 
-use crate::key::InvalidKeyStr;
+use crate::buffer::{Buffer, WriteBuffer};
+use crate::key::{InvalidKeyStr, Key};
 use crate::server::storage::Blob;
-use crate::{Buffer, Key, WriteBuffer};
 
 /// Maximum number of headers read from an incoming request.
 pub const MAX_HEADERS: usize = 16;
@@ -431,8 +431,7 @@ where
 {
     /// Returns a [`Future`] that writes an HTTP/1.1 [`Response`].
     pub fn write_response<'a>(&'a mut self, response: &'a Response) -> WriteResponse<'a, IO> {
-        let mut write_buf = self.buf.write_buf();
-        write_buf.reserve_atleast(Response::MAX_HEADERS_SIZE);
+        let (_, mut write_buf) = self.buf.split_write(Response::MAX_HEADERS_SIZE);
         response.write_headers(&mut write_buf);
         // TODO: replace with `write_all_vectored`:
         // https://github.com/rust-lang/futures-rs/pull/1741.
