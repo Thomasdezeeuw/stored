@@ -1,14 +1,17 @@
-use std::env;
 use std::fs::File;
 use std::io::{self, Read};
+use std::iter::FromIterator;
 use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::path::Path;
+use std::{env, fmt};
 
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
 use heph::{NewActor, Runtime, RuntimeError};
 use human_size::{Kibibyte, Mebibyte, SpecificSize};
 use log::info;
+use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::Deserialize;
 
 use stored::server::actors::{db, http};
@@ -18,17 +21,18 @@ use stored::server::supervisors::{http_supervisor, DbSupervisor, ServerSuperviso
 /// stored Configuration.
 ///
 /// Look at `example_config.toml` in to see what each option means.
-#[derive(Deserialize)]
+///
+/// # Notes
+///
+/// Does a synchronous lookup of peer addresses.
+#[derive(Deserialize, Debug)]
 struct Config {
     path: Box<Path>,
     #[serde(default = "default_max_blob_size")]
-    #[allow(dead_code)] // TODO: use this field.
     max_blob_size: SpecificSize<Kibibyte>,
-    #[allow(dead_code)] // TODO: use this field.
     max_store_size: Option<SpecificSize<Mebibyte>>,
     #[serde(default = "default_http_config")]
     http: HttpConfig,
-    #[allow(dead_code)] // TODO: use this field.
     peer: Option<PeerConfig>,
 }
 
@@ -44,7 +48,7 @@ fn default_http_config() -> HttpConfig {
 }
 
 /// HTTP configuration.
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug)]
 struct HttpConfig {
     #[serde(default = "default_address")]
     address: SocketAddr,
@@ -56,11 +60,72 @@ fn default_address() -> SocketAddr {
 }
 
 /// Peer configuration to run in distributed mode.
-#[derive(Deserialize)]
-#[allow(dead_code)] // TODO: use this.
+#[derive(Deserialize, Debug)]
 struct PeerConfig {
     address: SocketAddr,
-    peers: Vec<SocketAddr>,
+    peers: Peers,
+}
+
+/// Wrapper around `Vec<SocketAddr>` to use `ToSocketAddrs` to parse addresses.
+#[derive(Debug)]
+struct Peers(Vec<SocketAddr>);
+
+impl<'de> Deserialize<'de> for Peers {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct PeerVisitor;
+
+        impl<'de> Visitor<'de> for PeerVisitor {
+            type Value = Peers;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a sequence")
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut addresses = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+
+                while let Some(value) = seq.next_element::<&str>()? {
+                    let addrs = value.to_socket_addrs().map_err(Error::custom)?;
+                    addresses.extend(addrs);
+                }
+
+                Ok(Peers(addresses))
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                let address = s.to_socket_addrs().map_err(Error::custom)?;
+                let addresses = Vec::from_iter(address);
+                Ok(Peers(addresses))
+            }
+        }
+
+        deserializer.deserialize_seq(PeerVisitor)
+    }
+}
+
+impl fmt::Display for Peers {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        struct DisplayDebug<'a>(&'a SocketAddr);
+
+        impl<'a> fmt::Debug for DisplayDebug<'a> {
+            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+
+        f.debug_list()
+            .entries(self.0.iter().map(DisplayDebug))
+            .finish()
+    }
 }
 
 fn main() -> Result<(), RuntimeError<io::Error>> {
@@ -100,6 +165,11 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         http_actor,
         ActorOptions::default(),
     )?;
+
+    if let Some(peer_config) = config.peer {
+        info!("listening on {} for peer connections", peer_config.address);
+        info!("connecting to peers: {}", peer_config.peers);
+    }
 
     runtime
         .with_setup(move |mut runtime_ref| {
