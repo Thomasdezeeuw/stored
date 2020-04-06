@@ -23,11 +23,12 @@ pub async fn actor(
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
 ) -> io::Result<()> {
-    let start = Instant::now();
     debug!("accepted connection: address={}", address);
     let mut conn = Connection::new(stream);
 
     loop {
+        let start = Instant::now();
+
         let request = match conn.read_header().await {
             Ok(Some(request)) => request,
             // Handled all requests on the connection.
