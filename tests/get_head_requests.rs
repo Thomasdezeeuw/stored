@@ -211,3 +211,14 @@ fn with_body() {
         );
     }
 }
+
+#[test]
+fn health_check() {
+    request!(
+        "/health", body::EMPTY,
+        expected: StatusCode::OK, body::OK,
+        CONTENT_LENGTH => body::OK_LEN,
+        CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}

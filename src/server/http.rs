@@ -153,6 +153,13 @@ pub enum Request {
     ///
     /// No body.
     Delete(Key),
+    /// GET or HEAD request to "/health".
+    ///
+    /// Boolean indicates if its a HEAD request (`true`) or not, in which case
+    /// its a GET request.
+    ///
+    /// No body.
+    HealthCheck(bool),
 }
 
 impl Request {
@@ -161,8 +168,8 @@ impl Request {
         use Request::*;
         match self {
             Post(_) => "POST",
-            Get(_) => "GET",
-            Head(_) => "HEAD",
+            Get(_) | HealthCheck(false) => "GET",
+            Head(_) | HealthCheck(true) => "HEAD",
             Delete(_) => "DELETE",
         }
     }
@@ -195,6 +202,12 @@ impl<'headers, 'buf> TryFrom<httparse::Request<'headers, 'buf>> for Request {
                     Some(length) => Ok(Request::Post(length)),
                     None => Err(RequestErrorKind::MissingContentLength),
                 }
+            }
+            (Some("GET"), Some("/health")) | (Some("GET"), Some("/health/")) => {
+                Ok(Request::HealthCheck(false))
+            }
+            (Some("HEAD"), Some("/health")) | (Some("HEAD"), Some("/health/")) => {
+                Ok(Request::HealthCheck(true))
             }
             // TODO: DRY the next three routes.
             (Some("GET"), Some(path)) if path.starts_with(BLOB_PATH_PREFIX) => match content_length
@@ -451,7 +464,7 @@ pub enum ResponseKind {
     /// Blob found.
     /// Response to GET response.
     ///
-    /// 200 Ok. Body is the blob (the passed bytes).
+    /// 200 OK. Body is the blob (the passed bytes).
     Ok(Blob),
 
     /// Blob deleted.
@@ -459,6 +472,11 @@ pub enum ResponseKind {
     ///
     /// 204 No Content. No body.
     Deleted,
+
+    /// Health check is OK.
+    ///
+    /// 200 OK. No body.
+    HealthOk,
 
     // Errors:
     /// Blob not found.
@@ -620,8 +638,8 @@ impl Response {
                 let timestamp: DateTime<Utc> = blob.created_at().into();
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
-            NotFound | TooManyHeaders | NoContentLength | TooLargePayload | InvalidKey
-            | BadRequest(_) | ServerError => {
+            HealthOk | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
+            | InvalidKey | BadRequest(_) | ServerError => {
                 // The body is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
@@ -636,7 +654,7 @@ impl Response {
         use ResponseKind::*;
         match &self.kind {
             Stored(_) => (201, "Created"),
-            Ok(_) => (200, "OK"),
+            Ok(_) | HealthOk => (200, "OK"),
             Deleted => (204, "No Content"),
             NotFound => (404, "Not Found"),
             TooManyHeaders => (431, "Request Header Fields Too Large"),
@@ -682,6 +700,7 @@ impl ResponseKind {
         match &self {
             Stored(_) | Deleted => b"",
             Ok(blob) => blob.bytes(),
+            HealthOk => b"OK",
             NotFound => b"Not found",
             TooManyHeaders => b"Too many headers",
             NoContentLength => b"Missing required content length header",

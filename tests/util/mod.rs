@@ -161,6 +161,9 @@ pub mod http {
         pub const EMPTY: &[u8] = b"";
         pub const EMPTY_LEN: &str = "0";
 
+        pub const OK: &[u8] = b"OK";
+        pub const OK_LEN: &str = "2";
+
         pub const NOT_FOUND: &[u8] = b"Not found";
         pub const NOT_FOUND_LEN: &str = "9";
 

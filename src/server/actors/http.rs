@@ -12,7 +12,7 @@ use heph::{actor, ActorRef};
 
 use crate::server::http::{Connection, Request, Response, ResponseKind};
 
-use super::db::{self, AddBlobResponse};
+use super::db::{self, AddBlobResponse, HealthCheck};
 
 /// Actor that handles a single TCP `stream`.
 ///
@@ -150,6 +150,17 @@ pub async fn actor(
                 // TODO: implement this.
                 error!("TODO: delete: key={}", key);
                 Response::new(false, ResponseKind::ServerError)
+            }
+            Request::HealthCheck(is_head) => {
+                info!("health check request: address={}", address);
+
+                match db_ref.rpc(&mut ctx, HealthCheck) {
+                    Ok(_health_ok) => Response::new(is_head, ResponseKind::HealthOk),
+                    Err(err) => {
+                        error!("error making RPC call to database: {}", err);
+                        Response::new(is_head, ResponseKind::ServerError)
+                    }
+                }
             }
         };
 

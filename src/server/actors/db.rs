@@ -39,7 +39,16 @@ pub enum Message {
     ///
     /// Responds with the `Blob`, if its in the database.
     GetBlob(RpcMessage<Key, Option<Blob>>),
+
+    /// Check if the database actor is running.
+    HealthCheck(RpcMessage<HealthCheck, HealthOk>),
 }
+
+/// Message to check if the database actor is running.
+pub struct HealthCheck;
+
+/// Message returned to [`HealthCheck`].
+pub struct HealthOk(());
 
 impl From<RpcMessage<(Buffer, usize), AddBlobResponse>> for Message {
     fn from(msg: RpcMessage<(Buffer, usize), AddBlobResponse>) -> Message {
@@ -56,6 +65,12 @@ impl From<RpcMessage<AddBlob, Key>> for Message {
 impl From<RpcMessage<Key, Option<Blob>>> for Message {
     fn from(msg: RpcMessage<Key, Option<Blob>>) -> Message {
         Message::GetBlob(msg)
+    }
+}
+
+impl From<RpcMessage<HealthCheck, HealthOk>> for Message {
+    fn from(msg: RpcMessage<HealthCheck, HealthOk>) -> Message {
+        Message::HealthCheck(msg)
     }
 }
 
@@ -103,6 +118,11 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let result = storage.lookup(&key);
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(result);
+            }
+            Message::HealthCheck(RpcMessage { response, .. }) => {
+                debug!("database health check");
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(HealthOk(()));
             }
         }
     }
