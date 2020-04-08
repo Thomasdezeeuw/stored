@@ -1,4 +1,14 @@
 //! Module with the `Buffer` type.
+//!
+//! The main type is [`Buffer`], which is to be used as buffer for reading.
+//! After reading a request into the `Buffer` it can be
+//! [split](Buffer::split_read), into  the already read bytes and a
+//! [`ReadBuffer`]. This allows the head of the request (e.g. HTTP headers) to
+//! be parsed and the remainder of the buffer to be used to read the body into.
+//! After the entire request is read, both head and body, to `ReadBuffer` can be
+//! [split](ReadBuffer::split_write) again to create a [`WriteBuffer`]. The
+//! `WriteBuffer` can be used to buffer writes to a connection. This way we can
+//! use a single buffer for both reading and writing to and from a connection.
 
 use std::future::Future;
 use std::io::{self, IoSlice, Write};
@@ -50,37 +60,6 @@ impl Buffer {
         }
     }
 
-    /// Split the buffer in the currently read bytes and a temporary write
-    /// buffer.
-    ///
-    /// Operations on the returned `WriteBuffer` will be removed from the
-    /// original `Buffer` (`self`) once the working buffer is dropped. This
-    /// allows `Buffer` to be reused for writing while normally using it for
-    /// reading.
-    ///
-    /// This ensures that at least `reserve` bytes are available for the
-    /// `WriteBuffer`.
-    pub fn split<'b>(&'b mut self, reserve: usize) -> (&'b [u8], WriteBuffer<'b>) {
-        self.reserve_atleast(reserve);
-
-        // Split our buffer into unused bytes (for the `WriteBuffer`) and used
-        // bytes which we'll returned as first argument.
-        // Safety: since the two slices don't overlap this is safe, also see
-        // `slice::split_at_mut`.
-        let unused_bytes = unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
-            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
-        };
-        let used_bytes = &self.data[self.processed..];
-
-        let wbuf = WriteBuffer {
-            buf: unused_bytes,
-            length: 0,
-            processed: 0,
-        };
-        (used_bytes, wbuf)
-    }
-
     /// Reserves an allocation that can read a buffer of at least `length`
     /// bytes, including the unprocessed bytes already in the buffer.
     pub fn reserve_atleast(&mut self, length: usize) {
@@ -92,18 +71,6 @@ impl Buffer {
                 // Still need more.
                 self.data.reserve(length);
             }
-        }
-    }
-
-    /// Read from `reader` into this buffer.
-    pub fn read_from<R>(&mut self, reader: R) -> Read<R>
-    where
-        R: AsyncRead,
-    {
-        self.move_to_start(false);
-        Read {
-            buffer: self,
-            reader,
         }
     }
 
@@ -120,6 +87,76 @@ impl Buffer {
     /// Returns the unprocessed, read bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[self.processed..]
+    }
+
+    /// Split the buffer in the currently read bytes and a temporary read
+    /// buffer.
+    ///
+    /// Operations on the returned `ReadBuffer` will be removed from the
+    /// original `Buffer` (`self`) once the read buffer is dropped. This allows
+    /// `Buffer` to be split and reused.
+    ///
+    /// This ensures that at least `reserve` bytes are available for the
+    /// `ReadBuffer`.
+    pub fn split_read<'b>(&'b mut self, reserve: usize) -> (&'b [u8], ReadBuffer<'b>) {
+        self.reserve_atleast(reserve);
+        let (used_bytes, unused_bytes) = self.split();
+        let rbuf = ReadBuffer {
+            inner: TempBuffer {
+                buf: unused_bytes,
+
+                length: 0,
+                processed: 0,
+            },
+        };
+        (used_bytes, rbuf)
+    }
+
+    /// Split the buffer in the currently read bytes and a temporary write
+    /// buffer.
+    ///
+    /// Operations on the returned `WriteBuffer` will be removed from the
+    /// original `Buffer` (`self`) once the working buffer is dropped. This
+    /// allows `Buffer` to be reused for writing while normally using it for
+    /// reading.
+    ///
+    /// This ensures that at least `reserve` bytes are available for the
+    /// `WriteBuffer`.
+    pub fn split_write<'b>(&'b mut self, reserve: usize) -> (&'b [u8], WriteBuffer<'b>) {
+        self.reserve_atleast(reserve);
+        let (used_bytes, unused_bytes) = self.split();
+        let wbuf = WriteBuffer {
+            inner: TempBuffer {
+                buf: unused_bytes,
+                length: 0,
+                processed: 0,
+            },
+        };
+        (used_bytes, wbuf)
+    }
+
+    /// Split the buffer into unused bytes and used bytes.
+    fn split<'b>(&'b mut self) -> (&'b [u8], &'b mut [MaybeUninit<u8>]) {
+        // Safety: since the two slices don't overlap this is safe, also see
+        // `slice::split_at_mut`.
+        let unused_bytes = unsafe {
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
+            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
+        };
+        let used_bytes = &self.data[self.processed..];
+        (used_bytes, unused_bytes)
+    }
+
+    /// Read from `reader` into this buffer.
+    pub fn read_from<R>(&mut self, reader: R) -> Read<R>
+    where
+        R: AsyncRead,
+    {
+        self.move_to_start(false);
+        Read {
+            buffer: self,
+            reader,
+        }
     }
 
     /// Mark `n` bytes as processed.
@@ -175,25 +212,29 @@ impl Buffer {
     ///
     /// # Unsafety
     ///
-    /// Caller must ensure that the bytes are valid.
+    /// Caller must ensure that the bytes are initialised.
     unsafe fn read_bytes(&mut self, n: usize) {
+        assert!(
+            self.capacity_left() >= n,
+            "marking bytes as read beyond read range"
+        );
         self.data.set_len(self.data.len() + n)
     }
 }
 
-/// [`Future`] that reads from reader `R` into a [`Buffer`].
+/// [`Future`] that reads from reader `R` into a [`Buffer`] or [`ReadBuffer`].
 ///
 /// # Notes
 ///
 /// This future doesn't implement any waking mechanism, it up to the reader `R`
 /// to handle wakeups.
 #[derive(Debug)]
-pub struct Read<'b, R> {
-    buffer: &'b mut Buffer,
+pub struct Read<'b, R, B = Buffer> {
+    buffer: &'b mut B,
     reader: R,
 }
 
-impl<'b, R> Future for Read<'b, R>
+impl<'b, R> Future for Read<'b, R, Buffer>
 where
     R: AsyncRead + Unpin,
 {
@@ -219,66 +260,148 @@ where
     }
 }
 
-/// Split of from `Buffer` to allow the buffer to be used temporarily.
-///
-/// This allows `Buffer` to be used as both a read and write buffer.
-#[derive(Debug)]
-pub struct WriteBuffer<'a> {
-    /// Buffer capacity from `Buffer`, `buf[..self.length]` bytes are valid
-    /// (i.e. not undefined) and `buf[self.processed..self.length]` are yet to
-    /// be written.
-    buf: &'a mut [MaybeUninit<u8>],
-    /// Number of bytes written into `buf`.
-    length: usize,
-    /// The number of bytes *we* already processed in `buf`.
-    /// Must always be less then `self.length`.
-    processed: usize,
+impl<'b, R> Future for Read<'b, R, ReadBuffer<'b>>
+where
+    R: AsyncRead + Unpin,
+{
+    type Output = io::Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
+        Pin::new(reader)
+            .poll_read(ctx, unsafe {
+                // TODO: should use a `read_unitialised` kind of method here.
+                MaybeUninit::slice_get_mut(buffer.available_bytes())
+            })
+            .map_ok(|bytes_read| {
+                // Safety: we just read into the buffer.
+                unsafe {
+                    buffer.read_bytes(bytes_read);
+                }
+                bytes_read
+            })
+    }
 }
 
-impl<'a> WriteBuffer<'a> {
-    /// Returns the unprocessed, written bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        // Safety: `self.buf[..self.length]` bytes are are valid (initialised)
-        // as per the comment on the field.
-        unsafe { MaybeUninit::slice_get_ref(&self.buf[self.processed..self.length]) }
+/// Split of from `Buffer` to allow the buffer to be used temporarily while
+/// leaving the original bytes in place.
+#[derive(Debug)]
+pub struct ReadBuffer<'b> {
+    inner: TempBuffer<'b>,
+}
+
+impl<'b> ReadBuffer<'b> {
+    /// Returns the number of unprocessed, read bytes.
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 
-    /// Returns the number of unprocessed, written bytes.
-    pub fn len(&self) -> usize {
-        self.length - self.processed
+    /// Returns `true` if the buffer has no unprocessed, read bytes.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns the unprocessed, read bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.inner.as_bytes()
+    }
+
+    /// Same as [`Buffer::split_read`], but it is no longer possible to grow the
+    /// buffer.
+    pub fn split_read(&'b mut self) -> (&'b [u8], ReadBuffer<'b>) {
+        self.inner.split_read()
+    }
+
+    /// Same as [`Buffer::split_write`], but it is no longer possible to grow the
+    /// buffer.
+    pub fn split_write(&'b mut self) -> (&'b [u8], WriteBuffer<'b>) {
+        self.inner.split_write()
+    }
+
+    /// Read from `reader` into this buffer.
+    pub fn read_from<R>(&'b mut self, reader: R) -> Read<R, ReadBuffer<'b>>
+    where
+        R: AsyncRead,
+    {
+        Read {
+            buffer: self,
+            reader,
+        }
     }
 
     /// Mark `n` bytes as processed.
     pub fn processed(&mut self, n: usize) {
-        assert!(
-            self.processed + n <= self.length,
-            "marking bytes as processed beyond read range"
-        );
-        self.processed += n;
+        self.inner.processed(n);
     }
 
-    /// Number of bytes to which can be written.
-    fn capacity_left(&self) -> usize {
-        self.buf.len() - self.len()
+    /// Bytes available to read into.
+    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        &mut self.inner.buf[self.inner.processed..]
+    }
+
+    /// Mark `n` bytes as newly read.
+    ///
+    /// # Unsafety
+    ///
+    /// Caller must ensure that the bytes are initialised.
+    unsafe fn read_bytes(&mut self, n: usize) {
+        assert!(
+            self.inner.capacity_left() >= n,
+            "marking bytes as read beyond read range"
+        );
+        self.inner.length += n;
     }
 }
 
-impl<'a> Write for WriteBuffer<'a> {
+/// Split of from `Buffer` to allow the buffer to be used temporarily.
+///
+/// This allows `Buffer` to be used as both a read and write buffer.
+#[derive(Debug)]
+pub struct WriteBuffer<'b> {
+    inner: TempBuffer<'b>,
+}
+
+impl<'b> WriteBuffer<'b> {
+    /// Returns the number of unprocessed, written bytes.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// Returns `true` if the buffer has no unprocessed, written bytes.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Returns the unprocessed, written bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.inner.as_bytes()
+    }
+
+    /// Mark `n` bytes as processed.
+    pub fn processed(&mut self, n: usize) {
+        self.inner.processed(n);
+    }
+}
+
+impl<'b> Write for WriteBuffer<'b> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let len = buf.len();
         assert!(
-            self.capacity_left() >= len,
+            self.inner.capacity_left() >= len,
             "trying to write a too large buffer"
         );
         // Safety: checked above if we have enough capacity left.
         unsafe {
             ptr::copy_nonoverlapping(
                 buf.as_ptr(),
-                MaybeUninit::first_ptr_mut(&mut self.buf[self.length..]),
+                MaybeUninit::first_ptr_mut(&mut self.inner.buf[self.inner.length..]),
                 buf.len(),
             );
         }
-        self.length += len;
+        self.inner.length += len;
         Ok(len)
     }
 
@@ -292,5 +415,85 @@ impl<'a> Write for WriteBuffer<'a> {
 
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+/// Buffer backing [`ReadBuffer`] and [`WriteBuffer`].
+#[derive(Debug)]
+struct TempBuffer<'b> {
+    /// Buffer capacity from `Buffer`, `buf[..self.length]` bytes are valid
+    /// (i.e. initialised) and `buf[self.processed..self.length]` are yet to be
+    /// written.
+    buf: &'b mut [MaybeUninit<u8>],
+    /// Number of bytes written into `buf`.
+    length: usize,
+    /// The number of bytes *we* already processed in `buf`.
+    /// Must always be less then `self.length`.
+    processed: usize,
+}
+
+impl<'b> TempBuffer<'b> {
+    fn split_read(&'b mut self) -> (&'b [u8], ReadBuffer<'b>) {
+        let (used_bytes, unused_bytes) = self.split();
+        let rbuf = ReadBuffer {
+            inner: TempBuffer {
+                buf: unused_bytes,
+                length: 0,
+                processed: 0,
+            },
+        };
+        (used_bytes, rbuf)
+    }
+
+    fn split_write(&'b mut self) -> (&'b [u8], WriteBuffer<'b>) {
+        let (used_bytes, unused_bytes) = self.split();
+        let wbuf = WriteBuffer {
+            inner: TempBuffer {
+                buf: unused_bytes,
+                length: 0,
+                processed: 0,
+            },
+        };
+        (used_bytes, wbuf)
+    }
+
+    fn split(&'b mut self) -> (&'b [u8], &'b mut [MaybeUninit<u8>]) {
+        // Safety: since the two slices don't overlap this is safe, also see
+        // `slice::split_at_mut`.
+        let unused_bytes = unsafe {
+            let buf_ptr = self.buf.as_mut_ptr().add(self.length) as *mut _;
+            slice::from_raw_parts_mut(buf_ptr, self.capacity_left())
+        };
+        // Safety: `buf[..self.length] is initialised as per the comment on
+        // `self.buf`.
+        let used_bytes =
+            unsafe { MaybeUninit::slice_get_ref(&self.buf[self.processed..self.length]) };
+        (used_bytes, unused_bytes)
+    }
+
+    fn len(&self) -> usize {
+        self.length - self.processed
+    }
+
+    fn is_empty(&self) -> bool {
+        self.processed == self.length
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        // Safety: `self.buf[..self.length]` bytes are initialised as per
+        // the comment on the field.
+        unsafe { MaybeUninit::slice_get_ref(&self.buf[self.processed..self.length]) }
+    }
+
+    fn capacity_left(&self) -> usize {
+        self.buf.len() - self.len()
+    }
+
+    fn processed(&mut self, n: usize) {
+        assert!(
+            self.processed + n <= self.length,
+            "marking bytes as processed beyond read range"
+        );
+        self.processed += n;
     }
 }

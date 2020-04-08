@@ -12,6 +12,11 @@ use super::{Buffer, INITIAL_BUF_SIZE, MIN_SIZE_MOVE};
 /// Note: no longer used in the implementation, but still in the tests below.
 const MIN_BUF_SIZE: usize = 2 * 1024;
 
+// TODO: more tests:
+// Buffer -> ReadBuffer
+// Buffer -> ReadBuffer -> WriteBuffer
+// Buffer -> ReadBuffer -> ReadBuffer -> WriteBuffer.
+
 #[test]
 fn buffer_simple_read() {
     let mut buf = Buffer::new();
@@ -193,7 +198,7 @@ fn write_buffer_drops_writen_bytes() {
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
 
-    let (buf_bytes, mut wbuf) = buf.split(10);
+    let (buf_bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(buf_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -212,7 +217,7 @@ fn write_buffer_drops_writen_bytes() {
 fn write_buffer_drops_writen_bytes_original_empty() {
     let mut buf = Buffer::new();
 
-    let (bytes, mut wbuf) = buf.split(10);
+    let (bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -236,7 +241,7 @@ fn write_buffer_length() {
     assert_eq!(buf.len(), bytes.len());
     assert_eq!(buf.as_bytes(), bytes);
 
-    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -246,7 +251,7 @@ fn write_buffer_length() {
     drop(wbuf);
 
     buf.processed(100);
-    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, &bytes[100..]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -256,7 +261,7 @@ fn write_buffer_length() {
     drop(wbuf);
 
     buf.processed(100);
-    let (original_bytes, mut wbuf) = buf.split(wbytes.len());
+    let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -276,7 +281,7 @@ fn write_buffer_processed() {
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
 
-    let (original_bytes, mut wbuf) = buf.split(3);
+    let (original_bytes, mut wbuf) = buf.split_write(3);
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -304,7 +309,7 @@ fn write_buffer_processed() {
 fn write_buffer_processed_original_empty() {
     let mut buf = Buffer::new();
 
-    let (original_bytes, mut wbuf) = buf.split(3);
+    let (original_bytes, mut wbuf) = buf.split_write(3);
     assert_eq!(original_bytes, &[]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), &[]);
@@ -332,7 +337,7 @@ fn write_buffer_processed_original_empty() {
 #[should_panic(expected = "marking bytes as processed beyond read range")]
 fn marking_processed_write_buffer_beyond_read_range() {
     let mut buf = Buffer::new();
-    let (original_bytes, mut wbuf) = buf.split(20);
+    let (original_bytes, mut wbuf) = buf.split_write(20);
     assert_eq!(original_bytes, &[]);
     wbuf.processed(1);
 }
@@ -344,7 +349,7 @@ fn marking_processed_write_buffer_beyond_read_range_after_reset() {
     let bytes = &[1, 2, 3];
     add_bytes(&mut buf, bytes);
 
-    let (original_bytes, mut wbuf) = buf.split(10);
+    let (original_bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(original_bytes, bytes);
     wbuf.write_all(&[4, 5, 6]).unwrap();
     wbuf.processed(2); // Ok.
