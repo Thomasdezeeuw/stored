@@ -85,7 +85,7 @@ where
 
 /// Supervisor for the [`http::actor`]
 ///
-/// [`http::actor`]: crate::server::actors::http::actor()
+/// [`http::actor`]: crate::http::actor()
 ///
 /// Logs the error and stops the actor.
 pub fn http_supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)> {

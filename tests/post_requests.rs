@@ -191,7 +191,7 @@ fn content_length_too_large() {
         expected: StatusCode::PAYLOAD_TOO_LARGE, body::PAYLOAD_TOO_LARGE,
         CONTENT_LENGTH => body::PAYLOAD_TOO_LARGE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
-        CONNECTION => header::KEEP_ALIVE,
+        CONNECTION => header::CLOSE,
     );
 }
 

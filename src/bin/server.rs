@@ -14,7 +14,8 @@ use log::info;
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::Deserialize;
 
-use stored::server::actors::{db, http};
+use stored::http;
+use stored::server::actors::db;
 use stored::server::storage::Storage;
 use stored::server::supervisors::{http_supervisor, DbSupervisor, ServerSupervisor};
 

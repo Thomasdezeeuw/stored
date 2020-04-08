@@ -104,7 +104,6 @@ impl Buffer {
         let rbuf = ReadBuffer {
             inner: TempBuffer {
                 buf: unused_bytes,
-
                 length: 0,
                 processed: 0,
             },

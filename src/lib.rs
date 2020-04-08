@@ -7,6 +7,7 @@
 )]
 
 pub mod buffer;
+pub mod http;
 pub mod key;
 pub mod parse;
 pub mod serialise;

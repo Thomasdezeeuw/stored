@@ -167,8 +167,8 @@ pub mod http {
         pub const NOT_FOUND: &[u8] = b"Not found";
         pub const NOT_FOUND_LEN: &str = "9";
 
-        pub const INVALID_KEY: &[u8] = b"Invalid key";
-        pub const INVALID_KEY_LEN: &str = "11";
+        pub const INVALID_KEY: &[u8] = b"Invalid key in URI";
+        pub const INVALID_KEY_LEN: &str = "18";
 
         pub const LENGTH_REQUIRED: &[u8] = b"Missing required content length header";
         pub const LENGTH_REQUIRED_LEN: &str = "38";
