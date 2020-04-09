@@ -13,6 +13,7 @@ mod util;
 
 use util::{Proc, ProcLock};
 
+#[allow(dead_code)] // FIXME: use this along with the tests.
 const DB_PORT: u16 = 9004;
 const DB_PATH: &'static str = "/tmp/stored_cli_tests.db";
 const CONF_PATH: &'static str = "tests/config/cli.toml";

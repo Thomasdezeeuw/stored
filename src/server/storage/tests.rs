@@ -1,8 +1,8 @@
-use std::env;
 use std::fs::{remove_dir_all, remove_file};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::{env, fs};
 
 use lazy_static::lazy_static;
 
@@ -72,6 +72,8 @@ impl Drop for TempFile {
 
 fn temp_file(name: &str) -> TempFile {
     let path = env::temp_dir().join(name);
+    // Remove the old database from previous tests.
+    let _ = fs::remove_dir_all(&path);
     TempFile { path }
 }
 
