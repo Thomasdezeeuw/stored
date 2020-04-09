@@ -479,26 +479,29 @@ async fn store_blob(
     } else {
         match db_ref.rpc(ctx, (blob, body_length)) {
             Ok(rpc) => match rpc.await {
-                Ok(AddBlobResponse::Query(query, mut buffer)) => {
+                Ok((result, mut buffer)) => {
                     // Mark the body as processed and put back the buffer.
                     buffer.processed(body_length);
                     mem::replace(&mut conn.buf, buffer);
-
-                    match db_ref.rpc(ctx, query) {
-                        Ok(rpc) => match rpc.await {
-                            Ok(key) => Ok((ResponseKind::Stored(key), false)),
+                    match result {
+                        AddBlobResponse::Query(query) => match db_ref.rpc(ctx, query) {
+                            Ok(rpc) => match rpc.await {
+                                Ok(key) => Ok((ResponseKind::Stored(key), false)),
+                                Err(err) => {
+                                    error!("error waiting for RPC response from database: {}", err);
+                                    Ok((ResponseKind::ServerError, true))
+                                }
+                            },
                             Err(err) => {
-                                error!("error waiting for RPC response from database: {}", err);
+                                error!("error making RPC call to database: {}", err);
                                 Ok((ResponseKind::ServerError, true))
                             }
                         },
-                        Err(err) => {
-                            error!("error making RPC call to database: {}", err);
-                            Ok((ResponseKind::ServerError, true))
+                        AddBlobResponse::AlreadyPresent(key) => {
+                            Ok((ResponseKind::Stored(key), false))
                         }
                     }
                 }
-                Ok(AddBlobResponse::AlreadyPresent(key)) => Ok((ResponseKind::Stored(key), false)),
                 Err(err) => {
                     error!("error waiting for RPC response from database: {}", err);
                     Ok((ResponseKind::ServerError, true))

@@ -66,14 +66,15 @@ pub enum Message {
     /// Request is the `Buffer`, of which `length` (usize) bytes are used, that
     /// makes up the blob.
     ///
-    /// Responds with  a query to commit to adding the blob, or the key of the
-    /// blob if the blob is already in the database.
+    /// Responds with a query to commit to adding the blob, or the key of the
+    /// blob if the blob is already in the database. Also returns the original,
+    /// unchanged `Buffer` in `Message::AddBlob`.
     ///
     /// # Panics
     ///
     /// This will panic if the `length` is larger then the bytes in the
     /// `Buffer`.
-    AddBlob(RpcMessage<(Buffer, usize), AddBlobResponse>),
+    AddBlob(RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>),
 
     /// Commit to a blob being added.
     ///
@@ -99,8 +100,8 @@ pub struct HealthCheck;
 /// Message returned to [`HealthCheck`].
 pub struct HealthOk(());
 
-impl From<RpcMessage<(Buffer, usize), AddBlobResponse>> for Message {
-    fn from(msg: RpcMessage<(Buffer, usize), AddBlobResponse>) -> Message {
+impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
+    fn from(msg: RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>) -> Message {
         Message::AddBlob(msg)
     }
 }
@@ -125,9 +126,8 @@ impl From<RpcMessage<HealthCheck, HealthOk>> for Message {
 
 /// Response to [`Message::AddBlob`].
 pub enum AddBlobResponse {
-    /// Query to commit to adding a blob. And the original, unchanged `Buffer`
-    /// in `Message::AddBlob`.
-    Query(AddBlob, Buffer),
+    /// Query to commit to adding a blob.
+    Query(AddBlob),
     /// The blob is already stored.
     AlreadyPresent(Key),
 }
@@ -148,8 +148,8 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 debug!("adding new blob: size={}", length);
                 use AddResult::*;
                 let result = match storage.add_blob(&blob.as_bytes()[..length]) {
-                    Ok(query) => AddBlobResponse::Query(query, blob),
-                    AlreadyPresent(key) => AddBlobResponse::AlreadyPresent(key),
+                    Ok(query) => (AddBlobResponse::Query(query), blob),
+                    AlreadyPresent(key) => (AddBlobResponse::AlreadyPresent(key), blob),
                     Err(err) => return Result::Err(err),
                 };
                 // If the actor is disconnected this is not really a problem.
