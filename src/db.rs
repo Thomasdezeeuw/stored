@@ -59,6 +59,54 @@ where
     }
 }
 
+/// Actor that handles storage [`Message`]s and applies them to [`Storage`].
+pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<()> {
+    debug!(
+        "storage actor started: data_size={}, index_size={}, total_size={}",
+        storage.data_size(),
+        storage.index_size(),
+        storage.total_size()
+    );
+
+    while let Ok(msg) = ctx.receive_next() {
+        match msg {
+            Message::AddBlob(RpcMessage { request, response }) => {
+                let (blob, length) = request;
+                debug!("adding new blob: size={}", length);
+                use AddResult::*;
+                let result = match storage.add_blob(&blob.as_bytes()[..length]) {
+                    Ok(query) => (AddBlobResponse::Query(query), blob),
+                    AlreadyPresent(key) => (AddBlobResponse::AlreadyPresent(key), blob),
+                    Err(err) => return Result::Err(err),
+                };
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(result);
+            }
+            Message::CommitBlob(RpcMessage { request, response }) => {
+                let created_at = SystemTime::now();
+                let key = storage.commit(request, created_at)?;
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(key);
+            }
+            Message::GetBlob(RpcMessage { request, response }) => {
+                let key = request;
+                debug!("retrieve blob: key={}", key);
+                let result = storage.lookup(&key);
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(result);
+            }
+            Message::HealthCheck(RpcMessage { response, .. }) => {
+                debug!("database health check");
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(HealthOk(()));
+            }
+        }
+    }
+
+    debug!("storage actor stopping");
+    Ok(())
+}
+
 /// Message type send to the storage [`actor`].
 pub enum Message {
     /// Add a blob to the database.
@@ -130,52 +178,4 @@ pub enum AddBlobResponse {
     Query(AddBlob),
     /// The blob is already stored.
     AlreadyPresent(Key),
-}
-
-/// Actor that handles storage [`Message`]s and applies them to [`Storage`].
-pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<()> {
-    debug!(
-        "storage actor started: data_size={}, index_size={}, total_size={}",
-        storage.data_size(),
-        storage.index_size(),
-        storage.total_size()
-    );
-
-    while let Ok(msg) = ctx.receive_next() {
-        match msg {
-            Message::AddBlob(RpcMessage { request, response }) => {
-                let (blob, length) = request;
-                debug!("adding new blob: size={}", length);
-                use AddResult::*;
-                let result = match storage.add_blob(&blob.as_bytes()[..length]) {
-                    Ok(query) => (AddBlobResponse::Query(query), blob),
-                    AlreadyPresent(key) => (AddBlobResponse::AlreadyPresent(key), blob),
-                    Err(err) => return Result::Err(err),
-                };
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(result);
-            }
-            Message::CommitBlob(RpcMessage { request, response }) => {
-                let created_at = SystemTime::now();
-                let key = storage.commit(request, created_at)?;
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(key);
-            }
-            Message::GetBlob(RpcMessage { request, response }) => {
-                let key = request;
-                debug!("retrieve blob: key={}", key);
-                let result = storage.lookup(&key);
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(result);
-            }
-            Message::HealthCheck(RpcMessage { response, .. }) => {
-                debug!("database health check");
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(HealthOk(()));
-            }
-        }
-    }
-
-    debug!("storage actor stopping");
-    Ok(())
 }
