@@ -7,7 +7,6 @@ publish = false
 
 [dependencies]
 chrono     = { version = "0.4.11", default-features = false, features = ["clock"] }
-evmap      = { version = "6.0.0", default-features = false }
 futures-io = { version = "0.3.4", default-features = false, features = ["std"] }
 futures-util = { version = "0.3.4", default-features = false, features = ["io", "std"] }
 # TODO: replace with published crate.
