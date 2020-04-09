@@ -14,7 +14,7 @@ use log::info;
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::Deserialize;
 
-use stored::server::supervisors::{http_supervisor, DbSupervisor, ServerSupervisor};
+use stored::server::supervisors::{http_supervisor, ServerSupervisor};
 use stored::storage::Storage;
 use stored::{db, http};
 
@@ -150,7 +150,7 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
     // Start our database actor.
     info!("opening database '{}'", config.path.display());
     let storage = Storage::open(&*config.path)?;
-    let db_supervisor = DbSupervisor::new(config.path);
+    let db_supervisor = db::Supervisor::new(config.path);
     let db_ref = runtime
         .spawn_sync_actor(db_supervisor, db::actor as fn(_, _) -> _, storage)
         .map_err(RuntimeError::map_type)?;

@@ -1,20 +1,69 @@
 //! Module with the database actor.
+//!
+//! The [`db::actor`] is the main type, which accepts [`db::Message`]s and is
+//! supervised by [`db::Supervisor`].
+//!
+//! [`db::actor`]: actor
+//! [`db::Message`]: Message
+//! [`db::Supervisor`]: Supervisor
 
 use std::io;
+use std::path::Path;
 use std::time::SystemTime;
 
-use heph::actor::sync::SyncContext;
+use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::RpcMessage;
-use log::debug;
+use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
+use log::{debug, error, info};
 
 use crate::storage::{AddBlob, AddResult, Blob, Storage};
 use crate::{Buffer, Key};
+
+/// Supervisor for the [`db::actor`].
+///
+/// [`db::actor`]: crate::db::actor
+///
+/// It logs the error and tries to reopen the database, restarting the actor if
+/// successful.
+pub struct Supervisor(Box<Path>);
+
+impl Supervisor {
+    /// Create a new `DbSupervisor`.
+    pub const fn new(path: Box<Path>) -> Supervisor {
+        Supervisor(path)
+    }
+}
+
+impl<A> SyncSupervisor<A> for Supervisor
+where
+    A: SyncActor<Argument = Storage, Error = io::Error>,
+{
+    fn decide(&mut self, err: io::Error) -> SupervisorStrategy<Storage> {
+        error!("error operating on database: {}", err);
+        info!("attempting to reopen database");
+        match Storage::open(&self.0) {
+            Ok(storage) => {
+                info!("successfully reopened database, restarting database actor");
+                SupervisorStrategy::Restart(storage)
+            }
+            Err(err) => {
+                // FIXME: shutdown the entire server somehow? Maybe by sending
+                // the TCP server a shutdown message?
+                error!(
+                    "failed to reopen database, not restarting database actor: {}",
+                    err
+                );
+                SupervisorStrategy::Stop
+            }
+        }
+    }
+}
 
 /// Message type send to the storage [`actor`].
 pub enum Message {
     /// Add a blob to the database.
     ///
-    /// Request is the `Buffer`, of which `length` (usize) are used bytes, that
+    /// Request is the `Buffer`, of which `length` (usize) bytes are used, that
     /// makes up the blob.
     ///
     /// Responds with  a query to commit to adding the blob, or the key of the
@@ -30,7 +79,7 @@ pub enum Message {
     ///
     /// Request is the query to add the blob, returned by [`Message::AddBlob`].
     ///
-    /// Responds the `Key` of the added blob.
+    /// Responds with the `Key` of the added blob.
     CommitBlob(RpcMessage<AddBlob, Key>),
 
     /// Get a blob from storage.

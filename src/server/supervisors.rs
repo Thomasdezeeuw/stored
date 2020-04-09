@@ -2,55 +2,10 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::Path;
 
-use heph::actor::sync::SyncActor;
 use heph::net::{tcp, TcpStream};
-use heph::supervisor::SyncSupervisor;
 use heph::{NewActor, Supervisor, SupervisorStrategy};
-use log::{error, info};
-
-use crate::storage::Storage;
-
-/// Supervisor for the [`db::actor`].
-///
-/// [`db::actor`]: crate::server::actors::db::actor
-///
-/// It logs the error and tries to reopen the database, restarting the actor if
-/// successful.
-pub struct DbSupervisor(Box<Path>);
-
-impl DbSupervisor {
-    /// Create a new `DbSupervisor`.
-    pub const fn new(path: Box<Path>) -> DbSupervisor {
-        DbSupervisor(path)
-    }
-}
-
-impl<A> SyncSupervisor<A> for DbSupervisor
-where
-    A: SyncActor<Argument = Storage, Error = io::Error>,
-{
-    fn decide(&mut self, err: io::Error) -> SupervisorStrategy<Storage> {
-        error!("error operating on database: {}", err);
-        info!("attempting to reopen database");
-        match Storage::open(&self.0) {
-            Ok(storage) => {
-                info!("successfully reopened database, restarting database actor");
-                SupervisorStrategy::Restart(storage)
-            }
-            Err(err) => {
-                // FIXME: shutdown the entire server somehow? Maybe by sending
-                // the TCP server a shutdown message?
-                error!(
-                    "failed to reopen database, not restarting database actor: {}",
-                    err
-                );
-                SupervisorStrategy::Stop
-            }
-        }
-    }
-}
+use log::error;
 
 /// TCP/HTTP server supervisor.
 ///
