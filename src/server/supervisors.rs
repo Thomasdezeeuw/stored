@@ -10,7 +10,7 @@ use heph::supervisor::SyncSupervisor;
 use heph::{NewActor, Supervisor, SupervisorStrategy};
 use log::{error, info};
 
-use crate::server::storage::Storage;
+use crate::storage::Storage;
 
 /// Supervisor for the [`db::actor`].
 ///

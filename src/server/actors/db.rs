@@ -7,7 +7,7 @@ use heph::actor::sync::SyncContext;
 use heph::actor_ref::RpcMessage;
 use log::debug;
 
-use crate::server::storage::{AddBlob, AddResult, Blob, Storage};
+use crate::storage::{AddBlob, AddResult, Blob, Storage};
 use crate::{Buffer, Key};
 
 /// Message type send to the storage [`actor`].

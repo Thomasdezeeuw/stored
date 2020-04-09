@@ -24,7 +24,7 @@ use log::{debug, error};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::server::actors::db::{self, AddBlobResponse, HealthCheck};
-use crate::server::storage::Blob;
+use crate::storage::Blob;
 use crate::Key;
 
 /// Actor that handles a single TCP `stream`, expecting HTTP requests.

@@ -16,8 +16,8 @@ use serde::Deserialize;
 
 use stored::http;
 use stored::server::actors::db;
-use stored::server::storage::Storage;
 use stored::server::supervisors::{http_supervisor, DbSupervisor, ServerSupervisor};
+use stored::storage::Storage;
 
 /// stored Configuration.
 ///
