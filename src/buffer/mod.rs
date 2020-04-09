@@ -32,10 +32,8 @@ const MIN_SIZE_MOVE: usize = 512;
 /// Buffer, *you know what a buffer is*.
 ///
 /// This buffer buffers reads (that is what a buffer does), but also keeps track
-/// of the bytes processed which is useful in combination with the parsing
-/// functions found in the [`parse`] module.
-///
-/// [`parse`]: crate::parse
+/// of the bytes processed which is useful in combination when parsing a
+/// request.
 #[derive(Debug)]
 pub struct Buffer {
     data: Vec<u8>,
