@@ -13,6 +13,18 @@ const HELLO_KEY: Key = Key::new([
     215, 111,
 ]);
 
+pub fn std(c: &mut Criterion) {
+    use std::collections::hash_map::DefaultHasher;
+    let mut group = c.benchmark_group("std");
+    group.bench_function("DefaultHasher/empty", |b| {
+        b.iter(|| bench_empty::<DefaultHasher>())
+    });
+    group.bench_function("DefaultHasher/hello", |b| {
+        b.iter(|| bench_hello::<DefaultHasher>())
+    });
+    group.finish();
+}
+
 pub fn ahash(c: &mut Criterion) {
     use ahash::AHasher;
     let mut group = c.benchmark_group("ahash");
@@ -78,5 +90,5 @@ macro_rules! make_bench {
 make_bench!(bench_empty, EMPTY_KEY);
 make_bench!(bench_hello, HELLO_KEY);
 
-criterion_group!(hash_benches, ahash, fxhash, rustc_hash, seahash);
+criterion_group!(hash_benches, std, ahash, fxhash, rustc_hash, seahash);
 criterion_main!(hash_benches);
