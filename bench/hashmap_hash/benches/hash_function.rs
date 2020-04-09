@@ -33,6 +33,14 @@ pub fn ahash(c: &mut Criterion) {
     group.finish();
 }
 
+pub fn fnv(c: &mut Criterion) {
+    use fnv::FnvHasher;
+    let mut group = c.benchmark_group("fnv");
+    group.bench_function("FnvHasher/empty", |b| b.iter(|| bench_empty::<FnvHasher>()));
+    group.bench_function("FnvHasher/hello", |b| b.iter(|| bench_hello::<FnvHasher>()));
+    group.finish();
+}
+
 pub fn fxhash(c: &mut Criterion) {
     use fxhash::{FxHasher, FxHasher32, FxHasher64};
     let mut group = c.benchmark_group("fxhash");
@@ -90,5 +98,5 @@ macro_rules! make_bench {
 make_bench!(bench_empty, EMPTY_KEY);
 make_bench!(bench_hello, HELLO_KEY);
 
-criterion_group!(hash_benches, std, ahash, fxhash, rustc_hash, seahash);
+criterion_group!(hash_benches, std, ahash, fnv, fxhash, rustc_hash, seahash);
 criterion_main!(hash_benches);
