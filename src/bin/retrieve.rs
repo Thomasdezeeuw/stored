@@ -11,22 +11,18 @@
 
 #![feature(bool_to_option)]
 
+use std::env;
 use std::io::{self, Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::{env, fmt};
+use std::net::{Shutdown, SocketAddr, TcpStream};
+
+use stored::cli::{first_arg, Error};
 
 fn main() -> Result<(), Error> {
     // TODO: make the address configurable.
     let address: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let mut stream = TcpStream::connect(address)?;
 
-    // Read the blob we need to store. Uses the first argument passed (if not
-    // "-") or reads from standard in.
-    let key = env::args()
-        .skip(1)
-        .next()
-        .and_then(|arg| (arg != "-").then_some(arg));
-    let key = if let Some(key) = key {
+    let key = if let Some(key) = first_arg() {
         key
     } else {
         let mut buf = String::new();
@@ -35,9 +31,14 @@ fn main() -> Result<(), Error> {
     };
 
     let mut request = Vec::new();
-    write!(&mut request, "GET /blob/{} HTTP/1.1\r\n\r\n", key)?;
+    write!(
+        &mut request,
+        "GET /blob/{} HTTP/1.1\r\nUser-Agent: Stored-retrieve/{}\r\n\r\n",
+        key,
+        env!("CARGO_PKG_VERSION"),
+    )?;
     stream.write_all(&request)?;
-    stream.flush()?;
+    stream.shutdown(Shutdown::Write)?;
 
     // Reuse the buffer.
     let mut buf = request;
@@ -58,33 +59,4 @@ fn main() -> Result<(), Error> {
     io::stdout()
         .write_all(&buf[headers_length..])
         .map_err(Into::into)
-}
-
-enum Error {
-    Io(io::Error),
-    Parse(httparse::Error),
-    StatusCode(u16, String),
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
-}
-
-impl From<httparse::Error> for Error {
-    fn from(err: httparse::Error) -> Error {
-        Error::Parse(err)
-    }
-}
-
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use Error::*;
-        match self {
-            Io(err) => write!(f, "I/O error: {}", err),
-            Parse(err) => write!(f, "HTTP parsing error: {}", err),
-            StatusCode(code, msg) => write!(f, "Unexpected HTTP status code: {}: {}", code, msg),
-        }
-    }
 }

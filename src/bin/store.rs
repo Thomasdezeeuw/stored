@@ -10,24 +10,19 @@
 
 #![feature(bool_to_option)]
 
-use std::io::{self, IoSlice, Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::os::unix::ffi::OsStringExt;
-use std::{env, fmt};
+use std::env;
+use std::io::{self, Read, Write};
+use std::net::{Shutdown, SocketAddr, TcpStream};
+
+use stored::cli::{first_arg, Error};
 
 fn main() -> Result<(), Error> {
     // TODO: make the address configurable.
     let address: SocketAddr = "127.0.0.1:8080".parse().unwrap();
     let mut stream = TcpStream::connect(address)?;
 
-    // Read the blob we need to store. Uses the first argument passed (if not
-    // "-") or reads from standard in.
-    let blob = env::args_os()
-        .skip(1)
-        .next()
-        .and_then(|arg| (arg != "-").then_some(arg));
-    let blob = if let Some(blob) = blob {
-        blob.into_vec()
+    let blob = if let Some(blob) = first_arg() {
+        blob.into_bytes()
     } else {
         let mut buf = Vec::new();
         io::stdin().read_to_end(&mut buf)?;
@@ -37,13 +32,18 @@ fn main() -> Result<(), Error> {
     let mut headers = Vec::new();
     write!(
         &mut headers,
-        "POST /blob HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+        "POST /blob HTTP/1.1\r\nUser-Agent: Stored-store/{}\r\nContent-Length: {}\r\n\r\n",
+        env!("CARGO_PKG_VERSION"),
         blob.len()
     )?;
 
+    /* TODO: use vectored I/O:
     let bufs = &[IoSlice::new(&headers), IoSlice::new(&blob)];
-    stream.write_vectored(bufs)?;
-    stream.flush()?;
+    stream.write_all_vectored(bufs)?;
+    */
+    stream.write_all(&headers)?;
+    stream.write_all(&blob)?;
+    stream.shutdown(Shutdown::Write)?;
 
     // Reuse the largest buffer.
     let mut buf = if headers.len() > blob.len() {
@@ -72,37 +72,6 @@ fn main() -> Result<(), Error> {
             .write_all(&location.value[6..])
             .map_err(Into::into)
     } else {
-        return Err(Error::LocationHeader);
-    }
-}
-
-enum Error {
-    Io(io::Error),
-    Parse(httparse::Error),
-    StatusCode(u16, String),
-    LocationHeader,
-}
-
-impl From<io::Error> for Error {
-    fn from(err: io::Error) -> Error {
-        Error::Io(err)
-    }
-}
-
-impl From<httparse::Error> for Error {
-    fn from(err: httparse::Error) -> Error {
-        Error::Parse(err)
-    }
-}
-
-impl fmt::Debug for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        use Error::*;
-        match self {
-            Io(err) => write!(f, "I/O error: {}", err),
-            Parse(err) => write!(f, "HTTP parsing error: {}", err),
-            StatusCode(code, msg) => write!(f, "Unexpected HTTP status code: {}: {}", code, msg),
-            LocationHeader => write!(f, "Missing 'Location' header"),
-        }
+        Err(Error::LocationHeader)
     }
 }
