@@ -1,4 +1,11 @@
 //! Module with the server's HTTP/1.1 implementation.
+//!
+//! The [`http::actor`] is the main type, its started by [`tcp::Server`] and is
+//! supervised by [`http::Supervisor`].
+//!
+//! [`http::actor`]: crate::http::actor()
+//! [`tcp::Server`]: heph::net::tcp::Server
+//! [`http::Supervisor`]: crate::http::Supervisor
 
 // TODO: add tests.
 
@@ -17,8 +24,9 @@ use std::{fmt, mem, str};
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::io::AsyncWriteExt;
 use heph::log::request;
-use heph::net::TcpStream;
+use heph::net::{tcp, TcpStream};
 use heph::{actor, ActorRef};
+use heph::{NewActor, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
 use log::{debug, error};
 
@@ -26,6 +34,50 @@ use crate::buffer::{Buffer, WriteBuffer};
 use crate::db::{self, AddBlobResponse, HealthCheck};
 use crate::storage::Blob;
 use crate::Key;
+
+/// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].
+///
+/// [`http::actor`]: crate::http::actor()
+/// [`tcp::Server`]: heph::net::tcp::Server
+///
+/// Attempts to restart the listener once, stops it the second time.
+pub struct ServerSupervisor;
+
+impl<S, NA> Supervisor<tcp::ServerSetup<S, NA>> for ServerSupervisor
+where
+    S: Supervisor<NA> + Clone + 'static,
+    NA: NewActor<Argument = (TcpStream, SocketAddr), Error = !> + Clone + 'static,
+{
+    fn decide(&mut self, err: tcp::ServerError<!>) -> SupervisorStrategy<()> {
+        use tcp::ServerError::*;
+        match err {
+            Accept(err) => {
+                error!("error accepting new connection: {}", err);
+                SupervisorStrategy::Restart(())
+            }
+            NewActor::<!>(_) => unreachable!(),
+        }
+    }
+
+    fn decide_on_restart_error(&mut self, err: io::Error) -> SupervisorStrategy<()> {
+        error!("error restarting the HTTP server: {}", err);
+        SupervisorStrategy::Stop
+    }
+
+    fn second_restart_error(&mut self, err: io::Error) {
+        error!("error restarting the HTTP server a second time: {}", err);
+    }
+}
+
+/// Supervisor for the [`http::actor`].
+///
+/// [`http::actor`]: crate::http::actor()
+///
+/// Logs the error and stops the actor.
+pub fn supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)> {
+    error!("error handling HTTP connection: {}", err);
+    SupervisorStrategy::Stop
+}
 
 /// Actor that handles a single TCP `stream`, expecting HTTP requests.
 ///

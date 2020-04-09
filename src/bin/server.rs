@@ -14,7 +14,6 @@ use log::info;
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
 use serde::Deserialize;
 
-use stored::server::supervisors::{http_supervisor, ServerSupervisor};
 use stored::storage::Storage;
 use stored::{db, http};
 
@@ -161,7 +160,7 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
     let http_listener = tcp::Server::setup(
         config.http.address,
-        http_supervisor,
+        http::supervisor,
         http_actor,
         ActorOptions::default(),
     )?;
@@ -175,7 +174,8 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         .with_setup(move |mut runtime_ref| {
             // Start our HTTP server.
             let options = ActorOptions::default().with_priority(Priority::LOW);
-            let server_ref = runtime_ref.try_spawn(ServerSupervisor, http_listener, (), options)?;
+            let server_ref =
+                runtime_ref.try_spawn(http::ServerSupervisor, http_listener, (), options)?;
             runtime_ref.receive_signals(server_ref.try_map());
 
             Ok(())

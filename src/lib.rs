@@ -13,7 +13,6 @@ pub mod http;
 pub mod key;
 pub mod parse;
 pub mod serialise;
-pub mod server;
 pub mod storage;
 
 pub use buffer::Buffer;

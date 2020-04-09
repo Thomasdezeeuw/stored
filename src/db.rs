@@ -3,9 +3,9 @@
 //! The [`db::actor`] is the main type, which accepts [`db::Message`]s and is
 //! supervised by [`db::Supervisor`].
 //!
-//! [`db::actor`]: actor
-//! [`db::Message`]: Message
-//! [`db::Supervisor`]: Supervisor
+//! [`db::actor`]: crate::db::actor
+//! [`db::Message`]: crate::db::Message
+//! [`db::Supervisor`]: crate::db::Supervisor
 
 use std::io;
 use std::path::Path;
