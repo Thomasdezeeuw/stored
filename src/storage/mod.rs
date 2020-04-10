@@ -28,7 +28,7 @@
 //! bytes stored in the data file for the blob will be left in place.
 //!
 //!
-//! ## Remove blobs
+//! ## Removing blobs
 //!
 //! TODO: document and implement this.
 //!
@@ -100,8 +100,12 @@ use log::error;
 
 use crate::Key;
 
+mod validate;
+
 #[cfg(test)]
 mod tests;
+
+pub use validate::{validate, validate_storage, Corruption};
 
 /// Magic header strings for the data and index files.
 const DATA_MAGIC: &[u8] = b"Stored data v01\0"; // Null padded to 16 bytes.

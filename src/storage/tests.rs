@@ -21,9 +21,10 @@ fn test_data_path(file: &str) -> PathBuf {
     Path::new("./tests/data/").join(file)
 }
 
+// Database locks.
 lazy_static! {
-    /// Locks database located at "tests/data/001.db".
     static ref DB_001: Mutex<()> = Mutex::new(());
+    static ref DB_008: Mutex<()> = Mutex::new(());
 }
 
 // Data stored in "001.db" test data.
@@ -995,5 +996,23 @@ mod storage {
                 assert!(err.to_string().contains("database already in used"));
             }
         }
+    }
+}
+
+mod validate {
+    use std::num::NonZeroUsize;
+
+    use super::{test_data_path, test_entries, validate, DB_008};
+
+    #[test]
+    fn validate_database() {
+        let path = test_data_path("008.db");
+        let _guard = DB_008.lock().unwrap();
+
+        let corruptions = validate(&path, NonZeroUsize::new(1).unwrap()).unwrap();
+
+        // "Hello world" was changed to "Hello pluto".
+        assert_eq!(corruptions.len(), 1);
+        assert_eq!(*corruptions[0].key(), test_entries()[0].key);
     }
 }
