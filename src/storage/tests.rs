@@ -198,7 +198,8 @@ mod index {
 
         let mut index = Index::open(&path).unwrap();
 
-        let mut entries = index.entries().unwrap();
+        let entries = index.entries().unwrap();
+        let mut entries = entries.iter();
         assert_eq!(entries.len(), 0);
         assert!(entries.next().is_none());
     }
@@ -213,7 +214,7 @@ mod index {
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
         let wanted = test_entries();
-        for (i, entry) in entries.enumerate() {
+        for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry, &wanted[i]);
         }
     }
@@ -228,10 +229,12 @@ mod index {
         assert_eq!(got, INDEX_MAGIC);
 
         // Should be empty.
-        let mut entries = index.entries().unwrap();
-        assert_eq!(entries.len(), 0);
-        assert!(entries.next().is_none());
-        drop(entries);
+        {
+            let entries = index.entries().unwrap();
+            let mut entries = entries.iter();
+            assert_eq!(entries.len(), 0);
+            assert!(entries.next().is_none());
+        }
 
         // Add some entries.
         let test_entries = test_entries();
@@ -245,7 +248,7 @@ mod index {
         // Check the entries we've just added.
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
-        for (i, entry) in entries.enumerate() {
+        for (i, entry) in entries.iter().enumerate() {
             assert_eq!(entry, &test_entries[i]);
         }
     }

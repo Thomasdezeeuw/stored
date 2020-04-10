@@ -86,8 +86,8 @@ use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::iter::FusedIterator;
-use std::mem::{align_of, size_of};
+use std::marker::PhantomData;
+use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
@@ -185,6 +185,7 @@ impl Storage {
         // All blobs currently in the database.
         let entries = index.entries()?;
         let blobs = entries
+            .into_iter()
             .map(|entry| {
                 data.address_for(entry.offset(), entry.length())
                     .map(|(address, lifetime)| {
@@ -206,6 +207,7 @@ impl Storage {
                     })
             })
             .collect::<io::Result<_>>()?;
+        drop(entries);
 
         Ok(Storage { data, index, blobs })
     }
@@ -987,17 +989,18 @@ impl Index {
     /// Returns an iterator for all entries remaining in the `Index`. If the
     /// `Index` was just `open`ed this means all entries in the entire index
     /// file.
-    fn entries<'i>(&'i mut self) -> io::Result<Entries<'i>> {
+    fn entries<'i>(&'i mut self) -> io::Result<MmapSlice<'i, Entry>> {
         let metadata = self.file.metadata()?;
         let mmap_length = metadata.len() as libc::size_t;
 
         let indices_length = mmap_length - INDEX_MAGIC.len();
         if indices_length == 0 {
             // Can't call mmap with `length = 0`.
-            return Ok(Entries {
-                mmap_address: ptr::null_mut(),
-                mmap_length: 0,
-                iter: [].iter(),
+            return Ok(MmapSlice {
+                address: ptr::null_mut(),
+                length: 0,
+                offset: 0,
+                slice: PhantomData,
             });
         }
 
@@ -1025,12 +1028,11 @@ impl Index {
             libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
         )?;
 
-        let indices_address = unsafe { mmap_address.add(INDEX_MAGIC.len()) };
-        let slice: &'i [Entry] = mmap_slice(indices_address, indices_length);
-        Ok(Entries {
-            mmap_address,
-            mmap_length,
-            iter: slice.iter(),
+        Ok(MmapSlice {
+            address: mmap_address,
+            length: mmap_length,
+            offset: INDEX_MAGIC.len(),
+            slice: PhantomData,
         })
     }
 
@@ -1047,6 +1049,53 @@ impl Index {
         self.file
             .write_all(&bytes)
             .and_then(|()| self.file.sync_all())
+    }
+}
+
+/// A slice backed by `mmap(2)`.
+struct MmapSlice<'a, T> {
+    /// Mmap address. Safety: must be the `mmap` returned address, may be null
+    /// in which case the address is not unmapped. If null `length` must be 0.
+    address: *mut libc::c_void,
+    /// Mmap allocation length. Safety: must be length used in `mmap`.
+    length: libc::size_t,
+    /// Offset from `address` to start the slice returned by `Deref`.
+    offset: usize,
+    slice: PhantomData<&'a [T]>,
+}
+
+impl<'a, T> Deref for MmapSlice<'a, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        // Mmap needs to be page aligned, so we allow an offset to support
+        // arbitrary ranges.
+        let address = unsafe { self.address.add(self.offset) };
+        let length = self.length - self.offset;
+        debug_assert!(length % size_of::<T>() == 0, "length invalid");
+        unsafe { slice::from_raw_parts(address as *const _, length / size_of::<T>()) }
+    }
+}
+
+impl<'a, T> Drop for MmapSlice<'a, T> {
+    fn drop(&mut self) {
+        // If the index file was empty `address` will be null as we can't create
+        // a mmap with length 0.
+        if !self.address.is_null() {
+            // Safety: both `address` and `length` are used in the call to `mmap`.
+            if let Err(err) = munmap(self.address, self.length) {
+                // We can't really handle the error properly here so we'll log
+                // it and if we're testing (and not panicking) we'll panic on
+                // it.
+                error!("error unmapping data: {}", err);
+                if !thread::panicking() {
+                    #[cfg(test)]
+                    panic!("error unmapping data: {}", err);
+                }
+            }
+        } else {
+            debug_assert!(self.length == 0);
+        }
     }
 }
 
@@ -1086,81 +1135,6 @@ fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> i
         return Err(io::Error::last_os_error());
     } else {
         Ok(())
-    }
-}
-
-/// Converts an `address` and `length` returned from `mmap` into a slice of `T`.
-///
-/// # Safety
-///
-/// The lifetime `'a` must not outlive `address`.
-fn mmap_slice<'a, T>(address: *mut libc::c_void, length: libc::size_t) -> &'a [T] {
-    // Safety: we're ensuring alignment and the OS ensured the length
-    // for us.
-    assert!(
-        address as usize % align_of::<T>() == 0,
-        "mmap address not properly aligned"
-    );
-    assert!(length % size_of::<T>() == 0, "mmap length invalid");
-    unsafe { slice::from_raw_parts(address as *const _, length / size_of::<T>()) }
-}
-
-/// Iterator that all entries from an [`Index`].
-///
-/// # Notes
-///
-/// Lifetime `'i` is connected to `Index`.
-#[derive(Debug)]
-struct Entries<'i> {
-    /// Mmap address. Safety: must be the `mmap` returned address, may be null
-    /// in which case the address is not unmapped. If null `length` must be 0.
-    mmap_address: *mut libc::c_void,
-    /// Mmap allocation length. Safety: must be length used in `mmap`.
-    mmap_length: libc::size_t,
-    /// Iterator based on a slice, so we don't have to do the heavy lifting.
-    /// This points to the `mmap`ed memory `address`.
-    iter: std::slice::Iter<'i, Entry>,
-}
-
-impl<'i> Iterator for Entries<'i> {
-    type Item = &'i Entry;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next()
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.iter.size_hint()
-    }
-}
-
-impl<'i> FusedIterator for Entries<'i> {}
-
-impl<'i> ExactSizeIterator for Entries<'i> {
-    fn len(&self) -> usize {
-        self.iter.len()
-    }
-}
-
-impl<'i> Drop for Entries<'i> {
-    fn drop(&mut self) {
-        // If the index file was empty `address` will be null as we can't create
-        // a mmap with length 0.
-        if !self.mmap_address.is_null() {
-            // Safety: both `address` and `length` are used in the call to `mmap`.
-            if let Err(err) = munmap(self.mmap_address, self.mmap_length) {
-                // We can't really handle the error properly here so we'll log
-                // it and if we're testing (and not panicking) we'll panic on
-                // it.
-                error!("error unmapping data: {}", err);
-                if !thread::panicking() {
-                    #[cfg(test)]
-                    panic!("error unmapping data: {}", err);
-                }
-            }
-        } else {
-            debug_assert!(self.mmap_length == 0);
-        }
     }
 }
 
