@@ -1022,11 +1022,13 @@ impl Index {
 
         // For performance let the OS known we're going to read the entries
         // so it can prefetch the pages from disk.
-        madvise(
+        // Note that we don't care about the result as its just an advise to the
+        // OS, if t can't comply we'll continue on.
+        let _ = madvise(
             mmap_address,
             mmap_length,
             libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-        )?;
+        );
 
         Ok(MmapSlice {
             address: mmap_address,
