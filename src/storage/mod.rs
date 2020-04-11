@@ -176,11 +176,8 @@ impl Storage {
         // Ensure the directory exists.
         create_dir_all(path)?;
 
-        let mut data = Data::open(path.join("data"))?;
-        lock(&mut data.file)?;
-
+        let data = Data::open(path.join("data"))?;
         let mut index = Index::open(path.join("index"))?;
-        lock(&mut index.file)?;
 
         // All blobs currently in the database.
         let entries = index.entries()?;
@@ -219,12 +216,12 @@ impl Storage {
 
     /// Returns the number of bytes of data stored.
     pub fn data_size(&self) -> u64 {
-        self.data.file_length() as u64
+        self.data.file_length()
     }
 
     /// Returns the size of the index file in bytes.
     pub fn index_size(&self) -> u64 {
-        (self.len() as u64 * size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
+        self.index.file_length()
     }
 
     /// Returns the total size of the database file (data and index).
@@ -288,27 +285,6 @@ impl Storage {
         Q: Query,
     {
         query.abort(self)
-    }
-}
-
-/// Lock `file` using `flock(2)`.
-///
-/// # Notes
-///
-/// Once the `file` is dropped it's automatically unlocked.
-fn lock(file: &mut File) -> io::Result<()> {
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::WouldBlock {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "database already in used",
-            ))
-        } else {
-            Err(err)
-        }
-    } else {
-        Ok(())
     }
 }
 
@@ -680,6 +656,7 @@ impl Data {
                 length: 0,
                 areas: Vec::new(),
             })?;
+        lock(&mut data.file)?;
 
         let metadata = data.file.metadata()?;
         let mut length = metadata.len() as libc::size_t;
@@ -956,6 +933,8 @@ struct Index {
     /// Index file opened for reading (for use in `entries`) and writing in
     /// append-only mode for adding entries (`add_entry`).
     file: File,
+    /// Current length of the file.
+    length: u64,
 }
 
 impl Index {
@@ -966,11 +945,14 @@ impl Index {
             .read(true)
             .append(true)
             .open(path)?;
+        lock(&mut file)?;
 
         let metadata = file.metadata()?;
-        if metadata.len() == 0 {
+        let mut length = metadata.len();
+        if length == 0 {
             // New file so we need to add our magic.
             file.write_all(&INDEX_MAGIC)?;
+            length += INDEX_MAGIC.len() as u64;
         } else {
             // Existing file; we'll check if it has the magic header.
             let mut magic = [0; INDEX_MAGIC.len()];
@@ -983,19 +965,21 @@ impl Index {
             }
         }
 
-        Ok(Index { file })
+        Ok(Index { file, length })
+    }
+
+    /// Returns the total file length.
+    fn file_length(&self) -> u64 {
+        self.length
     }
 
     /// Returns an iterator for all entries remaining in the `Index`. If the
     /// `Index` was just `open`ed this means all entries in the entire index
     /// file.
     fn entries<'i>(&'i mut self) -> io::Result<MmapSlice<'i, Entry>> {
-        let metadata = self.file.metadata()?;
-        let mmap_length = metadata.len() as libc::size_t;
-
+        let mmap_length = self.length as libc::size_t;
         let indices_length = mmap_length - INDEX_MAGIC.len();
         if indices_length == 0 {
-            // Can't call mmap with `length = 0`.
             return Ok(MmapSlice {
                 address: ptr::null_mut(),
                 length: 0,
@@ -1051,6 +1035,7 @@ impl Index {
         self.file
             .write_all(&bytes)
             .and_then(|()| self.file.sync_all())
+            .map(|()| self.length += bytes.len() as u64)
     }
 }
 
@@ -1135,6 +1120,27 @@ fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> i
     debug_assert!(len != 0);
     if unsafe { libc::madvise(addr, len, advice) != 0 } {
         return Err(io::Error::last_os_error());
+    } else {
+        Ok(())
+    }
+}
+
+/// Lock `file` using `flock(2)`.
+///
+/// # Notes
+///
+/// Once the `file` is dropped it's automatically unlocked.
+fn lock(file: &mut File) -> io::Result<()> {
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "database already in used",
+            ))
+        } else {
+            Err(err)
+        }
     } else {
         Ok(())
     }
