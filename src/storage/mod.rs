@@ -86,6 +86,7 @@ use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
@@ -159,7 +160,7 @@ pub struct Storage {
     /// `blobs` must be declared before `data`because it must be dropped before
     /// `data`.
     // TODO: use different hashing algorithm.
-    blobs: HashMap<Key, Blob>,
+    blobs: HashMap<Key, (EntryIndex, Blob)>,
     /// # Safety
     ///
     /// Must outlive `blobs`, the lifetime `'s` refers to this.
@@ -182,8 +183,8 @@ impl Storage {
         // All blobs currently in the database.
         let entries = index.entries()?;
         let blobs = entries
-            .into_iter()
-            .map(|entry| {
+            .iter()
+            .map(|(index, entry)| {
                 data.address_for(entry.offset(), entry.length())
                     .map(|(address, lifetime)| {
                         // Safety: this is safe because `Data` outlives `blobs`, see
@@ -197,7 +198,7 @@ impl Storage {
                             created: entry.created_at(),
                             lifetime,
                         };
-                        (entry.key().clone(), blob)
+                        (entry.key().clone(), (index, blob))
                     })
                     .ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
@@ -231,7 +232,7 @@ impl Storage {
 
     /// Returns a reference to the `Blob` corresponding to the key, if stored.
     pub fn lookup(&self, key: &Key) -> Option<Blob> {
-        self.blobs.get(key).cloned()
+        self.blobs.get(key).map(|(_, blob)| blob.clone())
     }
 
     /// Add `blob` to the database.
@@ -353,7 +354,7 @@ impl Query for AddBlob {
                 // index.
                 let index_entry =
                     Entry::new(self.key.clone(), self.offset, self.length, created_at);
-                storage.index.add_entry(&index_entry)?;
+                let entry_index = storage.index.add_entry(&index_entry)?;
 
                 // Now that the data and index entry are stored we can insert
                 // the blob into our database.
@@ -374,7 +375,7 @@ impl Query for AddBlob {
                     created: index_entry.created_at(),
                     lifetime: self.lifetime,
                 };
-                entry.insert(blob);
+                entry.insert((entry_index, blob));
             }
         }
 
@@ -1023,7 +1024,7 @@ impl Index {
     }
 
     /// Add a new `entry` to the `Index`.
-    fn add_entry(&mut self, entry: &Entry) -> io::Result<()> {
+    fn add_entry(&mut self, entry: &Entry) -> io::Result<EntryIndex> {
         debug_assert!(
             entry.offset >= DATA_MAGIC.len() as u64,
             "offset inside magic header"
@@ -1035,7 +1036,13 @@ impl Index {
         self.file
             .write_all(&bytes)
             .and_then(|()| self.file.sync_all())
-            .map(|()| self.length += bytes.len() as u64)
+            .map(|()| {
+                let entry_index = EntryIndex(
+                    ((self.length - (INDEX_MAGIC.len() as u64)) / (bytes.len() as u64)) as usize,
+                );
+                self.length += bytes.len() as u64;
+                entry_index
+            })
     }
 }
 
@@ -1061,6 +1068,19 @@ impl<'a, T> Deref for MmapSlice<'a, T> {
         let length = self.length - self.offset;
         debug_assert!(length % size_of::<T>() == 0, "length invalid");
         unsafe { slice::from_raw_parts(address as *const _, length / size_of::<T>()) }
+    }
+}
+
+impl<'a> MmapSlice<'a, Entry> {
+    /// Returns an iterator over the `Entry`s and the entry's index into the
+    /// [`Index`] file.
+    fn iter(
+        &self,
+    ) -> impl Iterator<Item = (EntryIndex, &Entry)> + ExactSizeIterator + FusedIterator {
+        self.deref()
+            .iter()
+            .enumerate()
+            .map(|(idx, entry)| (EntryIndex(idx), entry))
     }
 }
 
@@ -1143,6 +1163,17 @@ fn lock(file: &mut File) -> io::Result<()> {
         }
     } else {
         Ok(())
+    }
+}
+
+/// Index of an [`Entry`] in the [`Index`] file.
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+struct EntryIndex(usize);
+
+impl EntryIndex {
+    /// Returns the offset of the [`Entry`] into the [`Index`] file in bytes.
+    fn offset(self) -> u64 {
+        self.0 as u64 * size_of::<Entry>() as u64
     }
 }
 

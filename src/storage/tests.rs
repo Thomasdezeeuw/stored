@@ -214,8 +214,8 @@ mod index {
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
         let wanted = test_entries();
-        for (i, entry) in entries.iter().enumerate() {
-            assert_eq!(entry, &wanted[i]);
+        for (i, entry) in entries.iter() {
+            assert_eq!(entry, &wanted[i.0]);
         }
     }
 
@@ -248,8 +248,8 @@ mod index {
         // Check the entries we've just added.
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
-        for (i, entry) in entries.iter().enumerate() {
-            assert_eq!(entry, &test_entries[i]);
+        for (i, entry) in entries.iter() {
+            assert_eq!(entry, &test_entries[i.0]);
         }
     }
 
@@ -608,8 +608,8 @@ mod storage {
     use std::{fs, io};
 
     use super::{
-        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, Storage, DATA,
-        DATA_MAGIC, DB_001, INDEX_MAGIC,
+        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, EntryIndex,
+        Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -683,6 +683,11 @@ mod storage {
         for (i, key) in keys.into_iter().enumerate() {
             let got = storage.lookup(&key).unwrap();
             assert_eq!(got.bytes(), blobs[i]);
+
+            // Check the EntryIndex.
+            let (entry_index, blob) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(i));
+            assert_eq!(blob.bytes(), blobs[i]);
         }
 
         assert_eq!(storage.len(), blobs.len());
@@ -730,6 +735,11 @@ mod storage {
             }
             AddResult::Ok(_) | AddResult::Err(_) => panic!("unexpected add_blob result"),
         }
+
+        // `blobs` should be unchanged.
+        let (entry_index, got) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        assert_eq!(got.bytes(), blob);
     }
 
     #[test]
@@ -773,6 +783,11 @@ mod storage {
         let got_key = storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
         assert_eq!(storage.lookup(&key).unwrap().bytes(), blob);
+
+        // `blobs` should be unchanged.
+        let (entry_index, got) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        assert_eq!(got.bytes(), blob);
     }
 
     #[test]
