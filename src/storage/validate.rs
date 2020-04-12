@@ -7,7 +7,7 @@ use std::{io, thread};
 
 use crossbeam_channel::{Receiver, Sender};
 
-use crate::storage::{Blob, EntryIndex, Storage};
+use crate::storage::{Blob, BlobEntry, EntryIndex, Storage};
 use crate::Key;
 
 /// Corruption found in [`Storage`].
@@ -58,9 +58,12 @@ pub fn validate_storage(
         .collect();
 
     // Send out work to the workers.
-    for (key, (index, blob)) in storage.blobs.iter() {
-        // TODO: handle error properly.
-        entries.send((key.clone(), *index, blob.clone())).unwrap();
+    for (key, (index, blob_entry)) in storage.blobs.iter() {
+        match blob_entry {
+            // TODO: handle error properly.
+            BlobEntry::Alive(blob) => entries.send((key.clone(), *index, blob.clone())).unwrap(),
+            BlobEntry::Removed(_) => (),
+        }
     }
 
     // Ensure we wait on ourselves.

@@ -38,7 +38,7 @@ fn test_entries() -> [Entry; 2] {
             key: Key::for_blob(DATA[0]),
             offset: (DATA_MAGIC.len() as u64).to_be(),
             length: (DATA[0].len() as u32).to_be(),
-            created_at: DateTime {
+            time: DateTime {
                 seconds: 5u64.to_be(),
                 subsec_nanos: 0u32.to_be(),
             },
@@ -47,7 +47,7 @@ fn test_entries() -> [Entry; 2] {
             key: Key::for_blob(DATA[1]),
             offset: ((DATA_MAGIC.len() + DATA[0].len()) as u64).to_be(),
             length: (DATA[1].len() as u32).to_be(),
-            created_at: DateTime {
+            time: DateTime {
                 seconds: 50u64.to_be(),
                 subsec_nanos: 100u32.to_be(),
             },
@@ -112,16 +112,83 @@ mod date_time {
     use std::ptr;
     use std::time::{Duration, SystemTime};
 
-    use super::DateTime;
+    use super::{DateTime, ModifiedTime};
 
     #[test]
-    fn from_and_into_sys_time() {
+    fn is_and_mark_removed() {
         let tests = [
             (
                 DateTime {
                     seconds: 1u64.to_be(),
                     subsec_nanos: 0u32.to_be(),
                 },
+                false,
+            ),
+            (
+                DateTime {
+                    seconds: (u64::MAX / 2).to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                false,
+            ),
+            (
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: (1000000 | DateTime::REMOVED_BIT).to_be(),
+                },
+                true,
+            ),
+        ];
+
+        for (input, is_removed) in &tests {
+            assert_eq!(input.is_removed(), *is_removed, "input: {:?}", input);
+            let removed = input.mark_removed();
+            assert_eq!(removed.is_removed(), true, "input: {:?}", removed);
+        }
+    }
+
+    #[test]
+    fn from_sys_time() {
+        let tests = [
+            (
+                Duration::from_secs(1),
+                DateTime {
+                    seconds: 1u64.to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+            ),
+            (
+                Duration::from_secs(u64::MAX / 2),
+                DateTime {
+                    seconds: (u64::MAX / 2).to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+            ),
+            (
+                Duration::from_millis(1),
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: 1000000u32.to_be(),
+                },
+            ),
+        ];
+
+        for (add, want) in &tests {
+            let time = SystemTime::UNIX_EPOCH + *add;
+            let got: DateTime = time.into();
+            assert_eq!(got, *want);
+        }
+    }
+
+    #[test]
+    fn from_and_into_modified_time() {
+        let tests = [
+            (
+                DateTime {
+                    seconds: 1u64.to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                false,
                 Duration::from_secs(1),
             ),
             (
@@ -129,17 +196,30 @@ mod date_time {
                     seconds: (u64::MAX / 2).to_be(),
                     subsec_nanos: 0u32.to_be(),
                 },
+                false,
                 Duration::from_secs(u64::MAX / 2),
+            ),
+            (
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: (1000000 | DateTime::REMOVED_BIT).to_be(),
+                },
+                true,
+                Duration::from_millis(1),
             ),
         ];
 
-        for (input, add) in &tests {
-            let got: SystemTime = (*input).into();
+        for (input, is_removed, add) in &tests {
+            let got: ModifiedTime = (*input).into();
             let want = SystemTime::UNIX_EPOCH + *add;
-            assert_eq!(got, want);
+            if *is_removed {
+                assert_eq!(got, ModifiedTime::Removed(want), "input: {:?}", input);
+            } else {
+                assert_eq!(got, ModifiedTime::Created(want), "input: {:?}", input);
+            }
 
             let round_trip: DateTime = got.into();
-            assert_eq!(*input, round_trip);
+            assert_eq!(*input, round_trip, "input: {:?}", input);
         }
     }
 
@@ -170,7 +250,9 @@ mod index {
     use std::mem::size_of;
     use std::{fs, io};
 
-    use super::{temp_file, test_data_path, test_entries, Entry, Index, DB_001, INDEX_MAGIC};
+    use super::{
+        temp_file, test_data_path, test_entries, Entry, Index, ModifiedTime, DB_001, INDEX_MAGIC,
+    };
 
     #[test]
     fn entry_size() {
@@ -181,11 +263,16 @@ mod index {
     #[test]
     fn new_entry() {
         for entry in test_entries().iter() {
+            let created_at = if let ModifiedTime::Created(t) = entry.modified_time() {
+                t
+            } else {
+                panic!("expected only created at entries");
+            };
             let got = Entry::new(
                 entry.key().clone(),
                 entry.offset(),
                 entry.length(),
-                entry.created_at(),
+                created_at,
             );
             assert_eq!(got, *entry);
         }
@@ -200,7 +287,6 @@ mod index {
 
         let entries = index.entries().unwrap();
         let mut entries = entries.iter();
-        assert_eq!(entries.len(), 0);
         assert!(entries.next().is_none());
     }
 
@@ -232,7 +318,6 @@ mod index {
         {
             let entries = index.entries().unwrap();
             let mut entries = entries.iter();
-            assert_eq!(entries.len(), 0);
             assert!(entries.next().is_none());
         }
 
@@ -604,12 +689,12 @@ mod data {
 
 mod storage {
     use std::mem::size_of;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
     use std::{fs, io};
 
     use super::{
-        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, Entry, EntryIndex,
-        Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
+        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, BlobEntry, Entry,
+        EntryIndex, ModifiedTime, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -640,7 +725,10 @@ mod storage {
             let got = storage.lookup(entry.key()).unwrap();
             let want = DATA[i];
             assert_eq!(got.bytes(), want);
-            assert_eq!(got.created_at(), entry.created_at());
+            assert_eq!(
+                ModifiedTime::Created(got.created_at()),
+                entry.modified_time()
+            );
         }
     }
 
@@ -654,8 +742,8 @@ mod storage {
     }
 
     #[test]
-    fn add_blobs() {
-        let path = temp_dir("add_blobs.db");
+    fn add_multiple_blobs() {
+        let path = temp_dir("add_multiple_blobs.db");
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
@@ -685,9 +773,12 @@ mod storage {
             assert_eq!(got.bytes(), blobs[i]);
 
             // Check the EntryIndex.
-            let (entry_index, blob) = storage.blobs.get(&key).unwrap();
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
             assert_eq!(*entry_index, EntryIndex(i));
-            assert_eq!(blob.bytes(), blobs[i]);
+            match blob_entry {
+                BlobEntry::Alive(blob) => assert_eq!(blob.bytes(), blobs[i]),
+                BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+            }
         }
 
         assert_eq!(storage.len(), blobs.len());
@@ -737,14 +828,17 @@ mod storage {
         }
 
         // `blobs` should be unchanged.
-        let (entry_index, got) = storage.blobs.get(&key).unwrap();
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
         assert_eq!(*entry_index, EntryIndex(0));
-        assert_eq!(got.bytes(), blob);
+        match blob_entry {
+            BlobEntry::Alive(got) => assert_eq!(got.bytes(), blob),
+            BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+        }
     }
 
     #[test]
-    fn query_can_outlive_storage() {
-        let path = temp_dir("query_can_outlive_storage.db");
+    fn add_query_can_outlive_storage() {
+        let path = temp_dir("add_query_can_outlive_storage.db");
         let mut storage = Storage::open(&path).unwrap();
 
         let blob = DATA[0];
@@ -785,9 +879,12 @@ mod storage {
         assert_eq!(storage.lookup(&key).unwrap().bytes(), blob);
 
         // `blobs` should be unchanged.
-        let (entry_index, got) = storage.blobs.get(&key).unwrap();
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
         assert_eq!(*entry_index, EntryIndex(0));
-        assert_eq!(got.bytes(), blob);
+        match blob_entry {
+            BlobEntry::Alive(got) => assert_eq!(got.bytes(), blob),
+            BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+        }
     }
 
     #[test]
@@ -936,7 +1033,10 @@ mod storage {
 
         let want = DATA[0];
         assert_eq!(got.bytes(), want);
-        assert_eq!(got.created_at(), entry.created_at());
+        assert_eq!(
+            ModifiedTime::Created(got.created_at()),
+            entry.modified_time()
+        );
     }
 
     #[test]
@@ -956,12 +1056,276 @@ mod storage {
 
         let want = DATA[0];
         assert_eq!(got.bytes(), want);
-        assert_eq!(got.created_at(), entry.created_at());
+        assert_eq!(
+            ModifiedTime::Created(got.created_at()),
+            entry.modified_time()
+        );
 
         let got2 = got.clone();
         drop(got);
         assert_eq!(got2.bytes(), want);
-        assert_eq!(got2.created_at(), entry.created_at());
+        assert_eq!(
+            ModifiedTime::Created(got2.created_at()),
+            entry.modified_time()
+        );
+    }
+
+    fn add_blobs(storage: &mut Storage, blobs: &[&[u8]]) -> Vec<Key> {
+        let mut keys = Vec::with_capacity(blobs.len());
+        for blob in blobs.iter().copied() {
+            let query = unwrap(storage.add_blob(blob));
+            let key = storage.commit(query, SystemTime::now()).unwrap();
+            keys.push(key);
+        }
+        keys
+    }
+
+    #[test]
+    fn remove_multiple_blobs() {
+        let path = temp_dir("remove_multiple_blobs.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let blobs = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
+        let keys = add_blobs(&mut storage, &blobs);
+
+        for (i, key) in keys.into_iter().enumerate() {
+            let query = match storage.remove_blob(key.clone()) {
+                RemoveResult::Ok(query) => query,
+                RemoveResult::NotPresent => panic!("expected blob to be present"),
+            };
+
+            // Uncommitted so the blob is still available.
+            let got = storage.lookup(&key).unwrap();
+            assert_eq!(got.bytes(), blobs[i]);
+
+            let removed_at = SystemTime::now();
+            storage.commit(query, removed_at).unwrap();
+            assert!(storage.lookup(&key).is_none());
+
+            // Check the EntryIndex and BlobEntry.
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(i));
+            match blob_entry {
+                BlobEntry::Alive(_) => panic!("unexpected blob entry"),
+                BlobEntry::Removed(got) => assert_eq!(*got, removed_at),
+            }
+        }
+    }
+
+    #[test]
+    fn remove_blob_not_stored() {
+        let path = temp_dir("remove_blob_not_stored.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let key = Key::for_blob(DATA[0]);
+        match storage.remove_blob(key) {
+            RemoveResult::Ok(_) => panic!("expected blob not to be present"),
+            RemoveResult::NotPresent => (),
+        };
+    }
+
+    #[test]
+    fn remove_blob_removed() {
+        let path = temp_dir("remove_blob_removed.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let keys = add_blobs(&mut storage, &[DATA[0]]);
+        let key = &keys[0];
+
+        let removed_at = SystemTime::now();
+        match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => storage.commit(query, removed_at).unwrap(),
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+
+        // Should be marked as removed.
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        match blob_entry {
+            BlobEntry::Alive(_) => panic!("unexpected blob entry"),
+            BlobEntry::Removed(got) => assert_eq!(*got, removed_at),
+        }
+        match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(_) => panic!("expected blob not to be present"),
+            RemoveResult::NotPresent => (),
+        };
+    }
+
+    #[test]
+    fn abort_remove_blob() {
+        let path = temp_dir("abort_remove_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let keys = add_blobs(&mut storage, &[DATA[0]]);
+        let key = &keys[0];
+
+        let query = match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+
+        assert!(storage.lookup(key).is_some());
+        storage.abort(query).unwrap();
+        assert!(storage.lookup(key).is_some());
+    }
+
+    #[test]
+    fn concurrently_removing_blobs() {
+        let path = temp_dir("concurrently_removing_blobs.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let keys = add_blobs(&mut storage, &[DATA[0], DATA[1]]);
+        let key1 = &keys[0];
+        let key2 = &keys[1];
+
+        let query1 = match storage.remove_blob(key1.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+        let query2 = match storage.remove_blob(key2.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+
+        let removed_at2 = SystemTime::now();
+        let got2 = storage.commit(query2, removed_at2).unwrap();
+        assert_eq!(got2, removed_at2);
+
+        let removed_at1 = SystemTime::now();
+        let got1 = storage.commit(query1, removed_at1).unwrap();
+        assert_eq!(got1, removed_at1);
+    }
+
+    #[test]
+    fn concurrently_removing_same_blob() {
+        let path = temp_dir("concurrently_removing_same_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let keys = add_blobs(&mut storage, &[DATA[0]]);
+        let key = &keys[0];
+
+        let query1 = match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+        let query2 = match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("expected blob to be present"),
+        };
+
+        let removed_at = SystemTime::now();
+        let got = storage.commit(query1, removed_at).unwrap();
+        let removed_at2 = SystemTime::now();
+        assert_ne!(removed_at, removed_at2);
+        let got2 = storage.commit(query2, removed_at2).unwrap();
+
+        // Second query shouldn't change the removed at time.
+        assert_eq!(got, removed_at);
+        assert_eq!(got2, removed_at);
+    }
+
+    #[test]
+    fn remove_query_can_outlive_storage() {
+        let path = temp_dir("remove_query_can_outlive_storage.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let keys = add_blobs(&mut storage, &[DATA[0]]);
+        let key = &keys[0];
+        let query = match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotPresent => panic!("unexpected result"),
+        };
+
+        // Dropping the storage before the query should not panic.
+        drop(storage);
+        drop(query);
+    }
+
+    #[test]
+    fn open_storage_with_removed_blobs() {
+        let path = test_data_path("009.db");
+        let storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 1);
+        assert_eq!(storage.blobs.len(), 2);
+
+        let key1 = Key::for_blob(DATA[0]);
+        let key2 = Key::for_blob(DATA[1]);
+
+        for (key, (entry_index, blob_entry)) in storage.blobs.iter() {
+            if *key == key1 {
+                assert_eq!(*entry_index, EntryIndex(0));
+                let blob = match blob_entry {
+                    BlobEntry::Alive(blob) => blob,
+                    BlobEntry::Removed(_) => panic!("unexpected remove value"),
+                };
+                let created_at = SystemTime::UNIX_EPOCH + Duration::new(1586715570, 92000000);
+                assert_eq!(blob.bytes(), DATA[0]);
+                assert_eq!(blob.created_at(), created_at);
+            } else if *key == key2 {
+                assert_eq!(*key, Key::for_blob(DATA[1]));
+                assert_eq!(*entry_index, EntryIndex(1));
+                let got = match blob_entry {
+                    BlobEntry::Alive(_) => panic!("unexpected remove value"),
+                    BlobEntry::Removed(time) => time,
+                };
+                let removed_at = SystemTime::UNIX_EPOCH + Duration::new(1586715570, 92010000);
+                assert_eq!(*got, removed_at);
+            } else {
+                panic!("unexpected key found: {}", key);
+            }
+        }
+
+        assert!(storage.lookup(&key1).is_some());
+        assert!(storage.lookup(&key2).is_none());
     }
 
     #[test]

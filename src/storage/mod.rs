@@ -27,11 +27,19 @@
 //! created for the blob and it will thus not be stored in the database. The
 //! bytes stored in the data file for the blob will be left in place.
 //!
-//!
 //! ## Removing blobs
 //!
-//! TODO: document and implement this.
+//! Just like adding new blobs, removing blobs is done in two phases. In the
+//! first phase the in-memory hash map is checked if the blob is present. If the
+//! blob is present it returns a [`RemoveBlob`] query, if its not present it
+//! returns [`RemoveResult::NotPresent`].
 //!
+//! In the second phase, if the query is commited, the time of blob's entry in
+//! the index file will be overwritten with a removed time. Next the in-memory
+//! hash map is updated to mark the blob as removed. The other fields, mainly
+//! the `offset` and `length` fields, are not changed. These fields will be used
+//! to remove the blob's bytes from the data file at a later stage. If the query
+//! is aborted nothing happens, as nothing was done.
 //!
 //! ## In case of failures
 //!
@@ -65,7 +73,6 @@
 //! bytes in the data file, ensuring they can't be read anymore. TODO: implement
 //! this.
 //!
-//!
 //! # Validating the database
 //!
 //! Each file in the database, that is the index and data files, start with a
@@ -82,6 +89,9 @@
 //   - MAP_HUGE_1GB
 // - MAP_POPULATE
 
+// TODO: add some safeguard to ensure the `AddBlob` and `RemoveBlob` queries can
+// only be applied to the correct `Storage`?
+
 use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
 use std::fs::{create_dir_all, File, OpenOptions};
@@ -90,6 +100,7 @@ use std::iter::FusedIterator;
 use std::marker::PhantomData;
 use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
+use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr::{self, NonNull};
@@ -160,11 +171,25 @@ pub struct Storage {
     /// `blobs` must be declared before `data`because it must be dropped before
     /// `data`.
     // TODO: use different hashing algorithm.
-    blobs: HashMap<Key, (EntryIndex, Blob)>,
+    blobs: HashMap<Key, (EntryIndex, BlobEntry)>,
+    /// Length of `blob` that are not `BlobEntry::Removed`.
+    length: usize,
     /// # Safety
     ///
     /// Must outlive `blobs`, the lifetime `'s` refers to this.
     data: Data,
+}
+
+/// Entry in the blob map in `Storage.blobs`.
+///
+/// We keep track of removed blobs to update peers after they start for the
+/// first time or restart.
+#[derive(Debug)]
+enum BlobEntry {
+    /// Blob is alive.
+    Alive(Blob),
+    /// Blob was removed at the provided time.
+    Removed(SystemTime),
 }
 
 impl Storage {
@@ -182,37 +207,47 @@ impl Storage {
 
         // All blobs currently in the database.
         let entries = index.entries()?;
+        let mut length = 0;
         let blobs = entries
             .iter()
             .map(|(index, entry)| {
-                data.address_for(entry.offset(), entry.length())
-                    .map(|(address, lifetime)| {
-                        // Safety: this is safe because `Data` outlives `blobs`, see
-                        // `Storage.blobs` docs.
-                        let bytes = unsafe {
-                            slice::from_raw_parts(address.as_ptr(), entry.length() as usize)
-                        };
-
-                        let blob = Blob {
-                            bytes,
-                            created: entry.created_at(),
-                            lifetime,
-                        };
-                        (entry.key().clone(), (index, blob))
-                    })
-                    .ok_or_else(|| {
-                        io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
-                    })
+                match entry.modified_time() {
+                    ModifiedTime::Created(time) => data
+                        .address_for(entry.offset(), entry.length())
+                        .map(|(address, lifetime)| {
+                            // Safety: this is safe because we have `lifetime`
+                            // which ensures the bytes live until its dropped.
+                            let bytes = unsafe {
+                                slice::from_raw_parts(address.as_ptr(), entry.length() as usize)
+                            };
+                            length += 1;
+                            BlobEntry::Alive(Blob {
+                                bytes,
+                                created: time,
+                                lifetime,
+                            })
+                        })
+                        .ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
+                        }),
+                    ModifiedTime::Removed(time) => Ok(BlobEntry::Removed(time)),
+                }
+                .map(|blob_entry| (entry.key().clone(), (index, blob_entry)))
             })
             .collect::<io::Result<_>>()?;
         drop(entries);
 
-        Ok(Storage { data, index, blobs })
+        Ok(Storage {
+            data,
+            index,
+            blobs,
+            length,
+        })
     }
 
     /// Returns the number of blobs stored in the database.
     pub fn len(&self) -> usize {
-        self.blobs.len()
+        self.length
     }
 
     /// Returns the number of bytes of data stored.
@@ -232,7 +267,12 @@ impl Storage {
 
     /// Returns a reference to the `Blob` corresponding to the key, if stored.
     pub fn lookup(&self, key: &Key) -> Option<Blob> {
-        self.blobs.get(key).map(|(_, blob)| blob.clone())
+        self.blobs
+            .get(key)
+            .and_then(|(_, blob_entry)| match blob_entry {
+                BlobEntry::Alive(blob) => Some(blob.clone()),
+                BlobEntry::Removed(_) => None,
+            })
     }
 
     /// Add `blob` to the database.
@@ -272,6 +312,27 @@ impl Storage {
         }
     }
 
+    /// Remove the blob with `key` from the database.
+    ///
+    /// Only after the returned [query] is [committed] is the blob removed from
+    /// the database.
+    ///
+    /// # Notes
+    ///
+    /// There is an implicit lifetime between the returned [`RemoveBlob`] query
+    /// and this `Storage`. The query can only be commit or aborted to this
+    /// `Storage`, the query may however safely outlive `Storage`.
+    ///
+    /// [query]: RemoveBlob
+    /// [committed]: Storage::commit
+    pub fn remove_blob(&mut self, key: Key) -> RemoveResult {
+        match self.blobs.get(&key) {
+            Some((_, BlobEntry::Alive(_))) => RemoveResult::Ok(RemoveBlob { key }),
+            Some((_, BlobEntry::Removed(_))) => RemoveResult::NotPresent,
+            None => RemoveResult::NotPresent,
+        }
+    }
+
     /// Commit to `query`.
     pub fn commit<Q>(&mut self, query: Q, arg: Q::Arg) -> io::Result<Q::Return>
     where
@@ -298,6 +359,14 @@ pub enum AddResult {
     AlreadyPresent(Key),
     /// I/O error.
     Err(io::Error),
+}
+
+/// Result returned by [`Storage::remove_blob`].
+pub enum RemoveResult {
+    /// Blob is prepared to be removed, but not yet removed from the database.
+    Ok(RemoveBlob),
+    /// Key is not stored in the database.
+    NotPresent,
 }
 
 /// a `Query` is a partially prepared storage operation.
@@ -372,10 +441,11 @@ impl Query for AddBlob {
                     bytes: unsafe {
                         slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
                     },
-                    created: index_entry.created_at(),
+                    created: created_at,
                     lifetime: self.lifetime,
                 };
-                entry.insert((entry_index, blob));
+                entry.insert((entry_index, BlobEntry::Alive(blob)));
+                storage.length += 1;
             }
         }
 
@@ -393,6 +463,49 @@ impl Query for AddBlob {
 
 // Safety: the `lifetime` field ensures the `address` remains valid.
 unsafe impl Send for AddBlob {}
+
+/// A [`Query`] to [remove a blob] to the [`Storage`].
+///
+/// [remove a blob]: Storage::remove_blob
+pub struct RemoveBlob {
+    key: Key,
+}
+
+impl Query for RemoveBlob {
+    type Arg = SystemTime;
+    /// Returns the time at which the blob is actually removed. This is the same
+    /// time as the provided [`Arg`]ument, unless the blob was already removed,
+    /// in which case its the time at which the blob was originally removed.
+    ///
+    /// [`Arg`]: Query::Arg
+    type Return = SystemTime;
+
+    fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<Self::Return> {
+        if let Some((entry_index, blob_entry)) = storage.blobs.get_mut(&self.key) {
+            if let BlobEntry::Removed(time) = blob_entry {
+                // The blob was removed in between the time the query was
+                // created and commit; we'll keep using the original time.
+                // TODO: should we use the minimum time?
+                Ok(*time)
+            } else {
+                storage
+                    .index
+                    .mark_as_removed(*entry_index, removed_at)
+                    .map(|()| {
+                        *blob_entry = BlobEntry::Removed(removed_at);
+                        removed_at
+                    })
+            }
+        } else {
+            unreachable!("trying to remove a blob that was never stored");
+        }
+    }
+
+    fn abort(self, _storage: &mut Storage) -> io::Result<()> {
+        // We don't have to do anything as we didn't change anything.
+        Ok(())
+    }
+}
 
 /// Handle for a data file.
 #[derive(Debug)]
@@ -1044,6 +1157,30 @@ impl Index {
                 entry_index
             })
     }
+
+    /// Marks the `Entry` at index `at` as removed at `removed_at` time.
+    fn mark_as_removed(&mut self, at: EntryIndex, removed_at: SystemTime) -> io::Result<()> {
+        debug_assert!(
+            ((at.0 as u64) * (size_of::<Entry>() as u64) + (size_of::<Entry>() as u64))
+                < self.length,
+            "index outside of index file"
+        );
+
+        // The date at which the blob was removed.
+        let date = DateTime::from(removed_at).mark_removed();
+        // Safety: because `u8` doesn't have any invalid bit patterns this is
+        // OK. We're also ensured at least `size_of::<DateTime>` bytes are valid.
+        let bytes: &[u8] = unsafe {
+            slice::from_raw_parts((&date) as *const _ as *const _, size_of::<DateTime>())
+        };
+
+        // NOTE: this is only correct because `Entry` and `DateTime` have the
+        // `#[repr(C)]` attribute and thus the layout is fixed.
+        let offset = at.offset() + ((size_of::<Entry>() - size_of::<DateTime>()) as u64);
+        self.file
+            .write_all_at(&bytes, offset)
+            .and_then(|()| self.file.sync_all())
+    }
 }
 
 /// A slice backed by `mmap(2)`.
@@ -1072,8 +1209,8 @@ impl<'a, T> Deref for MmapSlice<'a, T> {
 }
 
 impl<'a> MmapSlice<'a, Entry> {
-    /// Returns an iterator over the `Entry`s and the entry's index into the
-    /// [`Index`] file.
+    /// Returns an iterator over the `Entry`s and its index into the [`Index`]
+    /// file.
     fn iter(
         &self,
     ) -> impl Iterator<Item = (EntryIndex, &Entry)> + ExactSizeIterator + FusedIterator {
@@ -1196,8 +1333,8 @@ struct Entry {
     offset: u64,
     /// Length of the blob in bytes.
     length: u32,
-    /// Time at which the blob is created.
-    created_at: DateTime,
+    /// Time at which the blob is created or removed.
+    time: DateTime,
 }
 
 impl Entry {
@@ -1208,7 +1345,8 @@ impl Entry {
             key,
             offset: u64::from_ne_bytes(offset.to_be_bytes()),
             length: u32::from_ne_bytes(length.to_be_bytes()),
-            created_at: created_at.into(),
+            // `From<SystemTime> for DateTime` always returns a created at time.
+            time: created_at.into(),
         }
     }
 
@@ -1228,8 +1366,8 @@ impl Entry {
     }
 
     /// Returns the time at which this entry was created.
-    fn created_at(&self) -> SystemTime {
-        self.created_at.into()
+    fn modified_time(&self) -> ModifiedTime {
+        self.time.into()
     }
 }
 
@@ -1243,15 +1381,39 @@ impl Entry {
 /// # Notes
 ///
 /// Can't represent times before Unix epoch.
-/// Integers are stored in big-endian format on disk.
+/// Integers are stored in big-endian format on disk **and in memory**.
 #[repr(C, packed)] // Packed to reduce the size of `Index`.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct DateTime {
     /// Number of seconds since Unix epoch.
     seconds: u64,
-    /// Number of nano sub-seconds, always less then 1 billion (the number of
-    /// nanoseconds in a second).
+    /// The first 30 bit make up the number of nano sub-seconds, always less
+    /// then 1 billion (the number of nanoseconds in a second).
+    ///
+    /// The last bit (31st) is the `REMOVED_BIT` and if set marks the `DateTime`
+    /// as a removed at time (`ModifiedTime::Removed`).
     subsec_nanos: u32,
+}
+
+impl DateTime {
+    /// Bit that is set in `subsec_nanos` if the `DateTime` is represented as an
+    /// removed time.
+    const REMOVED_BIT: u32 = 1 << 31;
+
+    /// Returns `true` if the `REMOVED_BIT` is set.
+    fn is_removed(&self) -> bool {
+        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        subsec_nanos & DateTime::REMOVED_BIT != 0
+    }
+
+    /// Returns the same `DateTime`, but as removed at
+    /// (`ModifiedTime::Removed`).
+    fn mark_removed(mut self) -> Self {
+        let mut subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        subsec_nanos |= DateTime::REMOVED_BIT;
+        self.subsec_nanos = u32::from_ne_bytes(subsec_nanos.to_be_bytes());
+        self
+    }
 }
 
 impl From<SystemTime> for DateTime {
@@ -1259,6 +1421,8 @@ impl From<SystemTime> for DateTime {
     ///
     /// If `time` is before Unix epoch this will return an empty `DateTime`,
     /// i.e. this same time as Unix epoch.
+    ///
+    /// This always returns a created at (`ModifiedTime::CreateAt`) time.
     fn from(time: SystemTime) -> DateTime {
         let elapsed = time
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -1272,11 +1436,45 @@ impl From<SystemTime> for DateTime {
     }
 }
 
-impl Into<SystemTime> for DateTime {
-    fn into(self) -> SystemTime {
+/// Time at which a blob was created or removed.
+#[derive(Eq, PartialEq, Debug)]
+enum ModifiedTime {
+    /// Blob was created at this time.
+    Created(SystemTime),
+    /// Blob was removed at this time.
+    Removed(SystemTime),
+}
+
+impl From<ModifiedTime> for DateTime {
+    /// # Notes
+    ///
+    /// If `time` is before Unix epoch this will return an empty `DateTime`,
+    /// i.e. this same time as Unix epoch.
+    fn from(time: ModifiedTime) -> DateTime {
+        let (time, is_removed) = match time {
+            ModifiedTime::Created(time) => (time, false),
+            ModifiedTime::Removed(time) => (time, true),
+        };
+        let time: DateTime = time.into();
+        if is_removed {
+            time.mark_removed()
+        } else {
+            time
+        }
+    }
+}
+
+impl Into<ModifiedTime> for DateTime {
+    fn into(self) -> ModifiedTime {
         let seconds = u64::from_be_bytes(self.seconds.to_ne_bytes());
         let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        let subsec_nanos = subsec_nanos & !DateTime::REMOVED_BIT;
         let elapsed = Duration::new(seconds, subsec_nanos);
-        SystemTime::UNIX_EPOCH + elapsed
+        let time = SystemTime::UNIX_EPOCH + elapsed;
+        if self.is_removed() {
+            ModifiedTime::Removed(time)
+        } else {
+            ModifiedTime::Created(time)
+        }
     }
 }
