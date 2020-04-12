@@ -83,8 +83,8 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let _ = response.respond(result);
             }
             Message::CommitBlob(RpcMessage { request, response }) => {
-                let created_at = SystemTime::now();
-                let key = storage.commit(request, created_at)?;
+                let (query, created_at) = request;
+                let key = storage.commit(query, created_at)?;
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(key);
             }
@@ -129,7 +129,7 @@ pub enum Message {
     /// Request is the query to add the blob, returned by [`Message::AddBlob`].
     ///
     /// Responds with the `Key` of the added blob.
-    CommitBlob(RpcMessage<AddBlob, Key>),
+    CommitBlob(RpcMessage<(AddBlob, SystemTime), Key>),
 
     /// Get a blob from storage.
     ///
@@ -154,8 +154,8 @@ impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
     }
 }
 
-impl From<RpcMessage<AddBlob, Key>> for Message {
-    fn from(msg: RpcMessage<AddBlob, Key>) -> Message {
+impl From<RpcMessage<(AddBlob, SystemTime), Key>> for Message {
+    fn from(msg: RpcMessage<(AddBlob, SystemTime), Key>) -> Message {
         Message::CommitBlob(msg)
     }
 }

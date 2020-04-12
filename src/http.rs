@@ -18,7 +18,7 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use std::{fmt, mem, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -536,7 +536,9 @@ async fn store_blob(
                     buffer.processed(body_length);
                     mem::replace(&mut conn.buf, buffer);
                     match result {
-                        AddBlobResponse::Query(query) => match db_ref.rpc(ctx, query) {
+                        AddBlobResponse::Query(query) => match db_ref
+                            .rpc(ctx, (query, SystemTime::now()))
+                        {
                             Ok(rpc) => match rpc.await {
                                 Ok(key) => Ok((ResponseKind::Stored(key), false)),
                                 Err(err) => {
