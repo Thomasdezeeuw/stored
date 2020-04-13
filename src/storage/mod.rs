@@ -7,6 +7,11 @@
 //! actually in the database, this means that even though the bytes might be in
 //! the data file it doesn't mean that those bytes are in the database. The
 //! index file has the final say in what blobs are and aren't in the database.
+//! The idea of splitting the storing of values (blobs) from the keys in
+//! different files is taking from the paper [WiscKey: Separating Keys from
+//! Values in SSD-conscious Storage] by Lanyue Lu et al.
+//!
+//! [WiscKey: Separating Keys from Values in SSD-conscious Storage]: https://www.usenix.org/conference/fast16/technical-sessions/presentation/lu
 //!
 //! [^1]: Not really, but pretend like they are for now.
 //!
