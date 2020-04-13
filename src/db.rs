@@ -16,7 +16,7 @@ use heph::actor_ref::RpcMessage;
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use log::{debug, error, info};
 
-use crate::storage::{AddBlob, AddResult, Blob, Storage};
+use crate::storage::{AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage};
 use crate::{Buffer, Key};
 
 /// Supervisor for the [`db::actor`].
@@ -76,13 +76,13 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 use AddResult::*;
                 let result = match storage.add_blob(&blob.as_bytes()[..length]) {
                     Ok(query) => (AddBlobResponse::Query(query), blob),
-                    AlreadyPresent(key) => (AddBlobResponse::AlreadyPresent(key), blob),
+                    AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), blob),
                     Err(err) => return Result::Err(err),
                 };
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(result);
             }
-            Message::CommitBlob(RpcMessage { request, response }) => {
+            Message::CommitAddBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
                 let key = storage.commit(query, created_at)?;
                 // If the actor is disconnected this is not really a problem.
@@ -94,6 +94,22 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let result = storage.lookup(&key);
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(result);
+            }
+            Message::RemoveBlob(RpcMessage { request, response }) => {
+                let key = request;
+                use RemoveResult::*;
+                let res = match storage.remove_blob(key) {
+                    Ok(query) => RemoveBlobResponse::Query(query),
+                    NotStored(t) => RemoveBlobResponse::NotStored(t),
+                };
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(res);
+            }
+            Message::CommitRemoveBlob(RpcMessage { request, response }) => {
+                let (query, removed_at) = request;
+                let removed_at = storage.commit(query, removed_at)?;
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(removed_at);
             }
             Message::HealthCheck(RpcMessage { response, .. }) => {
                 debug!("database health check");
@@ -123,20 +139,33 @@ pub enum Message {
     /// This will panic if the `length` is larger then the bytes in the
     /// `Buffer`.
     AddBlob(RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>),
-
     /// Commit to a blob being added.
     ///
     /// Request is the query to add the blob, returned by [`Message::AddBlob`].
     ///
     /// Responds with the `Key` of the added blob.
-    CommitBlob(RpcMessage<(AddBlob, SystemTime), Key>),
+    CommitAddBlob(RpcMessage<(AddBlob, SystemTime), Key>),
 
     /// Get a blob from storage.
     ///
     /// Request is the key to look up.
     ///
     /// Responds with the `Blob`, if its in the database.
-    GetBlob(RpcMessage<Key, Option<Blob>>),
+    GetBlob(RpcMessage<Key, Option<BlobEntry>>),
+
+    /// Remove a blob from the database.
+    ///
+    /// Request is the key for the blob to remove.
+    ///
+    /// Responds with a query to commit to removing the blob, or
+    RemoveBlob(RpcMessage<Key, RemoveBlobResponse>),
+    /// Commit to a blob being removed.
+    ///
+    /// Request is the query to remove the blob, returned by
+    /// [`Message::RemoveBlob`].
+    ///
+    /// Responds with the time at which the blob is removed.
+    CommitRemoveBlob(RpcMessage<(RemoveBlob, SystemTime), SystemTime>),
 
     /// Check if the database actor is running.
     HealthCheck(RpcMessage<HealthCheck, HealthOk>),
@@ -156,12 +185,12 @@ impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
 
 impl From<RpcMessage<(AddBlob, SystemTime), Key>> for Message {
     fn from(msg: RpcMessage<(AddBlob, SystemTime), Key>) -> Message {
-        Message::CommitBlob(msg)
+        Message::CommitAddBlob(msg)
     }
 }
 
-impl From<RpcMessage<Key, Option<Blob>>> for Message {
-    fn from(msg: RpcMessage<Key, Option<Blob>>) -> Message {
+impl From<RpcMessage<Key, Option<BlobEntry>>> for Message {
+    fn from(msg: RpcMessage<Key, Option<BlobEntry>>) -> Message {
         Message::GetBlob(msg)
     }
 }
@@ -172,10 +201,33 @@ impl From<RpcMessage<HealthCheck, HealthOk>> for Message {
     }
 }
 
+impl From<RpcMessage<Key, RemoveBlobResponse>> for Message {
+    fn from(msg: RpcMessage<Key, RemoveBlobResponse>) -> Message {
+        Message::RemoveBlob(msg)
+    }
+}
+
+impl From<RpcMessage<(RemoveBlob, SystemTime), SystemTime>> for Message {
+    fn from(msg: RpcMessage<(RemoveBlob, SystemTime), SystemTime>) -> Message {
+        Message::CommitRemoveBlob(msg)
+    }
+}
+
 /// Response to [`Message::AddBlob`].
 pub enum AddBlobResponse {
     /// Query to commit to adding a blob.
     Query(AddBlob),
     /// The blob is already stored.
-    AlreadyPresent(Key),
+    AlreadyStored(Key),
+}
+
+/// Response to [`Message::RemoveBlob`].
+pub enum RemoveBlobResponse {
+    /// Query to commit to removing a blob.
+    Query(RemoveBlob),
+    /// The blob is not stored, either it was never stored or it was already
+    /// removed.
+    /// This is `None` if the blob was never present, or `Some` if it was
+    /// removed already.
+    NotStored(Option<SystemTime>),
 }

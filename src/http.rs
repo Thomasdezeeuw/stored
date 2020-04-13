@@ -31,8 +31,8 @@ use httparse::EMPTY_HEADER;
 use log::{debug, error};
 
 use crate::buffer::{Buffer, WriteBuffer};
-use crate::db::{self, AddBlobResponse, HealthCheck};
-use crate::storage::Blob;
+use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
+use crate::storage::{Blob, BlobEntry};
 use crate::Key;
 
 /// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].
@@ -551,7 +551,7 @@ async fn store_blob(
                                 Ok((ResponseKind::ServerError, true))
                             }
                         },
-                        AddBlobResponse::AlreadyPresent(key) => {
+                        AddBlobResponse::AlreadyStored(key) => {
                             Ok((ResponseKind::Stored(key), false))
                         }
                     }
@@ -577,7 +577,8 @@ async fn retrieve_blob(
 ) -> ResponseKind {
     match db_ref.rpc(ctx, key) {
         Ok(rpc) => match rpc.await {
-            Ok(Some(blob)) => ResponseKind::Ok(blob),
+            Ok(Some(BlobEntry::Stored(blob))) => ResponseKind::Ok(blob),
+            Ok(Some(BlobEntry::Removed(removed_at))) => ResponseKind::Removed(removed_at),
             Ok(None) => ResponseKind::NotFound,
             Err(err) => {
                 error!("error waiting for RPC response from database: {}", err);
@@ -591,14 +592,46 @@ async fn retrieve_blob(
     }
 }
 
-// TODO: implement removing blobs in the storage layer.
+/// Retrieve the blob associated with `key` from the actor behind the `db_ref`.
 async fn remove_blob(
-    _ctx: &mut actor::Context<!>,
-    _db_ref: &mut ActorRef<db::Message>,
+    ctx: &mut actor::Context<!>,
+    db_ref: &mut ActorRef<db::Message>,
     key: Key,
 ) -> ResponseKind {
-    error!("TODO: delete: key={}", key);
-    ResponseKind::ServerError
+    match db_ref.rpc(ctx, key) {
+        Ok(rpc) => match rpc.await {
+            Ok(result) => match result {
+                RemoveBlobResponse::Query(query) => {
+                    match db_ref.rpc(ctx, (query, SystemTime::now())) {
+                        Ok(rpc) => match rpc.await {
+                            Ok(removed_at) => ResponseKind::Removed(removed_at),
+                            Err(err) => {
+                                error!("error waiting for RPC response from database: {}", err);
+                                ResponseKind::ServerError
+                            }
+                        },
+                        Err(err) => {
+                            error!("error making RPC call to database: {}", err);
+                            ResponseKind::ServerError
+                        }
+                    }
+                }
+                RemoveBlobResponse::NotStored(Some(removed_at)) => {
+                    ResponseKind::Removed(removed_at)
+                }
+                // Blob was never stored.
+                RemoveBlobResponse::NotStored(None) => ResponseKind::NotFound,
+            },
+            Err(err) => {
+                error!("error waiting for RPC response from database: {}", err);
+                ResponseKind::ServerError
+            }
+        },
+        Err(err) => {
+            error!("error making RPC call to database: {}", err);
+            ResponseKind::ServerError
+        }
+    }
 }
 
 /// Runs a health check on the actor behind the `db_ref`.
@@ -641,23 +674,20 @@ struct Response {
 #[derive(Debug)]
 enum ResponseKind {
     /// Blob was stored.
-    /// Response to POST.
+    /// Response to POST new blob.
     ///
     /// 201 Created. No body, Location header set to "/blob/$key".
     Stored(Key),
-
     /// Blob found.
-    /// Response to GET response.
+    /// Response to GET blob.
     ///
     /// 200 OK. Body is the blob (the passed bytes).
     Ok(Blob),
-
-    /// Blob deleted.
-    /// Response to DELETE.
+    /// Blob removed.
+    /// Response to DELETE blob.
     ///
-    /// 204 No Content. No body.
-    Deleted,
-
+    /// 410 Gone. No body.
+    Removed(SystemTime),
     /// Health check is OK.
     ///
     /// 200 OK. No body.
@@ -798,12 +828,15 @@ impl Response {
                 let timestamp: DateTime<Utc> = blob.created_at().into();
                 append_date_header(&timestamp, "Last-Modified", buf);
             }
+            Removed(removed_at) => {
+                let timestamp: DateTime<Utc> = (*removed_at).into();
+                append_date_header(&timestamp, "Last-Modified", buf);
+            }
             HealthOk | NotFound | TooManyHeaders | NoContentLength | TooLargePayload
             | BadRequest(_) | ServerError => {
                 // The body is an (error) message in plain text, UTF-8.
                 write!(buf, "Content-Type: text/plain; charset=utf-8\r\n").unwrap()
             }
-            Deleted => {}
         }
 
         write!(buf, "\r\n").unwrap();
@@ -815,7 +848,7 @@ impl Response {
         match &self.kind {
             Stored(_) => (201, "Created"),
             Ok(_) | HealthOk => (200, "OK"),
-            Deleted => (204, "No Content"),
+            Removed(_) => (410, "Gone"),
             NotFound => (404, "Not Found"),
             TooManyHeaders => (431, "Request Header Fields Too Large"),
             NoContentLength => (411, "Length Required"),
@@ -858,7 +891,7 @@ impl ResponseKind {
     fn body(&self) -> &[u8] {
         use ResponseKind::*;
         match &self {
-            Stored(_) | Deleted => b"",
+            Stored(_) | Removed(_) => b"",
             Ok(blob) => blob.bytes(),
             HealthOk => b"OK",
             NotFound => b"Not found",

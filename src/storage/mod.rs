@@ -32,7 +32,7 @@
 //! Just like adding new blobs, removing blobs is done in two phases. In the
 //! first phase the in-memory hash map is checked if the blob is present. If the
 //! blob is present it returns a [`RemoveBlob`] query, if its not present it
-//! returns [`RemoveResult::NotPresent`].
+//! returns [`RemoveResult::NotStored`].
 //!
 //! In the second phase, if the query is commited, the time of blob's entry in
 //! the index file will be overwritten with a removed time. Next the in-memory
@@ -180,14 +180,11 @@ pub struct Storage {
     data: Data,
 }
 
-/// Entry in the blob map in `Storage.blobs`.
-///
-/// We keep track of removed blobs to update peers after they start for the
-/// first time or restart.
-#[derive(Debug)]
-enum BlobEntry {
-    /// Blob is alive.
-    Alive(Blob),
+/// Blob entry in the [`Storage`].
+#[derive(Clone, Debug)]
+pub enum BlobEntry {
+    /// Blob is stored.
+    Stored(Blob),
     /// Blob was removed at the provided time.
     Removed(SystemTime),
 }
@@ -221,7 +218,7 @@ impl Storage {
                                 slice::from_raw_parts(address.as_ptr(), entry.length() as usize)
                             };
                             length += 1;
-                            BlobEntry::Alive(Blob {
+                            BlobEntry::Stored(Blob {
                                 bytes,
                                 created: time,
                                 lifetime,
@@ -266,13 +263,10 @@ impl Storage {
     }
 
     /// Returns a reference to the `Blob` corresponding to the key, if stored.
-    pub fn lookup(&self, key: &Key) -> Option<Blob> {
+    pub fn lookup(&self, key: &Key) -> Option<BlobEntry> {
         self.blobs
             .get(key)
-            .and_then(|(_, blob_entry)| match blob_entry {
-                BlobEntry::Alive(blob) => Some(blob.clone()),
-                BlobEntry::Removed(_) => None,
-            })
+            .map(|(_, blob_entry)| blob_entry.clone())
     }
 
     /// Add `blob` to the database.
@@ -293,8 +287,7 @@ impl Storage {
 
         // Can't have double entries.
         if self.blobs.contains_key(&key) {
-            debug_assert_eq!(self.lookup(&key).unwrap().bytes(), blob);
-            return AddResult::AlreadyPresent(key);
+            return AddResult::AlreadyStored(key);
         }
 
         // First add the blob to the data file. If something happens the blob
@@ -327,9 +320,9 @@ impl Storage {
     /// [committed]: Storage::commit
     pub fn remove_blob(&mut self, key: Key) -> RemoveResult {
         match self.blobs.get(&key) {
-            Some((_, BlobEntry::Alive(_))) => RemoveResult::Ok(RemoveBlob { key }),
-            Some((_, BlobEntry::Removed(_))) => RemoveResult::NotPresent,
-            None => RemoveResult::NotPresent,
+            Some((_, BlobEntry::Stored(_))) => RemoveResult::Ok(RemoveBlob { key }),
+            Some((_, BlobEntry::Removed(time))) => RemoveResult::NotStored(Some(*time)),
+            None => RemoveResult::NotStored(None),
         }
     }
 
@@ -356,7 +349,7 @@ pub enum AddResult {
     /// database.
     Ok(AddBlob),
     /// Blob is already stored.
-    AlreadyPresent(Key),
+    AlreadyStored(Key),
     /// I/O error.
     Err(io::Error),
 }
@@ -366,7 +359,7 @@ pub enum RemoveResult {
     /// Blob is prepared to be removed, but not yet removed from the database.
     Ok(RemoveBlob),
     /// Key is not stored in the database.
-    NotPresent,
+    NotStored(Option<SystemTime>),
 }
 
 /// a `Query` is a partially prepared storage operation.
@@ -444,7 +437,7 @@ impl Query for AddBlob {
                     created: created_at,
                     lifetime: self.lifetime,
                 };
-                entry.insert((entry_index, BlobEntry::Alive(blob)));
+                entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
             }
         }
@@ -481,12 +474,12 @@ impl Query for RemoveBlob {
     type Return = SystemTime;
 
     fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<Self::Return> {
-        if let Some((entry_index, blob_entry)) = storage.blobs.get_mut(&self.key) {
+        let res = if let Some((entry_index, blob_entry)) = storage.blobs.get_mut(&self.key) {
             if let BlobEntry::Removed(time) = blob_entry {
                 // The blob was removed in between the time the query was
                 // created and commit; we'll keep using the original time.
                 // TODO: should we use the minimum time?
-                Ok(*time)
+                return Ok(*time);
             } else {
                 storage
                     .index
@@ -498,7 +491,9 @@ impl Query for RemoveBlob {
             }
         } else {
             unreachable!("trying to remove a blob that was never stored");
-        }
+        };
+        storage.length -= 1;
+        res
     }
 
     fn abort(self, _storage: &mut Storage) -> io::Result<()> {

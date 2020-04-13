@@ -61,7 +61,7 @@ pub fn validate_storage(
     for (key, (index, blob_entry)) in storage.blobs.iter() {
         match blob_entry {
             // TODO: handle error properly.
-            BlobEntry::Alive(blob) => entries.send((key.clone(), *index, blob.clone())).unwrap(),
+            BlobEntry::Stored(blob) => entries.send((key.clone(), *index, blob.clone())).unwrap(),
             BlobEntry::Removed(_) => (),
         }
     }
