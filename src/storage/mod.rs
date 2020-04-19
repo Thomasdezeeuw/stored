@@ -153,9 +153,27 @@ impl Blob {
         self.bytes
     }
 
+    /// Returns the length of `Blob`.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+
     /// Returns the time at which the blob was added.
     pub fn created_at(&self) -> SystemTime {
         self.created
+    }
+
+    /// Prefetch the bytes that make up this `Blob`.
+    ///
+    /// # Notes
+    ///
+    /// If this returns an error it doesn't mean the bytes are inaccessible.
+    pub fn prefetch(&self) -> io::Result<()> {
+        madvise(
+            self.bytes.as_ptr() as *mut _,
+            self.bytes.len(),
+            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
+        )
     }
 }
 
@@ -536,7 +554,7 @@ struct Data {
 /// The size of a single page, used in probing `mmap`ing memory.
 // TODO: ensure this is correct on all architectures. Tested in
 // `data::page_size` test in the tests module.
-const PAGE_SIZE: usize = 1 << 12; // 4096.
+pub const PAGE_SIZE: usize = 1 << 12; // 4096.
 const PAGE_BITS: usize = 12;
 
 /// Control structure for a `mmap` area, see [`MmapArea`].

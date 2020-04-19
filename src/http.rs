@@ -32,7 +32,7 @@ use log::{debug, error};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
-use crate::storage::{Blob, BlobEntry};
+use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
 use crate::Key;
 
 /// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].
@@ -577,7 +577,15 @@ async fn retrieve_blob(
 ) -> ResponseKind {
     match db_ref.rpc(ctx, key) {
         Ok(rpc) => match rpc.await {
-            Ok(Some(BlobEntry::Stored(blob))) => ResponseKind::Ok(blob),
+            Ok(Some(BlobEntry::Stored(blob))) => {
+                if blob.len() > PAGE_SIZE {
+                    // If the blob is large(-ish) we'll prefetch it from disk to
+                    // improve performance.
+                    // TODO: benchmark this with large(-ish) blobs.
+                    let _ = blob.prefetch();
+                }
+                ResponseKind::Ok(blob)
+            }
             Ok(Some(BlobEntry::Removed(removed_at))) => ResponseKind::Removed(removed_at),
             Ok(None) => ResponseKind::NotFound,
             Err(err) => {
