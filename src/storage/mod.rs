@@ -451,18 +451,22 @@ impl Query for AddBlob {
                 };
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
+                Ok(self.key)
             }
         }
-
-        Ok(self.key)
     }
 
     fn abort(self, _storage: &mut Storage) -> io::Result<()> {
         // Note: this is also called by `commit` is the blob is already in the
         // database when committing.
-        // Since the blob isn't in the index, it also isn't in the database.
-        // TODO: cleanup the unused bytes.
         Ok(())
+
+        /* TODO: cleanup the unused bytes.
+        // We add an entry with an invalid time to indicate the bytes are
+        // unused.
+        let index_entry = Entry::new(self.key, self.offset, self.length, DateTime::INVALID);
+        storage.index.add_entry(&index_entry).map(|_| ())
+        */
     }
 }
 
@@ -1347,7 +1351,10 @@ struct Entry {
 impl Entry {
     /// Create a new `Entry` formatted correctly to be stored on disk, i.e.
     /// integer set to use big-endian.
-    fn new(key: Key, offset: u64, length: u32, created_at: SystemTime) -> Entry {
+    fn new<T>(key: Key, offset: u64, length: u32, created_at: T) -> Entry
+    where
+        T: Into<DateTime>,
+    {
         Entry {
             key,
             offset: u64::from_ne_bytes(offset.to_be_bytes()),
