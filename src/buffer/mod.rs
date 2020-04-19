@@ -183,7 +183,6 @@ impl Buffer {
     fn move_to_start(&mut self, force: bool) {
         if self.processed == 0 {
             // No need to do anything.
-            return;
         } else if self.data.len() == self.processed {
             // All data is processed.
             self.data.clear();

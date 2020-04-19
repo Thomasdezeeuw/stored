@@ -49,7 +49,6 @@ pub fn validate_storage(
     let (corruption_send, corruptions) = crossbeam_channel::unbounded();
 
     let threads: Vec<thread::JoinHandle<()>> = (0..n_threads.get())
-        .into_iter()
         .map(|_| {
             let entries = entry_recv.clone();
             let corruptions = corruption_send.clone();

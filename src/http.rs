@@ -295,7 +295,7 @@ enum Method {
 
 impl Method {
     /// Returns `true` if `self` is a HEAD method.
-    fn is_head(&self) -> bool {
+    fn is_head(self) -> bool {
         match self {
             Method::Head => true,
             _ => false,
@@ -732,7 +732,7 @@ enum ResponseKind {
 
 /// Append a header with a date format to `buf`.
 fn append_date_header(timestamp: &DateTime<Utc>, header_name: &str, buf: &mut WriteBuffer) {
-    static MONTHS: [&'static str; 12] = [
+    static MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
     write!(
