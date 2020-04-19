@@ -120,6 +120,8 @@ impl Drop for TempDir {
 
 fn temp_dir(name: &str) -> TempDir {
     let path = env::temp_dir().join(name);
+    // Remove the old database from previous tests.
+    let _ = fs::remove_dir_all(&path);
     TempDir { path }
 }
 
@@ -129,6 +131,13 @@ mod date_time {
     use std::time::{Duration, SystemTime};
 
     use super::{DateTime, ModifiedTime};
+
+    #[test]
+    fn bits_valid() {
+        const NANOS_PER_SEC: u32 = 1_000_000_000;
+        assert!(NANOS_PER_SEC & DateTime::REMOVED_BIT == 0);
+        assert!(NANOS_PER_SEC & DateTime::INVALID_BIT == 0);
+    }
 
     #[test]
     fn is_and_mark_removed() {
@@ -160,6 +169,45 @@ mod date_time {
             assert_eq!(input.is_removed(), *is_removed, "input: {:?}", input);
             let removed = input.mark_removed();
             assert_eq!(removed.is_removed(), true, "input: {:?}", removed);
+        }
+    }
+
+    #[test]
+    fn is_valid() {
+        let tests = [
+            (
+                DateTime {
+                    seconds: 1u64.to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                false,
+            ),
+            (
+                DateTime {
+                    seconds: (u64::MAX / 2).to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                false,
+            ),
+            (
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: (1000000 | DateTime::REMOVED_BIT).to_be(),
+                },
+                false,
+            ),
+            (DateTime::INVALID, true),
+            (
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: u32::max_value(),
+                },
+                true,
+            ),
+        ];
+
+        for (input, is_invalid) in &tests {
+            assert_eq!(input.is_invalid(), *is_invalid, "input: {:?}", input);
         }
     }
 
@@ -205,6 +253,7 @@ mod date_time {
                     subsec_nanos: 0u32.to_be(),
                 },
                 false,
+                false,
                 Duration::from_secs(1),
             ),
             (
@@ -212,6 +261,7 @@ mod date_time {
                     seconds: (u64::MAX / 2).to_be(),
                     subsec_nanos: 0u32.to_be(),
                 },
+                false,
                 false,
                 Duration::from_secs(u64::MAX / 2),
             ),
@@ -221,15 +271,21 @@ mod date_time {
                     subsec_nanos: (1000000 | DateTime::REMOVED_BIT).to_be(),
                 },
                 true,
+                false,
                 Duration::from_millis(1),
             ),
+            (DateTime::INVALID, false, true, Duration::from_millis(0)),
         ];
 
-        for (input, is_removed, add) in &tests {
+        for (input, is_removed, is_invalid, add) in &tests {
             let got: ModifiedTime = (*input).into();
             let want = SystemTime::UNIX_EPOCH + *add;
             if *is_removed {
+                assert!(input.is_removed());
                 assert_eq!(got, ModifiedTime::Removed(want), "input: {:?}", input);
+            } else if *is_invalid {
+                assert!(input.is_invalid());
+                assert_eq!(got, ModifiedTime::Invalid, "input: {:?}", input);
             } else {
                 assert_eq!(got, ModifiedTime::Created(want), "input: {:?}", input);
             }

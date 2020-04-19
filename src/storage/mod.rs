@@ -95,7 +95,11 @@
 // - MAP_POPULATE
 
 // TODO: add some safeguard to ensure the `AddBlob` and `RemoveBlob` queries can
-// only be applied to the correct `Storage`?
+// only be applied to the correct `Storage`? Important when the database actor
+// is restarted.
+
+// TODO: use the invalid bit in `Datetime.subsec_nanos` to indicate that the
+// storing the blob was aborted? That would make it easier for the cleanup.
 
 use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
@@ -209,11 +213,12 @@ impl Storage {
 
         // All blobs currently in the database.
         let entries = index.entries()?;
+        // Length of stored (i.e. not removed) blobs.
         let mut length = 0;
         let blobs = entries
             .iter()
-            .map(|(index, entry)| {
-                match entry.modified_time() {
+            .filter_map(|(index, entry)| {
+                let res = match entry.modified_time() {
                     ModifiedTime::Created(time) => data
                         .address_for(entry.offset(), entry.length())
                         .map(|(address, lifetime)| {
@@ -233,8 +238,9 @@ impl Storage {
                             io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
                         }),
                     ModifiedTime::Removed(time) => Ok(BlobEntry::Removed(time)),
-                }
-                .map(|blob_entry| (entry.key().clone(), (index, blob_entry)))
+                    ModifiedTime::Invalid => return None,
+                };
+                Some(res.map(|blob_entry| (entry.key().clone(), (index, blob_entry))))
             })
             .collect::<io::Result<_>>()?;
         drop(entries);
@@ -292,6 +298,7 @@ impl Storage {
 
         // Can't have double entries.
         if self.blobs.contains_key(&key) {
+            // FIXME: we should be able to overwrite a deleted blob.
             return AddResult::AlreadyStored(key);
         }
 
@@ -1033,8 +1040,8 @@ impl Drop for MmapArea {
             // We can't really handle the error properly here so we'll log it
             // and if we're testing (and not panicking) we'll panic on it.
             error!("error unmapping data: {}", err);
+            #[cfg(test)]
             if !thread::panicking() {
-                #[cfg(test)]
                 panic!("error unmapping data: {}", err);
             }
         }
@@ -1276,7 +1283,7 @@ fn munmap(addr: *mut libc::c_void, len: libc::size_t) -> io::Result<()> {
 fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> io::Result<()> {
     debug_assert!(len != 0);
     if unsafe { libc::madvise(addr, len, advice) != 0 } {
-        return Err(io::Error::last_os_error());
+        Err(io::Error::last_os_error())
     } else {
         Ok(())
     }
@@ -1400,10 +1407,26 @@ impl DateTime {
     /// removed time.
     const REMOVED_BIT: u32 = 1 << 31;
 
+    /// Bit that is set in `subsec_nanos` if the `DateTime` is invalid.
+    const INVALID_BIT: u32 = 1 << 30;
+
+    /// `DateTime` that represents an invalid time.
+    const INVALID: DateTime = DateTime {
+        seconds: 0,
+        subsec_nanos: u32::from_be_bytes(DateTime::INVALID_BIT.to_ne_bytes()),
+    };
+
     /// Returns `true` if the `REMOVED_BIT` is set.
     fn is_removed(&self) -> bool {
         let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
         subsec_nanos & DateTime::REMOVED_BIT != 0
+    }
+
+    /// Returns `true` if the time is invalid.
+    fn is_invalid(&self) -> bool {
+        const NANOS_PER_SEC: u32 = 1_000_000_000;
+        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        (subsec_nanos & !DateTime::REMOVED_BIT) > NANOS_PER_SEC
     }
 
     /// Returns the same `DateTime`, but as removed at
@@ -1443,6 +1466,8 @@ enum ModifiedTime {
     Created(SystemTime),
     /// Blob was removed at this time.
     Removed(SystemTime),
+    /// Blob was invalid, e.g. when adding of the blob was aborted.
+    Invalid,
 }
 
 impl From<ModifiedTime> for DateTime {
@@ -1454,6 +1479,7 @@ impl From<ModifiedTime> for DateTime {
         let (time, is_removed) = match time {
             ModifiedTime::Created(time) => (time, false),
             ModifiedTime::Removed(time) => (time, true),
+            ModifiedTime::Invalid => return DateTime::INVALID,
         };
         let time: DateTime = time.into();
         if is_removed {
@@ -1466,15 +1492,19 @@ impl From<ModifiedTime> for DateTime {
 
 impl Into<ModifiedTime> for DateTime {
     fn into(self) -> ModifiedTime {
-        let seconds = u64::from_be_bytes(self.seconds.to_ne_bytes());
-        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
-        let subsec_nanos = subsec_nanos & !DateTime::REMOVED_BIT;
-        let elapsed = Duration::new(seconds, subsec_nanos);
-        let time = SystemTime::UNIX_EPOCH + elapsed;
-        if self.is_removed() {
-            ModifiedTime::Removed(time)
+        if self.is_invalid() {
+            ModifiedTime::Invalid
         } else {
-            ModifiedTime::Created(time)
+            let seconds = u64::from_be_bytes(self.seconds.to_ne_bytes());
+            let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+            let subsec_nanos = subsec_nanos & !DateTime::REMOVED_BIT;
+            let elapsed = Duration::new(seconds, subsec_nanos);
+            let time = SystemTime::UNIX_EPOCH + elapsed;
+            if self.is_removed() {
+                ModifiedTime::Removed(time)
+            } else {
+                ModifiedTime::Created(time)
+            }
         }
     }
 }
