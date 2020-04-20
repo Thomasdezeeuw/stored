@@ -18,10 +18,36 @@ impl BlobEntry {
         }
     }
 
+    fn unwrap_removed(self) -> SystemTime {
+        match self {
+            BlobEntry::Stored(_) => panic!("expected BlobEntry to be removed"),
+            BlobEntry::Removed(time) => time,
+        }
+    }
+
     fn is_removed(&self) -> bool {
         match self {
             BlobEntry::Stored(_) => false,
             BlobEntry::Removed(_) => true,
+        }
+    }
+}
+
+impl AddResult {
+    fn unwrap(self) -> AddBlob {
+        match self {
+            AddResult::Ok(query) => query,
+            AddResult::AlreadyStored(key) => panic!("blob already stored: {}", key),
+            AddResult::Err(err) => panic!("unexpected I/O error: {}", err),
+        }
+    }
+}
+
+impl RemoveResult {
+    fn unwrap(self) -> RemoveBlob {
+        match self {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotStored(_) => panic!("blob not stored"),
         }
     }
 }
@@ -799,8 +825,8 @@ mod storage {
     use std::{fs, io};
 
     use super::{
-        temp_dir, test_data_path, test_entries, AddBlob, AddResult, Blob, BlobEntry, Entry,
-        EntryIndex, ModifiedTime, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
+        temp_dir, test_data_path, test_entries, AddResult, Blob, BlobEntry, Entry, EntryIndex,
+        ModifiedTime, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -838,15 +864,6 @@ mod storage {
         }
     }
 
-    fn unwrap(result: AddResult) -> AddBlob {
-        use AddResult::*;
-        match result {
-            Ok(query) => query,
-            AlreadyStored(key) => panic!("blob already present: {}", key),
-            Err(err) => panic!("unexpected error: {}", err),
-        }
-    }
-
     #[test]
     fn add_multiple_blobs() {
         let path = temp_dir("add_multiple_blobs.db");
@@ -864,7 +881,7 @@ mod storage {
 
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
-            let query = unwrap(storage.add_blob(blob));
+            let query = storage.add_blob(blob).unwrap();
             let key = storage.commit(query, SystemTime::now()).unwrap();
 
             let got = storage.lookup(&key).unwrap().unwrap();
@@ -921,7 +938,7 @@ mod storage {
         let want_key = Key::for_blob(blob);
 
         // First time is normal procedure.
-        let query = unwrap(storage.add_blob(blob));
+        let query = storage.add_blob(blob).unwrap();
         let key = storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(key, want_key);
 
@@ -948,7 +965,7 @@ mod storage {
         let mut storage = Storage::open(&path).unwrap();
 
         let blob = DATA[0];
-        let query = unwrap(storage.add_blob(blob));
+        let query = storage.add_blob(blob).unwrap();
 
         // Dropping the storage before the query should not panic.
         drop(storage);
@@ -971,7 +988,7 @@ mod storage {
         let blob = DATA[0];
         let key = Key::for_blob(blob);
 
-        let query = unwrap(storage.add_blob(blob));
+        let query = storage.add_blob(blob).unwrap();
 
         // Blob shouldn't be accessible.
         assert_eq!(storage.len(), 0);
@@ -1011,7 +1028,7 @@ mod storage {
         let blob2 = DATA[1];
         let key2 = Key::for_blob(blob2);
 
-        let query1 = unwrap(storage.add_blob(blob1));
+        let query1 = storage.add_blob(blob1).unwrap();
 
         // Blob shouldn't be accessible.
         assert_eq!(storage.len(), 0);
@@ -1019,7 +1036,7 @@ mod storage {
         // But is should be stored.
         assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob1.len()) as u64);
 
-        let query2 = unwrap(storage.add_blob(blob2));
+        let query2 = storage.add_blob(blob2).unwrap();
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key2).is_none());
@@ -1055,8 +1072,8 @@ mod storage {
         let blob = DATA[0];
         let key = Key::for_blob(blob);
 
-        let query1 = unwrap(storage.add_blob(blob));
-        let query2 = unwrap(storage.add_blob(blob));
+        let query1 = storage.add_blob(blob).unwrap();
+        let query2 = storage.add_blob(blob).unwrap();
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
@@ -1107,7 +1124,7 @@ mod storage {
         let blob = DATA[0];
         let key = Key::for_blob(blob);
 
-        let query = unwrap(storage.add_blob(blob));
+        let query = storage.add_blob(blob).unwrap();
 
         // Blob shouldn't be accessible.
         assert_eq!(storage.len(), 0);
@@ -1179,7 +1196,7 @@ mod storage {
     fn add_blobs(storage: &mut Storage, blobs: &[&[u8]]) -> Vec<Key> {
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
-            let query = unwrap(storage.add_blob(blob));
+            let query = storage.add_blob(blob).unwrap();
             let key = storage.commit(query, SystemTime::now()).unwrap();
             keys.push(key);
         }
@@ -1205,10 +1222,7 @@ mod storage {
 
         for (i, key) in keys.into_iter().enumerate() {
             assert_eq!(storage.len(), blobs.len() - i);
-            let query = match storage.remove_blob(key.clone()) {
-                RemoveResult::Ok(query) => query,
-                RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-            };
+            let query = storage.remove_blob(key.clone()).unwrap();
 
             // Uncommitted so the blob is still available.
             let got = storage.lookup(&key).unwrap().unwrap();
@@ -1313,10 +1327,7 @@ mod storage {
         assert_eq!(storage.len(), 1);
         let key = &keys[0];
 
-        let query = match storage.remove_blob(key.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
+        let query = storage.remove_blob(key.clone()).unwrap();
 
         assert!(storage.lookup(key).is_some());
         storage.abort(query).unwrap();
@@ -1342,14 +1353,8 @@ mod storage {
         let key1 = &keys[0];
         let key2 = &keys[1];
 
-        let query1 = match storage.remove_blob(key1.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
-        let query2 = match storage.remove_blob(key2.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
+        let query1 = storage.remove_blob(key1.clone()).unwrap();
+        let query2 = storage.remove_blob(key2.clone()).unwrap();
 
         let removed_at2 = SystemTime::now();
         let got2 = storage.commit(query2, removed_at2).unwrap();
@@ -1380,14 +1385,8 @@ mod storage {
 
         assert_eq!(storage.len(), 1);
 
-        let query1 = match storage.remove_blob(key.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
-        let query2 = match storage.remove_blob(key.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
+        let query1 = storage.remove_blob(key.clone()).unwrap();
+        let query2 = storage.remove_blob(key.clone()).unwrap();
 
         let removed_at = SystemTime::now();
         let got = storage.commit(query1, removed_at).unwrap();
@@ -1409,10 +1408,7 @@ mod storage {
 
         let keys = add_blobs(&mut storage, &[DATA[0]]);
         let key = &keys[0];
-        let query = match storage.remove_blob(key.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("unexpected result"),
-        };
+        let query = storage.remove_blob(key.clone()).unwrap();
 
         // Dropping the storage before the query should not panic.
         drop(storage);
@@ -1527,17 +1523,13 @@ mod storage {
         let key = add_blobs(&mut storage, &[blob]).pop().unwrap();
         assert_eq!(storage.len(), 1);
 
-        let query = match storage.remove_blob(key.clone()) {
-            RemoveResult::Ok(query) => query,
-            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
-        };
-
+        let query = storage.remove_blob(key.clone()).unwrap();
         let removed_at = SystemTime::now();
         storage.commit(query, removed_at).unwrap();
         assert_eq!(storage.len(), 0);
 
         // We should be able to overwrite a removed blob.
-        let query = unwrap(storage.add_blob(blob));
+        let query = storage.add_blob(blob).unwrap();
         let got_key = storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
 
@@ -1563,10 +1555,71 @@ mod storage {
 
         let want = DATA[0];
         let key = Key::for_blob(&want);
-        match storage.lookup(&key).unwrap() {
-            BlobEntry::Stored(got) => assert_eq!(got.bytes(), want),
-            BlobEntry::Removed(_) => panic!("expected the blob to be present"),
-        }
+        assert_eq!(storage.lookup(&key).unwrap().unwrap().bytes(), want);
+    }
+
+    #[test]
+    fn round_trip() {
+        let path = temp_dir("round_trip.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        // TODO: add aborting commits.
+        const BLOBS: [&[u8]; 3] = [
+            b"added data",
+            b"added and removed data",
+            b"added and removed and added again data",
+        ];
+
+        // 1. Add a blob.
+        let query = storage.add_blob(BLOBS[0]).unwrap();
+        let time1 = SystemTime::now();
+        let key1 = storage.commit(query, time1).unwrap();
+
+        // 2. Add and remove the same blob.
+        let query = storage.add_blob(BLOBS[1]).unwrap();
+        let key2 = storage.commit(query, SystemTime::now()).unwrap();
+        let query = storage.remove_blob(key2.clone()).unwrap();
+        let time2 = SystemTime::now();
+        storage.commit(query, time2).unwrap();
+
+        // 3. Add and remove the same blob, then add it again.
+        let query = storage.add_blob(BLOBS[2]).unwrap();
+        let key3 = storage.commit(query, SystemTime::now()).unwrap();
+        let query = storage.remove_blob(key3.clone()).unwrap();
+        storage.commit(query, SystemTime::now()).unwrap();
+        let query = storage.add_blob(BLOBS[2]).unwrap();
+        let time3 = SystemTime::now();
+        storage.commit(query, time3).unwrap();
+
+        // Close the database and open it again.
+        drop(storage);
+        let storage = Storage::open(&path).unwrap();
+
+        // 1. Blob should be present.
+        let got1 = storage.lookup(&key1).unwrap().unwrap();
+        assert_eq!(got1.bytes(), BLOBS[0]);
+        assert_eq!(got1.created_at(), time1);
+
+        // 2. Blob should be marked as removed.
+        let got2 = storage.lookup(&key2).unwrap().unwrap_removed();
+        assert_eq!(got2, time2);
+
+        // 3. Should be present.
+        let got3 = storage.lookup(&key3).unwrap().unwrap();
+        assert_eq!(got3.bytes(), BLOBS[2]);
+        assert_eq!(got3.created_at(), time3);
+
+        // Check the lengths of the files.
+        assert_eq!(storage.len(), 2);
+        let blobs_len: u64 = BLOBS.iter().map(|b| b.len() as u64).sum::<u64>() +
+            // Stored twice in step 3.
+            BLOBS[2].len() as u64;
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64 + blobs_len);
+        let want_entries_len = 4; // Step 3 has two entries.
+        assert_eq!(
+            storage.index_size(),
+            (INDEX_MAGIC.len() + want_entries_len * size_of::<Entry>()) as u64
+        );
     }
 }
 

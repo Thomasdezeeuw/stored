@@ -1243,7 +1243,7 @@ impl Index {
         // Safety: because `u8` doesn't have any invalid bit patterns this is
         // OK. We're also ensured at least `size_of::<DateTime>` bytes are valid.
         let bytes: &[u8] = unsafe {
-            slice::from_raw_parts((&date) as *const _ as *const _, size_of::<DateTime>())
+            slice::from_raw_parts(date as *const DateTime as *const _, size_of::<DateTime>())
         };
 
         // NOTE: this is only correct because `Entry` and `DateTime` have the
@@ -1382,7 +1382,7 @@ struct EntryIndex(usize);
 impl EntryIndex {
     /// Returns the offset of the [`Entry`] into the [`Index`] file in bytes.
     fn offset(self) -> u64 {
-        self.0 as u64 * size_of::<Entry>() as u64
+        INDEX_MAGIC.len() as u64 + (self.0 as u64 * size_of::<Entry>() as u64)
     }
 }
 
