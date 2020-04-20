@@ -17,6 +17,8 @@ address = "127.0.0.1:8080"
 # Address to listen on for peer connections.
 address = "127.0.0.1:9001"
 # Addresses of peers to connect to.
+# Note that these don't need to contain all addresses, a single address of the
+# entire group is enough as each will automatically share all known peers.
 peers = [
 	"127.0.0.1:9002",
 	"127.0.0.1:9003",

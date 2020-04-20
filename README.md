@@ -8,25 +8,28 @@ It supports three operations: storing, retrieving and removing values. As the
 key of a value is its checksum it not possible to modify values. If a value
 needs to be modified a new value simply needs to stored and the new key used.
 The client can validate the correct delivery of the value by using the returned
-key. They values themselves are unchanged by Stored and are seen as binary
-blobs.
+key (checksum). They values themselves are unchanged by Stored and are seen as
+binary blobs.
 
 
 ## Operations
 
-Stored supports three operations; storing values, reading values and removing
+Stored supports three operations; storing values, retrieving values and removing
 values. But first we need to start the server.
 
 
 ### Starting the server
 
-Starting the server is simple, just call `stored`.
+Starting the server is simple, just call `stored` with a path the configuration
+file. See [`config.example.toml`] for all configuration options.
+
+[`config.example.toml`]: ./config.example.toml
 
 ```bash
-$ stored
+$ stored config.toml
 ```
 
-Next we using the various binaries to access the stored values.
+Next we look at how to interact with stored.
 
 
 ### Storing a value
@@ -42,6 +45,14 @@ $ store "Hello world"
 $ echo "Hello world" | store
 ```
 
+But since stored exposes an HTTP interface we can also use a tool like `curl` to
+store values using a POST request.
+
+```bash
+# Store "Hello world".
+curl -X POST -d "Hello world" http://127.0.0.1:8080/blob
+```
+
 
 ### Retrieving a value
 
@@ -51,6 +62,13 @@ Getting a value can be done using the `retrieve` command.
 $ retrieve $key
 ```
 
+Or using the HTTP interface using `curl`.
+
+```bash
+# Retrieves "Hello world".
+curl http://127.0.0.1:8080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
+```
+
 
 ### Removing a value
 
@@ -58,4 +76,11 @@ Removing a value can be done with `remove` command.
 
 ```bash
 $ remove $key
+```
+
+Or a simple DELETE request.
+
+```bash
+# Deletes "Hello world".
+curl -X DELETE http://127.0.0.1:8080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
 ```

@@ -1,0 +1,139 @@
+# OpenAPI specification of the HTTP interface to stored.
+openapi: "3.0.0"
+info:
+  title: Stored
+  version: 0.1.0
+  description: Stored (pronounced store-daemon, or just stored) is a distributed
+    immutable value store. Stored is not a key-value store, as the key isn't the
+    decided by the user but by the checksum of the stored value.
+paths:
+  /blob:
+    post:
+      summary: Store a blob.
+      requestBody:
+        description: Blob to store.
+        required: true
+        content:
+          '*/*':
+            schema:
+              $ref: '#/components/schemas/Blob'
+      parameters:
+        - in: header
+          name: Content-Length
+          schema:
+            type: integer
+          required: true
+      responses:
+        '201':
+          description: Blob was stored.
+          headers:
+            Location:
+              description: Location at which the blob can be retrieved.
+              schema:
+                type: string
+                format: uri
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '411':
+          description: '"Content-Length" header is missing.'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '413':
+          description: Body too large.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          $ref: '#/components/responses/ServerError'
+  /blob/{key}:
+    get:
+      summary: Retrieves a blob.
+      description: 'Note that "HEAD" requests are also supported.'
+      parameters:
+        - name: key
+          in: path
+          description: Key of the blob to retrieve.
+          required: true
+          schema:
+            $ref: '#/components/schemas/Key'
+      responses:
+        '200':
+          description: Returns the blob.
+          headers:
+            'Last-Modified':
+              description: 'Time at which the blob was stored. Format is the same as the "Date" header.'
+              schema:
+                type: string
+                format: date-time
+          content:
+            '*/*':
+              schema:
+                $ref: '#/components/schemas/Blob'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Removed'
+        '500':
+          $ref: '#/components/responses/ServerError'
+    delete:
+      summary: Removes a blob.
+      parameters:
+        - name: key
+          in: path
+          description: Key of the blob to retrieve.
+          required: true
+          schema:
+            $ref: '#/components/schemas/Key'
+      responses:
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/Removed'
+        '500':
+          $ref: '#/components/responses/ServerError'
+components:
+  schemas:
+    Key:
+      description: SHA-512 hash of the stored blob used as key.
+      type: string
+      format: SHA-512 hash
+      minLength: 128
+      maxLength: 128
+    Blob:
+      description: Binary Large OBject (BLOB) stored by the client.
+      type: string
+      format: binary
+  responses:
+    BadRequest:
+      description: Bad request, see error message in the body for details.
+      content:
+        text/plain:
+          schema:
+            type: string
+    NotFound:
+      description: Blob not found.
+      content:
+        text/plain:
+          schema:
+            type: string
+    ServerError:
+      description: Internal server error.
+      content:
+        text/plain:
+          schema:
+            type: string
+    Removed:
+      description: Blob was removed (but previously stored).
+      headers:
+        'Last-Modified':
+          description: 'Time at which the blob was removed. Format is the same as the "Date" header.'
+          schema:
+            type: string
+            format: date-time
