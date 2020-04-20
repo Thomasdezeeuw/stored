@@ -323,7 +323,8 @@ mod index {
     use std::{fs, io};
 
     use super::{
-        temp_file, test_data_path, test_entries, Entry, Index, ModifiedTime, DB_001, INDEX_MAGIC,
+        temp_file, test_data_path, test_entries, DateTime, Entry, Index, Key, ModifiedTime, DATA,
+        DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
 
     #[test]
@@ -425,7 +426,7 @@ mod index {
     }
 
     #[test]
-    fn invalid_length() {
+    fn incorrect_length() {
         let path = test_data_path("003.db/index");
         let mut index = Index::open(&path).unwrap();
         let res = index.entries();
@@ -433,9 +434,42 @@ mod index {
             Ok(_) => panic!("expected to fail to access index entries"),
             Err(err) => {
                 assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-                assert!(err.to_string().contains("invalid index file size"));
+                assert!(err.to_string().contains("incorrect index file size"));
             }
         }
+    }
+
+    #[test]
+    fn invalid_index_entries() {
+        let path = test_data_path("010.db/index");
+        let mut index = Index::open(&path).unwrap();
+        let entries = index.entries().unwrap();
+        assert_eq!(entries.len(), 2);
+
+        println!("entries: {:#?}", (&*entries));
+
+        let want1 = Entry {
+            key: Key::for_blob(DATA[0]),
+            offset: (DATA_MAGIC.len() as u64).to_be(),
+            length: (DATA[0].len() as u32).to_be(),
+            time: DateTime::INVALID,
+        };
+        assert_eq!(entries[0], want1);
+        assert!(entries[0].time.is_invalid());
+        assert!(!entries[0].time.is_removed());
+
+        let want2 = Entry {
+            key: Key::for_blob(DATA[0]),
+            offset: ((DATA_MAGIC.len() + DATA[0].len()) as u64).to_be(),
+            length: (DATA[0].len() as u32).to_be(),
+            time: DateTime {
+                seconds: 1587374820u64.to_be(),
+                subsec_nanos: 177578000u32.to_be(),
+            },
+        };
+        assert_eq!(entries[1], want2);
+        assert!(!entries[1].time.is_invalid());
+        assert!(!entries[1].time.is_removed());
     }
 }
 
@@ -1451,13 +1485,13 @@ mod storage {
     }
 
     #[test]
-    fn invalid_index_entries() {
+    fn incorrect_index_entries() {
         let path = test_data_path("006.db");
         match Storage::open(&path) {
             Ok(_) => panic!("expected to fail opening storage"),
             Err(err) => {
                 assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-                assert!(err.to_string().contains("invalid index entry"));
+                assert!(err.to_string().contains("incorrect index entry"));
             }
         }
     }
@@ -1473,6 +1507,65 @@ mod storage {
                 assert_eq!(err.kind(), io::ErrorKind::Other);
                 assert!(err.to_string().contains("database already in used"));
             }
+        }
+    }
+
+    #[test]
+    fn add_blob_after_removed() {
+        let path = temp_dir("add_blob_after_removed.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let blob = DATA[0];
+        let key = add_blobs(&mut storage, &[blob]).pop().unwrap();
+        assert_eq!(storage.len(), 1);
+
+        let query = match storage.remove_blob(key.clone()) {
+            RemoveResult::Ok(query) => query,
+            RemoveResult::NotStored(_) => panic!("expected blob to be present"),
+        };
+
+        let removed_at = SystemTime::now();
+        storage.commit(query, removed_at).unwrap();
+        assert_eq!(storage.len(), 0);
+
+        // We should be able to overwrite a removed blob.
+        let query = unwrap(storage.add_blob(blob));
+        let got_key = storage.commit(query, SystemTime::now()).unwrap();
+        assert_eq!(got_key, key);
+
+        assert_eq!(storage.len(), 1);
+        let got = storage.lookup(&key).unwrap().unwrap();
+        assert_eq!(got.bytes(), blob);
+    }
+
+    #[test]
+    fn database_with_invalid_index_entries() {
+        let path = test_data_path("010.db");
+        let storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 1);
+        assert_eq!(
+            storage.data_size(),
+            (DATA_MAGIC.len() + (DATA[0].len() * 2)) as u64
+        );
+        assert_eq!(
+            storage.index_size(),
+            (INDEX_MAGIC.len() + (size_of::<Entry>() * 2)) as u64
+        );
+
+        let want = DATA[0];
+        let key = Key::for_blob(&want);
+        match storage.lookup(&key).unwrap() {
+            BlobEntry::Stored(got) => assert_eq!(got.bytes(), want),
+            BlobEntry::Removed(_) => panic!("expected the blob to be present"),
         }
     }
 }

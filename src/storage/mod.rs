@@ -107,7 +107,7 @@ use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
-use std::mem::size_of;
+use std::mem::{replace, size_of};
 use std::ops::{Deref, DerefMut};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
@@ -253,7 +253,7 @@ impl Storage {
                             })
                         })
                         .ok_or_else(|| {
-                            io::Error::new(io::ErrorKind::InvalidData, "invalid index entry")
+                            io::Error::new(io::ErrorKind::InvalidData, "incorrect index entry")
                         }),
                     ModifiedTime::Removed(time) => Ok(BlobEntry::Removed(time)),
                     ModifiedTime::Invalid => return None,
@@ -315,9 +315,9 @@ impl Storage {
         let key = Key::for_blob(blob);
 
         // Can't have double entries.
-        if self.blobs.contains_key(&key) {
-            // FIXME: we should be able to overwrite a deleted blob.
-            return AddResult::AlreadyStored(key);
+        match self.blobs.get(&key) {
+            Some((_, BlobEntry::Stored(_))) => return AddResult::AlreadyStored(key),
+            _ => {}
         }
 
         // First add the blob to the data file. If something happens the blob
@@ -428,48 +428,76 @@ pub struct AddBlob {
     lifetime: MmapLifetime,
 }
 
+impl AddBlob {
+    /// Create an `Entry` in `storage.index`.
+    fn create_entry(
+        self,
+        index: &mut Index,
+        created_at: SystemTime,
+    ) -> io::Result<(EntryIndex, Key, Blob)> {
+        // The data is already stored so we can add the blob to the
+        // index.
+        let index_entry = Entry::new(self.key.clone(), self.offset, self.length, created_at);
+        let entry_index = index.add_entry(&index_entry)?;
+
+        // Now that the data and index entry are stored we can insert
+        // the blob into our database.
+        Ok((
+            entry_index,
+            self.key,
+            Blob {
+                // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
+                // because of the `lifetime` added below.
+                bytes: unsafe {
+                    slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
+                },
+                created: created_at,
+                lifetime: self.lifetime,
+            },
+        ))
+    }
+}
+
 impl Query for AddBlob {
     type Arg = SystemTime;
     type Return = Key;
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
+        debug_assert_eq!(
+            storage
+                .data
+                .address_for(self.offset, self.length)
+                .unwrap()
+                .0,
+            self.address
+        );
+
         use hash_map::Entry::*;
         match storage.blobs.entry(self.key.clone()) {
-            Occupied(_) => {
-                // If the blob has already been added we don't want to modify
-                // it.
-                let key = self.key.clone();
-                return self.abort(storage).map(|()| key);
-            }
-            Vacant(entry) => {
-                // The data is already stored so we can add the blob to the
-                // index.
-                let index_entry =
-                    Entry::new(self.key.clone(), self.offset, self.length, created_at);
-                let entry_index = storage.index.add_entry(&index_entry)?;
+            Occupied(mut entry) => match entry.get_mut() {
+                (_, BlobEntry::Stored(_)) => {
+                    // If the blob has already been added we don't want to modify
+                    // it.
+                    let key = self.key.clone();
+                    return self.abort(storage).map(|()| key);
+                }
+                entry @ (_, BlobEntry::Removed(_)) => {
+                    // First add our new index entry.
+                    let (entry_index, key, blob) =
+                        self.create_entry(&mut storage.index, created_at)?;
+                    let (old_entry_index, _) =
+                        replace(entry, (entry_index, BlobEntry::Stored(blob)));
+                    storage.length += 1;
 
-                // Now that the data and index entry are stored we can insert
-                // the blob into our database.
-                debug_assert_eq!(
-                    storage
-                        .data
-                        .address_for(self.offset, self.length)
-                        .unwrap()
-                        .0,
-                    self.address
-                );
-                let blob = Blob {
-                    // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
-                    // because of the `lifetime` added below.
-                    bytes: unsafe {
-                        slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
-                    },
-                    created: created_at,
-                    lifetime: self.lifetime,
-                };
+                    // Next mark the old index entry as invalid.
+                    storage.index.mark_as_invalid(old_entry_index).map(|()| key)
+                }
+            },
+            Vacant(entry) => {
+                let (entry_index, key, blob) = self.create_entry(&mut storage.index, created_at)?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
-                Ok(self.key)
+                Ok(key)
             }
         }
     }
@@ -962,16 +990,16 @@ impl Data {
             for area in &self.areas {
                 assert!(
                     area.mmap_address.as_ptr() as usize % PAGE_SIZE == 0,
-                    "invalid mmap address alignment"
+                    "incorrect mmap address alignment"
                 );
-                assert!(area.offset <= DATA_MAGIC.len() as u64, "invalid offset");
+                assert!(area.offset <= DATA_MAGIC.len() as u64, "incorrect offset");
                 assert!(
                     area.offset >= last_offset,
                     "mmaped areas not sorted by offset"
                 );
                 assert_eq!(
                     area.offset as u64, total_length,
-                    "invalid offset for mmap area"
+                    "incorrect offset for mmap area"
                 );
                 assert!(
                     area.length <= area.mmap_length,
@@ -980,7 +1008,7 @@ impl Data {
                 last_offset = area.offset;
                 total_length += area.length as u64;
             }
-            assert_eq!(self.length, total_length, "invalid total length");
+            assert_eq!(self.length, total_length, "incorrect total length");
         }
     }
 }
@@ -1134,7 +1162,7 @@ impl Index {
         if indices_length % size_of::<Entry>() != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "invalid index file size",
+                "incorrect index file size",
             ));
         }
 
@@ -1189,14 +1217,24 @@ impl Index {
 
     /// Marks the `Entry` at index `at` as removed at `removed_at` time.
     fn mark_as_removed(&mut self, at: EntryIndex, removed_at: SystemTime) -> io::Result<()> {
+        // The date at which the blob was removed.
+        let date = DateTime::from(removed_at).mark_removed();
+        self.overwrite_date(at, &date)
+    }
+
+    /// Marks the `Entry` at index `at` as invalid.
+    fn mark_as_invalid(&mut self, at: EntryIndex) -> io::Result<()> {
+        self.overwrite_date(at, &DateTime::INVALID)
+    }
+
+    /// Overwrite the date of the `Entry` at index `at` with `date`.
+    fn overwrite_date(&mut self, at: EntryIndex, date: &DateTime) -> io::Result<()> {
         debug_assert!(
             ((at.0 as u64) * (size_of::<Entry>() as u64) + (size_of::<Entry>() as u64))
                 < self.length,
             "index outside of index file"
         );
 
-        // The date at which the blob was removed.
-        let date = DateTime::from(removed_at).mark_removed();
         // Safety: because `u8` doesn't have any invalid bit patterns this is
         // OK. We're also ensured at least `size_of::<DateTime>` bytes are valid.
         let bytes: &[u8] = unsafe {
@@ -1232,7 +1270,7 @@ impl<'a, T> Deref for MmapSlice<'a, T> {
         // arbitrary ranges.
         let address = unsafe { self.address.add(self.offset) };
         let length = self.length - self.offset;
-        debug_assert!(length % size_of::<T>() == 0, "length invalid");
+        debug_assert!(length % size_of::<T>() == 0, "length incorrect");
         unsafe { slice::from_raw_parts(address as *const _, length / size_of::<T>()) }
     }
 }
@@ -1352,7 +1390,7 @@ impl EntryIndex {
 /// Integers in `Entry` (and `DateTime`) are stored in big-endian format on
 /// disk. Use the getters (e.g. `offset`) to get the value in native endian.
 #[repr(C)]
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq)]
 struct Entry {
     /// Key for the blob.
     key: Key,
@@ -1403,6 +1441,17 @@ impl Entry {
     }
 }
 
+impl fmt::Debug for Entry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Entry")
+            .field("key", &self.key)
+            .field("offset", &u64::from_be_bytes(self.offset.to_ne_bytes()))
+            .field("length", &u32::from_be_bytes(self.length.to_ne_bytes()))
+            .field("time", &self.time)
+            .finish()
+    }
+}
+
 /// Layout stable date-time format.
 ///
 /// This is essentially a [`Duration`] since [unix epoch] with a stable on-disk
@@ -1415,7 +1464,7 @@ impl Entry {
 /// Can't represent times before Unix epoch.
 /// Integers are stored in big-endian format on disk **and in memory**.
 #[repr(C, packed)] // Packed to reduce the size of `Index`.
-#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+#[derive(Copy, Clone, Eq, PartialEq)]
 struct DateTime {
     /// Number of seconds since Unix epoch.
     seconds: u64,
@@ -1531,5 +1580,19 @@ impl Into<ModifiedTime> for DateTime {
                 ModifiedTime::Created(time)
             }
         }
+    }
+}
+
+impl fmt::Debug for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DateTime")
+            .field("seconds", &u64::from_be_bytes(self.seconds.to_ne_bytes()))
+            .field(
+                "subsec_nanos",
+                &u32::from_be_bytes(self.subsec_nanos.to_ne_bytes()),
+            )
+            .field("is_removed", &self.is_removed())
+            .field("is_invalid", &self.is_invalid())
+            .finish()
     }
 }

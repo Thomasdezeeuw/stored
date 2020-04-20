@@ -1,0 +1,3 @@
+Valid database with "Hello world" stored, then removed and then stored again.
+The index contains one invalid and one valid entry. The bytes of the removed
+blob are still present.
