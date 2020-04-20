@@ -937,6 +937,11 @@ impl Data {
             aligned_offset as libc::off_t,
         )?;
 
+        // Inform the OS that our access pattern are likely to be random, this
+        // way it doesn't load pages we won't need. We can use `Blob::prefetch`
+        // to inform the OS when we do need pages.
+        let _ = madvise(address, aligned_length, libc::MADV_RANDOM);
+
         // Safety: `mmap` doesn't return a null address.
         let address = NonNull::new(address).unwrap();
         let area = MmapAreaControl::new(address, aligned_length, offset, length);
