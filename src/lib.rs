@@ -3,7 +3,8 @@
     box_into_raw_non_null,
     maybe_uninit_slice,
     maybe_uninit_slice_assume_init,
-    never_type
+    never_type,
+    result_flattening
 )]
 
 pub mod buffer;

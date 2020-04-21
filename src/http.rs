@@ -18,15 +18,16 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::time::{Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use std::{fmt, mem, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use futures_util::future::FutureExt;
 use futures_util::io::AsyncWriteExt;
 use heph::log::request;
 use heph::net::{tcp, TcpStream};
-use heph::{actor, ActorRef};
-use heph::{NewActor, Supervisor, SupervisorStrategy};
+use heph::timer::{Deadline, DeadlinePassed};
+use heph::{actor, ActorRef, NewActor, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
 use log::{debug, error};
 
@@ -79,6 +80,9 @@ pub fn supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)>
     SupervisorStrategy::Stop
 }
 
+/// Timeout in I/O operations.
+const TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Actor that handles a single TCP `stream`, expecting HTTP requests.
 ///
 /// Returns any and all I/O errors.
@@ -88,14 +92,16 @@ pub async fn actor(
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
 ) -> io::Result<()> {
-    debug!("accepted connection: address={}", address);
+    debug!("accepted connection: remote_address={}", address);
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
 
     loop {
+        let future = Deadline::timeout(&mut ctx, TIMEOUT, conn.read_request(&mut request))
+            .map(|res| res.map_err(Into::into).flatten());
+        let result = future.await;
         let start = Instant::now();
-
-        let response = match conn.read_request(&mut request).await {
+        let response = match result {
             // Parsed a request, now route and process it.
             Ok(true) => route_request(&mut ctx, &mut db_ref, &mut conn, &request).await?,
             // Read all requests on the stream, so this actor's work is done.
@@ -104,7 +110,9 @@ pub async fn actor(
             Err(err) => Response::for_error(err)?,
         };
 
-        conn.write_response(&response).await?;
+        Deadline::timeout(&mut ctx, TIMEOUT, conn.write_response(&response))
+            .map(|res| res.map_err(Into::into).flatten())
+            .await?;
 
         request!(
             "request: remote_address=\"{}\", method=\"{}\", path=\"{}\", user_agent=\"{}\", \
@@ -127,7 +135,7 @@ pub async fn actor(
         }
     }
 
-    debug!("closing connection: address={}", address);
+    debug!("closing connection: remote_address={}", address);
     Ok(())
 }
 
@@ -238,7 +246,7 @@ impl Request {
     /// Create an empty `Request`.
     pub const fn empty() -> Request {
         Request {
-            method: Method::Options,
+            method: Method::Get,
             path: String::new(),
             user_agent: String::new(),
             length: None,
@@ -254,24 +262,34 @@ impl Request {
         }
     }
 
+    fn reset(&mut self) {
+        self.method = Method::Get;
+        self.path.clear();
+        self.user_agent.clear();
+        self.length = None;
+    }
+
     /// Parse a request.
     fn parse(&mut self, bytes: &[u8]) -> Result<httparse::Status<usize>, RequestError> {
         let mut headers = [EMPTY_HEADER; MAX_HEADERS];
         let mut req = httparse::Request::new(&mut headers);
         match req.parse(bytes) {
             Ok(httparse::Status::Complete(bytes_read)) => {
+                self.reset();
+
                 // TODO: check req.version?
 
-                let method =
+                self.path.push_str(req.path.unwrap_or(""));
+                self.method =
                     Method::try_from(req.method).map_err(|()| RequestError::InvalidMethod)?;
 
-                let mut user_agent = None;
-                let mut length = None;
                 for header in req.headers.iter() {
                     if lower_case_cmp(header.name, USER_AGENT) {
-                        user_agent = str::from_utf8(header.value).ok();
+                        if let Ok(user_agent) = str::from_utf8(header.value) {
+                            self.user_agent.push_str(user_agent);
+                        }
                     } else if lower_case_cmp(header.name, CONTENT_LENGTH) {
-                        length = str::from_utf8(header.value)
+                        self.length = str::from_utf8(header.value)
                             .map_err(|_| RequestError::InvalidContentLength)
                             .and_then(|str_length| {
                                 str_length
@@ -282,14 +300,6 @@ impl Request {
                     }
                 }
 
-                self.method = method;
-                self.path.clear();
-                self.path.push_str(req.path.unwrap_or(""));
-                self.user_agent.clear();
-                if let Some(user_agent) = user_agent {
-                    self.user_agent.push_str(user_agent);
-                }
-                self.length = length;
                 Ok(httparse::Status::Complete(bytes_read))
             }
             Ok(httparse::Status::Partial) => Ok(httparse::Status::Partial),
@@ -374,6 +384,12 @@ pub enum RequestError {
     InvalidMethod,
     /// Request is too large.
     TooLarge,
+}
+
+impl From<DeadlinePassed> for RequestError {
+    fn from(err: DeadlinePassed) -> Self {
+        RequestError::Io(err.into())
+    }
 }
 
 impl fmt::Display for RequestError {

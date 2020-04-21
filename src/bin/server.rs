@@ -35,8 +35,8 @@ struct Config {
     peer: Option<PeerConfig>,
 }
 
+/// 1 GB.
 fn default_max_blob_size() -> SpecificSize<Kibibyte> {
-    // 1 GB.
     SpecificSize::new(1024 * 1024 * 1024, Kibibyte).unwrap()
 }
 
@@ -53,6 +53,7 @@ struct HttpConfig {
     address: SocketAddr,
 }
 
+/// 127.0.0.1:8080.
 fn default_address() -> SocketAddr {
     use std::net::{Ipv4Addr, SocketAddrV4};
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080))
