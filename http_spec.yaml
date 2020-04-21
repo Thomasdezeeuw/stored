@@ -98,6 +98,18 @@ paths:
           $ref: '#/components/responses/Removed'
         '500':
           $ref: '#/components/responses/ServerError'
+  /health:
+    get:
+      summary: Runs a health check.
+      responses:
+        '200':
+          description: 'The string "OK".'
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          $ref: '#/components/responses/ServerError'
 components:
   schemas:
     Key:
