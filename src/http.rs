@@ -89,16 +89,13 @@ pub async fn actor(
     mut db_ref: ActorRef<db::Message>,
 ) -> io::Result<()> {
     debug!("accepted connection: address={}", address);
-    let mut conn = Connection {
-        stream,
-        buf: Buffer::new(),
-    };
+    let mut conn = Connection::new(stream);
     let mut request = Request::empty();
 
     loop {
         let start = Instant::now();
 
-        let response = match read_request(&mut conn, &mut request).await {
+        let response = match conn.read_request(&mut request).await {
             // Parsed a request, now route and process it.
             Ok(true) => route_request(&mut ctx, &mut db_ref, &mut conn, &request).await?,
             // Read all requests on the stream, so this actor's work is done.
@@ -107,7 +104,7 @@ pub async fn actor(
             Err(err) => Response::for_error(err)?,
         };
 
-        write_response(&mut conn, &response).await?;
+        conn.write_response(&response).await?;
 
         request!(
             "request: remote_address=\"{}\", method=\"{}\", path=\"{}\", user_agent=\"{}\", \
@@ -136,7 +133,7 @@ pub async fn actor(
 
 /// `Connection` types that wraps a TCP stream and buffers it using `Buffer`.
 #[derive(Debug)]
-struct Connection {
+pub struct Connection {
     stream: TcpStream,
     buf: Buffer,
 }
@@ -151,43 +148,65 @@ const MAX_HEADERS_SIZE: usize = 2 * 1024;
 const USER_AGENT: &str = "user-agent";
 const CONTENT_LENGTH: &str = "content-length";
 
-/// Reads a [`Request`] from `stream`, using `buf` as buffer. Parts of the
-/// `Request` will be stored in `wbuf`.
-///
-/// Returns `true` if a request was read into `request`, `false` if there are no
-/// more requests on `stream` or an error otherwise.
-async fn read_request(conn: &mut Connection, request: &mut Request) -> Result<bool, RequestError> {
-    let mut too_short = 0;
-    loop {
-        // At the start we likely don't have enough bytes to read the entire
-        // request, however it could be that we read (part of) a request in
-        // reading a previous request, so we need to check.
-        if conn.buf.len() > too_short {
-            match request.parse(conn.buf.as_bytes()) {
-                Ok(httparse::Status::Complete(bytes_read)) => {
-                    conn.buf.processed(bytes_read);
-                    return Ok(true);
+impl Connection {
+    /// Create a new `Connection`.
+    pub fn new(stream: TcpStream) -> Connection {
+        Connection {
+            stream,
+            buf: Buffer::new(),
+        }
+    }
+
+    /// Reads a [`Request`] from this connection.
+    ///
+    /// Returns `true` if a request was read into `request`, `false` if there
+    /// are no more requests on `stream` or an error otherwise.
+    pub async fn read_request(&mut self, request: &mut Request) -> Result<bool, RequestError> {
+        let mut too_short = 0;
+        loop {
+            // At the start we likely don't have enough bytes to read the entire
+            // request, however it could be that we read (part of) a request in
+            // reading a previous request, so we need to check.
+            if self.buf.len() > too_short {
+                match request.parse(self.buf.as_bytes()) {
+                    Ok(httparse::Status::Complete(bytes_read)) => {
+                        self.buf.processed(bytes_read);
+                        return Ok(true);
+                    }
+                    // Need to read some more bytes.
+                    Ok(httparse::Status::Partial) => too_short = self.buf.len(),
+                    Err(err) => return Err(err),
                 }
-                // Need to read some more bytes.
-                Ok(httparse::Status::Partial) => too_short = conn.buf.len(),
-                Err(err) => return Err(err),
+
+                if self.buf.len() >= MAX_HEADERS_SIZE {
+                    return Err(RequestError::TooLarge);
+                }
             }
 
-            if conn.buf.len() >= MAX_HEADERS_SIZE {
-                return Err(RequestError::TooLarge);
+            match self.buf.read_from(&mut self.stream).await {
+                // No more bytes in the connection or buffer, processed all
+                // requests.
+                Ok(0) if self.buf.is_empty() => return Ok(false),
+                // Read all bytes, but don't have a complete HTTP request yet.
+                Ok(0) => return Err(RequestError::Incomplete),
+                // Read some bytes, now try parsing the request.
+                Ok(_) => continue,
+                Err(err) => return Err(RequestError::Io(err)),
             }
         }
+    }
 
-        match conn.buf.read_from(&mut conn.stream).await {
-            // No more bytes in the connection or buffer, processed all
-            // requests.
-            Ok(0) if conn.buf.is_empty() => return Ok(false),
-            // Read all bytes, but don't have a complete HTTP request yet.
-            Ok(0) => return Err(RequestError::Incomplete),
-            // Read some bytes, now try parsing the request.
-            Ok(_) => continue,
-            Err(err) => return Err(RequestError::Io(err)),
-        }
+    /// Write `response` to the connection.
+    pub async fn write_response(&mut self, response: &Response) -> io::Result<()> {
+        // Create a write buffer a write the request headers to it.
+        let (_, mut write_buf) = self.buf.split_write(Response::MAX_HEADERS_SIZE);
+        response.write_headers(&mut write_buf);
+
+        // TODO: replace with `write_all_vectored`:
+        // https://github.com/rust-lang/futures-rs/pull/1741.
+
+        self.stream.write_all(write_buf.as_bytes()).await?;
+        self.stream.write_all(response.body()).await
     }
 }
 
@@ -207,17 +226,17 @@ fn lower_case_cmp(value: &str, want: &str) -> bool {
 
 /// Parsed HTTP request.
 #[derive(Debug)]
-struct Request {
-    method: Method,
-    path: String,
+pub struct Request {
+    pub method: Method,
+    pub path: String,
     /// Empty string means not present.
-    user_agent: String,
-    length: Option<usize>,
+    pub user_agent: String,
+    pub length: Option<usize>,
 }
 
 impl Request {
     /// Create an empty `Request`.
-    const fn empty() -> Request {
+    pub const fn empty() -> Request {
         Request {
             method: Method::Options,
             path: String::new(),
@@ -227,7 +246,7 @@ impl Request {
     }
 
     /// Returns `true` if the "Content-Length" header is > 0.
-    fn has_body(&self) -> bool {
+    pub fn has_body(&self) -> bool {
         if let Some(body_length) = self.length {
             body_length > 0
         } else {
@@ -281,7 +300,7 @@ impl Request {
 
 /// HTTP request method.
 #[derive(Copy, Clone, Debug)]
-enum Method {
+pub enum Method {
     Options,
     Get,
     Post,
@@ -341,7 +360,7 @@ impl fmt::Display for Method {
 
 /// Request error in which we couldn't parse a proper HTTP request.
 #[derive(Debug)]
-enum RequestError {
+pub enum RequestError {
     /// I/O error.
     Io(io::Error),
     /// Error parsing the HTTP response.
@@ -656,31 +675,18 @@ async fn health_check(
     }
 }
 
-/// Write `response` to `stream`, using buffer `buf`.
-async fn write_response(conn: &mut Connection, response: &Response) -> io::Result<()> {
-    // Create a write buffer a write the request headers to it.
-    let (_, mut write_buf) = conn.buf.split_write(Response::MAX_HEADERS_SIZE);
-    response.write_headers(&mut write_buf);
-
-    // TODO: replace with `write_all_vectored`:
-    // https://github.com/rust-lang/futures-rs/pull/1741.
-
-    conn.stream.write_all(write_buf.as_bytes()).await?;
-    conn.stream.write_all(response.body()).await
-}
-
 /// HTTP response.
 #[derive(Debug)]
-struct Response {
+pub struct Response {
     /// Request was a HEAD request.
-    is_head: bool,
-    should_close: bool,
-    kind: ResponseKind,
+    pub is_head: bool,
+    pub should_close: bool,
+    pub kind: ResponseKind,
 }
 
 /// HTTP response kind.
 #[derive(Debug)]
-enum ResponseKind {
+pub enum ResponseKind {
     /// Blob was stored.
     /// Response to POST new blob.
     ///
@@ -763,7 +769,7 @@ impl Response {
     /// Returns the correct `Response` for a `RequestError`, returns an
     /// [`io::Error`] if the request error kind is I/O
     /// ([`RequestError::Io`])
-    fn for_error(err: RequestError) -> io::Result<Response> {
+    pub fn for_error(err: RequestError) -> io::Result<Response> {
         use RequestError::*;
         let kind = match err {
             Io(err) => return Err(err),
