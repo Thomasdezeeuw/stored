@@ -18,9 +18,10 @@
 //! ## Adding blobs
 //!
 //! Adding new blobs to the database is done in two phases. First, by appending
-//! the blob's bytes to the data file, ensuring its fully stored on (synced to)
-//! disk. Second, adding a new entry to the index file, again ensuring its fully
-//! synced. Only after those two steps is a blob stored in the database.
+//! the blob's bytes to the data file. Note that in this phase we don't yet
+//! ensure the blob is fully synced to disk. Second, we fully sync the blob to
+//! the data and add a new entry to the index file, ensuring its fully synced.
+//! Only after those two steps is a blob stored in the database.
 //!
 //! In the code this is done by first calling [`Storage::add_blob`]. This add
 //! the blob's bytes to the datafile and returns a [`AddBlob`] query. This query
@@ -430,11 +431,18 @@ pub struct AddBlob {
 
 impl AddBlob {
     /// Create an `Entry` in `storage.index`.
+    ///
+    /// This ensures that the blob for which the entry is created is synced to
+    /// disk.
     fn create_entry(
         self,
+        data: &mut Data,
         index: &mut Index,
         created_at: SystemTime,
     ) -> io::Result<(EntryIndex, Key, Blob)> {
+        // Ensure the data is synced to disk.
+        data.sync(self.offset, self.length)?;
+
         // The data is already stored so we can add the blob to the
         // index.
         let index_entry = Entry::new(self.key.clone(), self.offset, self.length, created_at);
@@ -484,7 +492,7 @@ impl Query for AddBlob {
                 entry @ (_, BlobEntry::Removed(_)) => {
                     // First add our new index entry.
                     let (entry_index, key, blob) =
-                        self.create_entry(&mut storage.index, created_at)?;
+                        self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
                     let (old_entry_index, _) =
                         replace(entry, (entry_index, BlobEntry::Stored(blob)));
                     storage.length += 1;
@@ -494,7 +502,8 @@ impl Query for AddBlob {
                 }
             },
             Vacant(entry) => {
-                let (entry_index, key, blob) = self.create_entry(&mut storage.index, created_at)?;
+                let (entry_index, key, blob) =
+                    self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
                 Ok(key)
@@ -574,6 +583,8 @@ struct Data {
     file: File,
     /// Current length of the file and all `mmap`ed areas.
     length: u64,
+    /// Number of bytes synced to disk.
+    synced_length: u64,
     /// `mmap`ed areas.
     /// See `check` for notes about safety.
     areas: Vec<MmapAreaControl>,
@@ -825,12 +836,14 @@ impl Data {
             .map(|file| Data {
                 file,
                 length: 0,
+                synced_length: 0,
                 areas: Vec::new(),
             })?;
         lock(&mut data.file)?;
 
         let metadata = data.file.metadata()?;
         let mut length = metadata.len() as libc::size_t;
+        data.synced_length = data.length;
         if length == 0 {
             // New file so we need to add our magic.
             data.file.write_all(&DATA_MAGIC)?;
@@ -863,19 +876,30 @@ impl Data {
     ///
     /// # Notes
     ///
+    /// The blob is not synced to disk, call [`sync`] to ensure that!
     /// Can't store an empty blob!
     fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>, MmapLifetime)> {
         assert!(!blob.is_empty(), "tried to store an empty blob");
         // First add the blob to the file.
-        self.file
-            .write_all(blob)
-            .and_then(|()| self.file.sync_all())?;
+        self.file.write_all(blob)?;
 
         // Next grow our `mmap`ed area(s).
         let offset = self.length;
         let (address, lifetime) = self.grow_by(blob.len())?;
         self.check();
         Ok((offset as u64, address, lifetime))
+    }
+
+    /// Sync the file to disk up to at least `offset` bytes.
+    fn sync(&mut self, offset: u64, length: u32) -> io::Result<()> {
+        if self.synced_length >= (offset + length as u64) {
+            // Already synced.
+            Ok(())
+        } else {
+            self.file
+                .sync_all()
+                .map(|()| self.synced_length = self.length)
+        }
     }
 
     /// Grows the `mmap`ed data by `length` bytes.
