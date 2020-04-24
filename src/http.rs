@@ -114,6 +114,7 @@ pub async fn actor(
             .map(|res| res.map_err(Into::into).flatten())
             .await?;
 
+        // TODO: don't log invalid/partial requests.
         request!(
             "request: remote_address=\"{}\", method=\"{}\", path=\"{}\", user_agent=\"{}\", \
                 request_length={}, response_time=\"{:?}\", response_status={}, \
@@ -548,7 +549,9 @@ async fn store_blob(
     conn.buf.reserve_atleast(body_length);
 
     while conn.buf.len() < body_length {
-        match conn.buf.read_from(&mut conn.stream).await {
+        let future = Deadline::timeout(ctx, TIMEOUT, conn.buf.read_from(&mut conn.stream))
+            .map(|res| res.map_err(Into::into).flatten());
+        match future.await {
             // No more bytes left, but didn't yet read the entire request body.
             Ok(0) => return Ok((ResponseKind::BadRequest("Incomplete blob"), true)),
             // Read some bytes.
