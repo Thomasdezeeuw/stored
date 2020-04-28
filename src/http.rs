@@ -1,7 +1,10 @@
 //! Module with the server's HTTP/1.1 implementation.
 //!
 //! The [`http::actor`] is the main type, its started by [`tcp::Server`] and is
-//! supervised by [`http::supervisor`].
+//! supervised by [`http::supervisor`]. Adding the HTTP actor to the runtime is
+//! a two step process, first by setting up the listener by calling
+//! [`http::setup`] and then calling the returned function in the runtime setup
+//! function.
 //!
 //! [`http::actor`]: crate::http::actor()
 //! [`tcp::Server`]: heph::net::tcp::Server
@@ -28,8 +31,9 @@ use futures_util::future::FutureExt;
 use futures_util::io::AsyncWriteExt;
 use heph::log::request;
 use heph::net::tcp::{self, ServerMessage, TcpStream};
+use heph::rt::options::{ActorOptions, Priority};
 use heph::timer::{Deadline, DeadlinePassed};
-use heph::{actor, Actor, ActorRef, NewActor, Supervisor, SupervisorStrategy};
+use heph::{actor, Actor, ActorRef, NewActor, RuntimeRef, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
 use log::{debug, error};
 
@@ -37,6 +41,25 @@ use crate::buffer::{Buffer, WriteBuffer};
 use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
 use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
 use crate::Key;
+
+/// Setup the HTTP listener.
+///
+/// This returns a function which can be used to start the HTTP listener.
+pub fn setup(
+    address: SocketAddr,
+    db_ref: ActorRef<db::Message>,
+) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Clone> {
+    let http_actor =
+        (actor as fn(_, _, _, _) -> _).map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
+    let http_listener =
+        tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
+    Ok(|runtime: &mut RuntimeRef| {
+        let options = ActorOptions::default().with_priority(Priority::LOW);
+        let server_ref = runtime.try_spawn(ServerSupervisor, http_listener, (), options)?;
+        runtime.receive_signals(server_ref.try_map());
+        Ok(())
+    })
+}
 
 /// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].
 ///

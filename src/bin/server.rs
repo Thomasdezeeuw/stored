@@ -1,8 +1,6 @@
 use std::{env, io};
 
-use heph::net::tcp;
-use heph::rt::options::{ActorOptions, Priority};
-use heph::{NewActor, Runtime, RuntimeError};
+use heph::{Runtime, RuntimeError};
 use log::info;
 
 use stored::config::Config;
@@ -24,14 +22,7 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
 
     // Setup our HTTP server.
     info!("listening on http://{}", config.http.address);
-    let http_actor = (http::actor as fn(_, _, _, _) -> _)
-        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
-    let http_listener = tcp::Server::setup(
-        config.http.address,
-        http::supervisor,
-        http_actor,
-        ActorOptions::default(),
-    )?;
+    let start_listener = http::setup(config.http.address, db_ref)?;
 
     if let Some(distributed_config) = config.distributed {
         info!(
@@ -43,14 +34,6 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
     }
 
     runtime
-        .with_setup(move |mut runtime_ref| {
-            // Start our HTTP server.
-            let options = ActorOptions::default().with_priority(Priority::LOW);
-            let server_ref =
-                runtime_ref.try_spawn(http::ServerSupervisor, http_listener, (), options)?;
-            runtime_ref.receive_signals(server_ref.try_map());
-
-            Ok(())
-        })
+        .with_setup(move |mut runtime_ref| start_listener(&mut runtime_ref))
         .start()
 }
