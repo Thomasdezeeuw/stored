@@ -63,7 +63,7 @@ pub fn start_stored(conf_path: &'static str, lock: &'static ProcLock, filter: Le
     let child = if let Some(proc) = &mut *proc {
         proc.clone()
     } else {
-        let mut child = Command::new("target/debug/stored");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_stored"));
 
         if filter == LevelFilter::Off {
             child.stderr(Stdio::null()).stdout(Stdio::null());
