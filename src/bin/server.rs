@@ -39,9 +39,13 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
         ActorOptions::default(),
     )?;
 
-    if let Some(peer_config) = config.peer {
-        info!("listening on {} for peer connections", peer_config.address);
-        info!("connecting to peers: {}", peer_config.peers);
+    if let Some(distributed_config) = config.distributed {
+        info!(
+            "listening on {} for peer connections",
+            distributed_config.peer_address
+        );
+        info!("connecting to peers: {}", distributed_config.peers);
+        info!("synchronisation method: {}", distributed_config.sync);
     }
 
     runtime

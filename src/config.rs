@@ -1,4 +1,6 @@
 //! Configuration file parsing.
+//!
+//! Main type is [`Config`].
 
 use std::fmt;
 use std::fs::File;
@@ -7,6 +9,7 @@ use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::path::Path;
+use std::str::FromStr;
 
 use human_size::{Kibibyte, Mebibyte, SpecificSize};
 use serde::de::{Deserializer, Error, SeqAccess, Visitor};
@@ -41,8 +44,9 @@ doc!(
         pub max_blob_size: SpecificSize<Kibibyte>,
         pub max_store_size: Option<SpecificSize<Mebibyte>>,
         #[serde(default)]
-        pub http: HttpConfig,
-        pub peer: Option<PeerConfig>,
+        pub http: Http,
+        #[serde(default)]
+        pub distributed: Option<Distributed>,
     }
 );
 
@@ -67,7 +71,7 @@ fn default_max_blob_size() -> SpecificSize<Kibibyte> {
 
 /// HTTP configuration.
 #[derive(Deserialize, Debug)]
-pub struct HttpConfig {
+pub struct Http {
     #[serde(default = "default_address")]
     pub address: SocketAddr,
 }
@@ -78,19 +82,87 @@ fn default_address() -> SocketAddr {
     SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080))
 }
 
-impl Default for HttpConfig {
-    fn default() -> HttpConfig {
-        HttpConfig {
+impl Default for Http {
+    fn default() -> Http {
+        Http {
             address: default_address(),
         }
     }
 }
 
-/// Peer configuration to run in distributed mode.
+/// Distributed configuration.
 #[derive(Deserialize, Debug)]
-pub struct PeerConfig {
-    pub address: SocketAddr,
+pub struct Distributed {
+    pub peer_address: SocketAddr,
+    pub sync: Sync,
     pub peers: Peers,
+}
+
+/// Type of synchronisation of the blobs between nodes.
+#[derive(Copy, Clone, Debug)]
+pub enum Sync {
+    /// Full synchronisation: all nodes store all blobs (default).
+    Full,
+}
+
+impl Default for Sync {
+    fn default() -> Sync {
+        Sync::Full
+    }
+}
+
+impl fmt::Display for Sync {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Sync::Full => f.write_str("full"),
+        }
+    }
+}
+
+/// Error returned by `FromStr` implementation for [`Sync`].
+pub struct ParseSyncErr(());
+
+impl fmt::Display for ParseSyncErr {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("invalid synchronisation method")
+    }
+}
+
+impl FromStr for Sync {
+    type Err = ParseSyncErr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "full" => Ok(Sync::Full),
+            _ => Err(ParseSyncErr(())),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Sync {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct SyncVisitor;
+
+        impl<'de> Visitor<'de> for SyncVisitor {
+            type Value = Sync;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a string")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                Sync::from_str(s).map_err(Error::custom)
+            }
+        }
+
+        deserializer.deserialize_str(SyncVisitor)
+    }
 }
 
 /// Wrapper around `Vec<SocketAddr>` to use `ToSocketAddrs` to parse addresses.

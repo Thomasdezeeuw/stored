@@ -11,11 +11,14 @@ max_store_size = "10 GiB"
 # "127.0.0.1:8080").
 address = "127.0.0.1:8080"
 
-# Peer configuration to make stored distributed.
+# Distributed configuration.
 # This entire section is optional.
-[peer]
+[distributed]
 # Address to listen on for peer connections.
-address = "127.0.0.1:9001"
+peer_address = "127.0.0.1:9001"
+# Type of synchronisation of the blobs between nodes, available methods:
+# - `full': all nodes store all blobs (default).
+sync = "full"
 # Addresses of peers to connect to.
 # Note that these don't need to contain all addresses, a single address of the
 # entire group is enough as each will automatically share all known peers.
