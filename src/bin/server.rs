@@ -6,7 +6,6 @@ use heph::{NewActor, Runtime, RuntimeError};
 use log::info;
 
 use stored::config::Config;
-use stored::storage::Storage;
 use stored::{db, http};
 
 fn main() -> Result<(), RuntimeError<io::Error>> {
@@ -20,13 +19,8 @@ fn main() -> Result<(), RuntimeError<io::Error>> {
 
     let mut runtime = Runtime::new().use_all_cores();
 
-    // Start our database actor.
     info!("opening database '{}'", config.path.display());
-    let storage = Storage::open(&*config.path)?;
-    let db_supervisor = db::Supervisor::new(config.path);
-    let db_ref = runtime
-        .spawn_sync_actor(db_supervisor, db::actor as fn(_, _) -> _, storage)
-        .map_err(RuntimeError::map_type)?;
+    let db_ref = db::start(&mut runtime, config.path)?;
 
     // Setup our HTTP server.
     info!("listening on http://{}", config.http.address);

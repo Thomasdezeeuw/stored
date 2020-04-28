@@ -1,11 +1,13 @@
 //! Module with the server's HTTP/1.1 implementation.
 //!
 //! The [`http::actor`] is the main type, its started by [`tcp::Server`] and is
-//! supervised by [`http::Supervisor`].
+//! supervised by [`http::supervisor`].
 //!
 //! [`http::actor`]: crate::http::actor()
 //! [`tcp::Server`]: heph::net::tcp::Server
-//! [`http::Supervisor`]: crate::http::Supervisor
+//! [`http::supervisor`]: crate::http::supervisor
+//! [`http::setup`]: crate::http::setup
+//! [`http::start`]: crate::http::start
 
 // TODO: add tests.
 
@@ -25,9 +27,9 @@ use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::future::FutureExt;
 use futures_util::io::AsyncWriteExt;
 use heph::log::request;
-use heph::net::{tcp, TcpStream};
+use heph::net::tcp::{self, ServerMessage, TcpStream};
 use heph::timer::{Deadline, DeadlinePassed};
-use heph::{actor, ActorRef, NewActor, Supervisor, SupervisorStrategy};
+use heph::{actor, Actor, ActorRef, NewActor, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
 use log::{debug, error};
 
@@ -44,10 +46,10 @@ use crate::Key;
 /// Attempts to restart the listener once, stops it the second time.
 pub struct ServerSupervisor;
 
-impl<S, NA> Supervisor<tcp::ServerSetup<S, NA>> for ServerSupervisor
+impl<L, A> Supervisor<L> for ServerSupervisor
 where
-    S: Supervisor<NA> + Clone + 'static,
-    NA: NewActor<Argument = (TcpStream, SocketAddr), Error = !> + Clone + 'static,
+    L: NewActor<Message = ServerMessage, Argument = (), Actor = A, Error = io::Error>,
+    A: Actor<Error = tcp::ServerError<!>>,
 {
     fn decide(&mut self, err: tcp::ServerError<!>) -> SupervisorStrategy<()> {
         use tcp::ServerError::*;

@@ -1,23 +1,38 @@
 //! Module with the database actor.
 //!
 //! The [`db::actor`] is the main type, which accepts [`db::Message`]s and is
-//! supervised by [`db::Supervisor`].
+//! supervised by [`db::Supervisor`]. The actor can be started by using the
+//! [`db::start`] function.
 //!
 //! [`db::actor`]: crate::db::actor
 //! [`db::Message`]: crate::db::Message
 //! [`db::Supervisor`]: crate::db::Supervisor
+//! [`db::start`]: crate::db::start
 
 use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
 use heph::actor::sync::{SyncActor, SyncContext};
-use heph::actor_ref::RpcMessage;
+use heph::actor_ref::{ActorRef, RpcMessage};
+use heph::rt::{Runtime, RuntimeError};
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use log::{debug, error, info};
 
 use crate::storage::{AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage};
 use crate::{Buffer, Key};
+
+/// Start the database actor.
+pub fn start(
+    runtime: &mut Runtime,
+    path: Box<Path>,
+) -> Result<ActorRef<Message>, RuntimeError<io::Error>> {
+    let storage = Storage::open(&*path)?;
+    let supervisor = Supervisor::new(path);
+    runtime
+        .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage)
+        .map_err(RuntimeError::map_type)
+}
 
 /// Supervisor for the [`db::actor`].
 ///
