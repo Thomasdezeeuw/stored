@@ -94,60 +94,69 @@ impl Default for Http {
 #[derive(Deserialize, Debug)]
 pub struct Distributed {
     pub peer_address: SocketAddr,
-    pub sync: Sync,
+    pub replicas: Replicas,
     pub peers: Peers,
 }
 
-/// Type of synchronisation of the blobs between nodes.
+/// The amount of replicas of the blob stored.
 #[derive(Copy, Clone, Debug)]
-pub enum Sync {
-    /// Full synchronisation: all nodes store all blobs (default).
-    Full,
+pub enum Replicas {
+    /// All nodes store all blobs (default).
+    All,
+    /// A single node stores a blob.
+    One,
+    /// `(N/2)+1` nodes store a blob, where `N` is the total number of nodes in
+    /// the system.
+    Majority,
 }
 
-impl Default for Sync {
-    fn default() -> Sync {
-        Sync::Full
+impl Default for Replicas {
+    fn default() -> Replicas {
+        Replicas::All
     }
 }
 
-impl fmt::Display for Sync {
+impl fmt::Display for Replicas {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Sync::Full => f.write_str("full"),
+            Replicas::All => f.write_str("all"),
+            Replicas::One => f.write_str("one"),
+            Replicas::Majority => f.write_str("majority"),
         }
     }
 }
 
-/// Error returned by `FromStr` implementation for [`Sync`].
-pub struct ParseSyncErr(());
+/// Error returned by `FromStr` implementation for [`Replicas`].
+pub struct ParseReplicasErr(());
 
-impl fmt::Display for ParseSyncErr {
+impl fmt::Display for ParseReplicasErr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("invalid synchronisation method")
+        f.write_str("invalid replicas")
     }
 }
 
-impl FromStr for Sync {
-    type Err = ParseSyncErr;
+impl FromStr for Replicas {
+    type Err = ParseReplicasErr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "full" => Ok(Sync::Full),
-            _ => Err(ParseSyncErr(())),
+            "all" => Ok(Replicas::All),
+            "one" => Ok(Replicas::One),
+            "majority" => Ok(Replicas::Majority),
+            _ => Err(ParseReplicasErr(())),
         }
     }
 }
 
-impl<'de> Deserialize<'de> for Sync {
+impl<'de> Deserialize<'de> for Replicas {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        struct SyncVisitor;
+        struct ReplicasVisitor;
 
-        impl<'de> Visitor<'de> for SyncVisitor {
-            type Value = Sync;
+        impl<'de> Visitor<'de> for ReplicasVisitor {
+            type Value = Replicas;
 
             fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                 formatter.write_str("a string")
@@ -157,11 +166,11 @@ impl<'de> Deserialize<'de> for Sync {
             where
                 E: Error,
             {
-                Sync::from_str(s).map_err(Error::custom)
+                Replicas::from_str(s).map_err(Error::custom)
             }
         }
 
-        deserializer.deserialize_str(SyncVisitor)
+        deserializer.deserialize_str(ReplicasVisitor)
     }
 }
 

@@ -16,9 +16,15 @@ address = "127.0.0.1:8080"
 [distributed]
 # Address to listen on for peer connections.
 peer_address = "127.0.0.1:9001"
-# Type of synchronisation of the blobs between nodes, available methods:
-# - `full': all nodes store all blobs (default).
-sync = "full"
+# The amount of replicas of the blob stored, available options:
+# - `all': all nodes store all blobs (default). Highest availability, lowest
+#   chance of data lost, but highest amount of storage used.
+# - `one': a single node stores a blob. Lowest availability, highest chance of
+#   data lost, but lowest amount of storage used.
+# - `majority': (N/2)+1 nodes store a blob, where N is the total number of nodes
+#   in the system. Medium availability, medium chance of data lost, medium
+#   amount of storage used.
+replicas = "all"
 # Addresses of peers to connect to.
 # Note that these don't need to contain all addresses, a single address of the
 # entire group is enough as each will automatically share all known peers.

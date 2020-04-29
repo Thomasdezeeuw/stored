@@ -68,7 +68,7 @@ fn try_main() -> Result<(), ExitCode> {
             distributed_config.peer_address
         );
         info!("connecting to peers: {}", distributed_config.peers);
-        info!("synchronisation method: {}", distributed_config.sync);
+        info!("blob replication method: {}", distributed_config.replicas);
     }
 
     runtime
