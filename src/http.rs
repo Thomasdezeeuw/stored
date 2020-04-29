@@ -48,12 +48,12 @@ use crate::Key;
 pub fn setup(
     address: SocketAddr,
     db_ref: ActorRef<db::Message>,
-) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Clone> {
+) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
     let http_actor =
         (actor as fn(_, _, _, _) -> _).map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
     let http_listener =
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
-    Ok(|runtime: &mut RuntimeRef| {
+    Ok(move |runtime: &mut RuntimeRef| {
         let options = ActorOptions::default().with_priority(Priority::LOW);
         let server_ref = runtime.try_spawn(ServerSupervisor, http_listener, (), options)?;
         runtime.receive_signals(server_ref.try_map());
