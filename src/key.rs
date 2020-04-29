@@ -366,7 +366,7 @@ where
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::key::{InvalidKeyStr, Key};
 
     #[test]
