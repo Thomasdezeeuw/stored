@@ -7,10 +7,8 @@ use http::status::StatusCode;
 use lazy_static::lazy_static;
 use log::LevelFilter;
 
-mod util;
-
-use util::http::{assert_response, body, header, request};
-use util::{Proc, ProcLock};
+use crate::util::http::{assert_response, body, header, request};
+use crate::util::{self, Proc, ProcLock};
 
 const DB_PORT: u16 = 9001;
 const CONF_PATH: &'static str = "tests/config/get_head.toml";

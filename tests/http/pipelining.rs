@@ -12,10 +12,10 @@ use http::status::StatusCode;
 use lazy_static::lazy_static;
 use log::LevelFilter;
 
-mod util;
-
-use util::http::{assert_response, body, date_header, header, read_responses, write_request};
-use util::{Proc, ProcLock};
+use crate::util::http::{
+    assert_response, body, date_header, header, read_responses, write_request,
+};
+use crate::util::{self, Proc, ProcLock};
 
 const DB_PORT: u16 = 9003;
 const DB_PATH: &'static str = "/tmp/stored_pipelining_tests.db";
