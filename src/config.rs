@@ -103,8 +103,6 @@ pub struct Distributed {
 pub enum Replicas {
     /// All nodes store all blobs (default).
     All,
-    /// A single node stores a blob.
-    One,
     /// `(N/2)+1` nodes store a blob, where `N` is the total number of nodes in
     /// the system.
     Majority,
@@ -120,7 +118,6 @@ impl fmt::Display for Replicas {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Replicas::All => f.write_str("all"),
-            Replicas::One => f.write_str("one"),
             Replicas::Majority => f.write_str("majority"),
         }
     }
@@ -141,7 +138,6 @@ impl FromStr for Replicas {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "all" => Ok(Replicas::All),
-            "one" => Ok(Replicas::One),
             "majority" => Ok(Replicas::Majority),
             _ => Err(ParseReplicasErr(())),
         }

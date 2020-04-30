@@ -19,8 +19,6 @@ peer_address = "127.0.0.1:9001"
 # The amount of replicas of the blob stored, available options:
 # - `all': all nodes store all blobs (default). Highest availability, lowest
 #   chance of data lost, but highest amount of storage used.
-# - `one': a single node stores a blob. Lowest availability, highest chance of
-#   data lost, but lowest amount of storage used.
 # - `majority': (N/2)+1 nodes store a blob, where N is the total number of nodes
 #   in the system. Medium availability, medium chance of data lost, medium
 #   amount of storage used.
