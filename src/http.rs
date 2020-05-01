@@ -105,8 +105,10 @@ pub fn supervisor(err: io::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)>
     SupervisorStrategy::Stop
 }
 
-/// Timeout in I/O operations.
+/// Default timeout in I/O operations.
 const TIMEOUT: Duration = Duration::from_secs(10);
+/// Timeout used when reading a second request.
+const ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Actor that handles a single TCP `stream`, expecting HTTP requests.
 ///
@@ -121,8 +123,9 @@ pub async fn actor(
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
 
+    let mut timeout = TIMEOUT;
     loop {
-        let future = Deadline::timeout(&mut ctx, TIMEOUT, conn.read_request(&mut request))
+        let future = Deadline::timeout(&mut ctx, timeout, conn.read_request(&mut request))
             .map(|res| res.map_err(Into::into).flatten());
         let result = future.await;
         let start = Instant::now();
@@ -159,6 +162,9 @@ pub async fn actor(
         if response.should_close() {
             break;
         }
+
+        // Keep the connection alive for longer.
+        timeout = ALIVE_TIMEOUT;
     }
 
     debug!("closing connection: remote_address={}", address);
