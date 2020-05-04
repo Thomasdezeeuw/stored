@@ -628,7 +628,7 @@ impl MmapAreaControl {
         }));
 
         MmapAreaControl {
-            ptr: Box::into_raw_non_null(ptr),
+            ptr: NonNull::from(Box::leak(ptr)),
         }
     }
 

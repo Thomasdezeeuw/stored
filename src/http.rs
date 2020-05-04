@@ -603,7 +603,7 @@ async fn store_blob(
                 Ok((result, mut buffer)) => {
                     // Mark the body as processed and put back the buffer.
                     buffer.processed(body_length);
-                    mem::replace(&mut conn.buf, buffer);
+                    conn.buf = buffer;
                     match result {
                         AddBlobResponse::Query(query) => match db_ref
                             .rpc(ctx, (query, SystemTime::now()))
