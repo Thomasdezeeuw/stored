@@ -17,12 +17,14 @@ const MIN_BUF_SIZE: usize = 2 * 1024;
 // Buffer -> ReadBuffer -> WriteBuffer
 // Buffer -> ReadBuffer -> ReadBuffer -> WriteBuffer.
 
+const EMPTY: &[u8] = &[];
+
 #[test]
 fn buffer_simple_read() {
     let mut buf = Buffer::new();
 
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 
     let mut reader = Cursor::new([1, 2, 3]);
@@ -40,13 +42,13 @@ fn empty_buffer_reserve_atleast() {
     // Shouldn't expand the buffer as it already has enough capacity.
     buf.reserve_atleast(2);
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 
     // This should grow the buffer.
     buf.reserve_atleast(2 * INITIAL_BUF_SIZE);
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
     assert_eq!(buf.capacity_left(), 2 * INITIAL_BUF_SIZE);
 }
 
@@ -92,7 +94,7 @@ fn buffer_processed() {
 
     buf.processed(2);
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
 }
 
@@ -107,7 +109,7 @@ fn buffer_reset() {
 
     buf.reset();
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
 }
 
 #[test]
@@ -164,7 +166,7 @@ fn buffer_move_to_start() {
 
     buf.processed(buf.as_bytes().len());
     buf.move_to_start(false);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 }
 
@@ -203,7 +205,7 @@ fn write_buffer_drops_writen_bytes() {
     let (buf_bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(buf_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
@@ -220,9 +222,9 @@ fn write_buffer_drops_writen_bytes_original_empty() {
     let mut buf = Buffer::new();
 
     let (bytes, mut wbuf) = buf.split_write(10);
-    assert_eq!(bytes, &[]);
+    assert_eq!(bytes, EMPTY);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
@@ -231,7 +233,7 @@ fn write_buffer_drops_writen_bytes_original_empty() {
 
     drop(wbuf);
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
 }
 
 #[test]
@@ -246,7 +248,7 @@ fn write_buffer_length() {
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
@@ -256,7 +258,7 @@ fn write_buffer_length() {
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, &bytes[100..]);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
@@ -264,9 +266,9 @@ fn write_buffer_length() {
 
     buf.processed(100);
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
-    assert_eq!(original_bytes, &[]);
+    assert_eq!(original_bytes, EMPTY);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
@@ -286,7 +288,7 @@ fn write_buffer_processed() {
     let (original_bytes, mut wbuf) = buf.split_write(3);
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
@@ -312,9 +314,9 @@ fn write_buffer_processed_original_empty() {
     let mut buf = Buffer::new();
 
     let (original_bytes, mut wbuf) = buf.split_write(3);
-    assert_eq!(original_bytes, &[]);
+    assert_eq!(original_bytes, EMPTY);
     assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), &[]);
+    assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
@@ -329,10 +331,10 @@ fn write_buffer_processed_original_empty() {
     assert_eq!(wbuf.len(), 1);
     assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
 
-    assert_eq!(original_bytes, &[]);
+    assert_eq!(original_bytes, EMPTY);
     drop(wbuf);
     assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), &[]);
+    assert_eq!(buf.as_bytes(), EMPTY);
 }
 
 #[test]
@@ -341,7 +343,7 @@ fn write_buffer_processed_original_empty() {
 fn marking_processed_write_buffer_beyond_read_range() {
     let mut buf = Buffer::new();
     let (original_bytes, mut wbuf) = buf.split_write(20);
-    assert_eq!(original_bytes, &[]);
+    assert_eq!(original_bytes, EMPTY);
     wbuf.processed(1);
 }
 
