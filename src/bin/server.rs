@@ -48,7 +48,10 @@ fn try_main() -> Result<(), ExitCode> {
         ExitCode::FAILURE
     })?;
 
-    let mut runtime = Runtime::new().use_all_cores();
+    let mut runtime = Runtime::new().map_err(|err| {
+        error!("error creating Heph runtime: {}", err);
+        ExitCode::FAILURE
+    })?;
 
     info!("opening database '{}'", config.path.display());
     let db_ref = db::start(&mut runtime, config.path).map_err(|err| {
@@ -72,6 +75,7 @@ fn try_main() -> Result<(), ExitCode> {
     }
 
     runtime
+        .use_all_cores()
         .with_setup(move |mut runtime_ref| start_listener(&mut runtime_ref))
         .start()
         .map_err(|err| {
