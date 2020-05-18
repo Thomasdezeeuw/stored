@@ -15,8 +15,8 @@ use std::time::SystemTime;
 
 use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::{ActorRef, RpcMessage};
-use heph::rt::{Runtime, RuntimeError};
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
+use heph::{rt, Runtime};
 use log::{debug, error, info};
 
 use crate::storage::{AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage};
@@ -26,12 +26,12 @@ use crate::{Buffer, Key};
 pub fn start(
     runtime: &mut Runtime,
     path: Box<Path>,
-) -> Result<ActorRef<Message>, RuntimeError<io::Error>> {
+) -> Result<ActorRef<Message>, rt::Error<io::Error>> {
     let storage = Storage::open(&*path)?;
     let supervisor = Supervisor::new(path);
     runtime
         .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage)
-        .map_err(RuntimeError::map_type)
+        .map_err(rt::Error::map_type)
 }
 
 /// Supervisor for the [`db::actor`].

@@ -55,7 +55,7 @@ pub fn setup(
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
     Ok(move |runtime: &mut RuntimeRef| {
         let options = ActorOptions::default().with_priority(Priority::LOW);
-        let server_ref = runtime.try_spawn(ServerSupervisor, http_listener, (), options)?;
+        let server_ref = runtime.try_spawn_local(ServerSupervisor, http_listener, (), options)?;
         runtime.receive_signals(server_ref.try_map());
         Ok(())
     })
