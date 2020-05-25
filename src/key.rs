@@ -11,6 +11,8 @@ use std::task::{self, Poll};
 
 use futures_io::{AsyncRead, AsyncWrite};
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
+use serde::ser::SerializeTuple;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The key of a blob.
 ///
@@ -155,6 +157,74 @@ fn from_hex_digit(digit: u8) -> Result<u8, InvalidKeyStr> {
         Ok(digit - b'A' + 10)
     } else {
         Err(InvalidKeyStr)
+    }
+}
+
+impl<'de> Deserialize<'de> for Key {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::{Error, SeqAccess, Visitor};
+
+        struct KeyVisitor;
+
+        impl<'de> Visitor<'de> for KeyVisitor {
+            type Value = Key;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a key")
+            }
+
+            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+            where
+                E: Error,
+            {
+                s.parse().map_err(Error::custom)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: SeqAccess<'de>,
+            {
+                let mut key_bytes = [0; Key::LENGTH];
+                for byte in key_bytes.iter_mut() {
+                    match seq.next_element()? {
+                        Some(b) => *byte = b,
+                        None => return Err(Error::invalid_length(Key::LENGTH, &self)),
+                    }
+                }
+                Ok(Key::new(key_bytes))
+            }
+        }
+
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_str(KeyVisitor)
+        } else {
+            deserializer.deserialize_tuple(Key::LENGTH, KeyVisitor)
+        }
+    }
+
+    // TODO: implement deserialize_in_place.
+}
+
+impl Serialize for Key {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            let mut buf = [0; Key::LENGTH * 2];
+            write!(&mut buf[..], "{}", self).unwrap();
+            let output = std::str::from_utf8(&buf).unwrap();
+            serializer.serialize_str(output)
+        } else {
+            let mut seq = serializer.serialize_tuple(Key::LENGTH)?;
+            for byte in self.bytes.iter() {
+                seq.serialize_element(byte)?;
+            }
+            seq.end()
+        }
     }
 }
 
@@ -367,6 +437,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use serde_test::{assert_tokens, Configure, Token};
+
     use crate::key::{InvalidKeyStr, Key};
 
     #[test]
@@ -410,5 +482,55 @@ mod tests {
                      5f79a942600f9725f58ce1f29c18139bf80b06c0f\
                      ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         assert_eq!(input.parse::<Key>(), Err(InvalidKeyStr));
+    }
+
+    #[test]
+    fn serialisation() {
+        let key = Key::for_blob(b"Hello world");
+        let expected = "\"b7f783baed8297f0db917462184ff4f08e69c2d5e\
+                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47\"";
+        let got = toml::ser::to_string(&key).unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn deserialisation() {
+        use serde::Deserialize;
+
+        #[derive(Debug, Deserialize, Eq, PartialEq)]
+        struct T {
+            key: Key,
+        }
+        let expected = T {
+            key: Key::for_blob(b"Hello world"),
+        };
+        let input = "key = \"b7f783baed8297f0db917462184ff4f08e69c2d5e\
+                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47\"";
+        let got: T = toml::de::from_str(&input).unwrap();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn serialisation_compact() {
+        let key = Key::for_blob(b"Hello world");
+        let mut expected: Vec<Token> = Vec::with_capacity(Key::LENGTH + 2);
+        expected.push(Token::Tuple { len: Key::LENGTH });
+        for byte in key.as_bytes().into_iter().copied() {
+            expected.push(Token::U8(byte));
+        }
+        expected.push(Token::TupleEnd);
+
+        assert_tokens(&key.compact(), &expected);
+    }
+
+    #[test]
+    fn serialisation_readable() {
+        let key = Key::for_blob(b"Hello world");
+        let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
+                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
+                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+        assert_tokens(&key.readable(), &[Token::Str(expected)]);
     }
 }
