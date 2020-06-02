@@ -7,7 +7,7 @@ use heph::Runtime;
 use log::{error, info};
 
 use stored::config::Config;
-use stored::{db, http};
+use stored::{db, http, peer};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = concat!(
@@ -59,20 +59,31 @@ fn try_main() -> Result<(), ExitCode> {
         ExitCode::FAILURE
     })?;
 
-    info!("listening on http://{}", config.http.address);
-    let start_listener = http::setup(config.http.address, db_ref).map_err(|err| {
-        error!("error binding HTTP server: {}", err);
-        ExitCode::FAILURE
-    })?;
-
-    if let Some(distributed_config) = config.distributed {
+    let peers = if let Some(distributed_config) = config.distributed {
         info!(
             "listening on {} for peer connections",
             distributed_config.peer_address
         );
         info!("connecting to peers: {}", distributed_config.peers);
         info!("blob replication method: {}", distributed_config.replicas);
-    }
+        let peers =
+            peer::start(&mut runtime, distributed_config, db_ref.clone()).map_err(|err| {
+                error!("error setting up peer actor: {}", err);
+                ExitCode::FAILURE
+            })?;
+
+        // TODO: sync already stored blobs.
+
+        Some(peers)
+    } else {
+        None
+    };
+
+    info!("listening on http://{}", config.http.address);
+    let start_listener = http::setup(config.http.address, db_ref, peers).map_err(|err| {
+        error!("error binding HTTP server: {}", err);
+        ExitCode::FAILURE
+    })?;
 
     runtime
         .use_all_cores()

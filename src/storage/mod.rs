@@ -609,6 +609,7 @@ struct MmapAreaControl {
 // Safety: the `mmap` allocated area can be safely accessed from different
 // threads.
 unsafe impl Send for MmapAreaControl {}
+unsafe impl Sync for MmapAreaControl {}
 
 impl MmapAreaControl {
     /// Create a new `MmapArea`, with a single `MmapAreaControl` pointing to it
@@ -707,6 +708,7 @@ impl Clone for MmapLifetime {
 // Safety: the `mmap` allocated area can be safely accessed from different
 // threads.
 unsafe impl Send for MmapLifetime {}
+unsafe impl Sync for MmapLifetime {}
 
 /// A `mmap`ed area.
 ///

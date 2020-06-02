@@ -13,6 +13,7 @@ pub mod config;
 pub mod db;
 pub mod http;
 pub mod key;
+pub mod peer;
 pub mod storage;
 
 pub use buffer::Buffer;

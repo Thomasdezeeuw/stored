@@ -172,7 +172,7 @@ impl<'de> Deserialize<'de> for Replicas {
 
 /// Wrapper around `Vec<SocketAddr>` to use `ToSocketAddrs` to parse addresses.
 #[derive(Debug)]
-pub struct Peers(Vec<SocketAddr>);
+pub struct Peers(pub Vec<SocketAddr>);
 
 impl<'de> Deserialize<'de> for Peers {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>

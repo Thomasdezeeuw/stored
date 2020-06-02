@@ -23,6 +23,7 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fmt, mem, str};
 
@@ -39,6 +40,7 @@ use log::{debug, error};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
+use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
 use crate::Key;
 
@@ -48,9 +50,11 @@ use crate::Key;
 pub fn setup(
     address: SocketAddr,
     db_ref: ActorRef<db::Message>,
+    peers: Option<Peers>,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
-    let http_actor =
-        (actor as fn(_, _, _, _) -> _).map_arg(move |(stream, arg)| (stream, arg, db_ref.clone()));
+    let peers = peers.map(Arc::new);
+    let http_actor = (actor as fn(_, _, _, _, _) -> _)
+        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
     let http_listener =
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
     Ok(move |runtime: &mut RuntimeRef| {
@@ -118,10 +122,14 @@ pub async fn actor(
     stream: TcpStream,
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
+    peers: Option<Arc<Peers>>,
 ) -> io::Result<()> {
     debug!("accepted connection: remote_address={}", address);
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
+
+    // TODO: use.
+    drop(peers);
 
     let mut timeout = TIMEOUT;
     loop {
@@ -134,7 +142,7 @@ pub async fn actor(
             Ok(true) => route_request(&mut ctx, &mut db_ref, &mut conn, &request).await?,
             // Read all requests on the stream, so this actor's work is done.
             Ok(false) => break,
-            // Try operator return the I/O errors.
+            // Try operator returns the I/O errors.
             Err(err) => Response::for_error(err)?,
         };
 
@@ -287,10 +295,9 @@ impl Request {
 
     /// Returns `true` if the "Content-Length" header is > 0.
     pub fn has_body(&self) -> bool {
-        if let Some(body_length) = self.length {
-            body_length > 0
-        } else {
-            false
+        match self.length {
+            Some(n) if n > 0 => true,
+            _ => false,
         }
     }
 
