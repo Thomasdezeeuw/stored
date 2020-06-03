@@ -103,6 +103,11 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(key);
             }
+            Message::AbortAddBlob(RpcMessage { request, response }) => {
+                storage.abort(request)?;
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(());
+            }
             Message::GetBlob(RpcMessage { request, response }) => {
                 let key = request;
                 debug!("retrieve blob: key={}", key);
@@ -125,6 +130,11 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let removed_at = storage.commit(query, removed_at)?;
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(removed_at);
+            }
+            Message::AbortRemoveBlob(RpcMessage { request, response }) => {
+                storage.abort(request)?;
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(());
             }
             Message::HealthCheck(RpcMessage { response, .. }) => {
                 debug!("database health check");
@@ -159,7 +169,12 @@ pub enum Message {
     /// Request is the query to add the blob, returned by [`Message::AddBlob`].
     ///
     /// Responds with the `Key` of the added blob.
+    // TODO: change return type to `()`, can get `Key` from `AddBlob`.
     CommitAddBlob(RpcMessage<(AddBlob, SystemTime), Key>),
+    /// Abort adding of a blob.
+    ///
+    /// Request is the query to abort, returned by [`Message::AddBlob`].
+    AbortAddBlob(RpcMessage<AddBlob, ()>),
 
     /// Get a blob from storage.
     ///
@@ -181,6 +196,10 @@ pub enum Message {
     ///
     /// Responds with the time at which the blob is removed.
     CommitRemoveBlob(RpcMessage<(RemoveBlob, SystemTime), SystemTime>),
+    /// Abort removing of a blob.
+    ///
+    /// Request is the query to abort, returned by [`Message::RemoveBlob`].
+    AbortRemoveBlob(RpcMessage<RemoveBlob, ()>),
 
     /// Check if the database actor is running.
     HealthCheck(RpcMessage<HealthCheck, HealthOk>),

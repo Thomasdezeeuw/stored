@@ -464,6 +464,11 @@ impl AddBlob {
             },
         ))
     }
+
+    /// Returns the key for the added blob.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
 }
 
 impl Query for AddBlob {
@@ -527,6 +532,7 @@ impl Query for AddBlob {
 
 // Safety: the `lifetime` field ensures the `address` remains valid.
 unsafe impl Send for AddBlob {}
+unsafe impl Sync for AddBlob {}
 
 /// A [`Query`] to [remove a blob] to the [`Storage`].
 ///
