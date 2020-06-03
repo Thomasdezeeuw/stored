@@ -882,7 +882,8 @@ mod storage {
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
             let query = storage.add_blob(blob).unwrap();
-            let key = storage.commit(query, SystemTime::now()).unwrap();
+            let key = query.key().clone();
+            storage.commit(query, SystemTime::now()).unwrap();
 
             let got = storage.lookup(&key).unwrap().unwrap();
             assert_eq!(got.bytes(), blob);
@@ -939,7 +940,8 @@ mod storage {
 
         // First time is normal procedure.
         let query = storage.add_blob(blob).unwrap();
-        let key = storage.commit(query, SystemTime::now()).unwrap();
+        let key = query.key().clone();
+        storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(key, want_key);
 
         // Second time it should already be present.
@@ -997,7 +999,8 @@ mod storage {
         assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob.len()) as u64);
 
         // After committing the blob should be accessible.
-        let got_key = storage.commit(query, SystemTime::now()).unwrap();
+        let got_key = query.key().clone();
+        storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
         assert_eq!(storage.lookup(&key).unwrap().unwrap().bytes(), blob);
 
@@ -1046,12 +1049,14 @@ mod storage {
         );
 
         // We should be able to commit in any order.
-        let got_key2 = storage.commit(query2, SystemTime::now()).unwrap();
+        let got_key2 = query2.key().clone();
+        storage.commit(query2, SystemTime::now()).unwrap();
         assert_eq!(got_key2, key2);
         assert_eq!(storage.lookup(&key2).unwrap().unwrap().bytes(), blob2);
 
         // After committing the blob should be accessible.
-        let got_key1 = storage.commit(query1, SystemTime::now()).unwrap();
+        let got_key1 = query1.key().clone();
+        storage.commit(query1, SystemTime::now()).unwrap();
         assert_eq!(got_key1, key1);
         assert_eq!(storage.lookup(&key1).unwrap().unwrap().bytes(), blob1);
     }
@@ -1083,12 +1088,14 @@ mod storage {
         );
 
         // We should be able to commit in any order.
-        let got_key1 = storage.commit(query2, SystemTime::now()).unwrap();
+        let got_key1 = query2.key().clone();
+        storage.commit(query2, SystemTime::now()).unwrap();
         assert_eq!(got_key1, key);
         let got_blob1 = storage.lookup(&key).unwrap().unwrap();
         assert_eq!(got_blob1.bytes(), blob);
 
-        let got_key2 = storage.commit(query1, SystemTime::now()).unwrap();
+        let got_key2 = query1.key().clone();
+        storage.commit(query1, SystemTime::now()).unwrap();
         assert_eq!(got_key2, key);
         let got_blob2 = storage.lookup(&key).unwrap().unwrap();
         // Blob should not be changed.
@@ -1197,7 +1204,8 @@ mod storage {
         let mut keys = Vec::with_capacity(blobs.len());
         for blob in blobs.iter().copied() {
             let query = storage.add_blob(blob).unwrap();
-            let key = storage.commit(query, SystemTime::now()).unwrap();
+            let key = query.key().clone();
+            storage.commit(query, SystemTime::now()).unwrap();
             keys.push(key);
         }
         keys
@@ -1530,7 +1538,8 @@ mod storage {
 
         // We should be able to overwrite a removed blob.
         let query = storage.add_blob(blob).unwrap();
-        let got_key = storage.commit(query, SystemTime::now()).unwrap();
+        let got_key = query.key().clone();
+        storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
 
         assert_eq!(storage.len(), 1);
@@ -1573,18 +1582,21 @@ mod storage {
         // 1. Add a blob.
         let query = storage.add_blob(BLOBS[0]).unwrap();
         let time1 = SystemTime::now();
-        let key1 = storage.commit(query, time1).unwrap();
+        let key1 = query.key().clone();
+        storage.commit(query, time1).unwrap();
 
         // 2. Add and remove the same blob.
         let query = storage.add_blob(BLOBS[1]).unwrap();
-        let key2 = storage.commit(query, SystemTime::now()).unwrap();
+        let key2 = query.key().clone();
+        storage.commit(query, SystemTime::now()).unwrap();
         let query = storage.remove_blob(key2.clone()).unwrap();
         let time2 = SystemTime::now();
         storage.commit(query, time2).unwrap();
 
         // 3. Add and remove the same blob, then add it again.
         let query = storage.add_blob(BLOBS[2]).unwrap();
-        let key3 = storage.commit(query, SystemTime::now()).unwrap();
+        let key3 = query.key().clone();
+        storage.commit(query, SystemTime::now()).unwrap();
         let query = storage.remove_blob(key3.clone()).unwrap();
         storage.commit(query, SystemTime::now()).unwrap();
         let query = storage.add_blob(BLOBS[2]).unwrap();

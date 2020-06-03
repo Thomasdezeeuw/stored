@@ -1,25 +1,32 @@
 //! Module with the type related to peer interaction.
 
-use std::io;
+use std::future::Future;
+use std::mem::replace;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use std::task::{self, Poll};
+use std::time::SystemTime;
+use std::{fmt, io};
 
 use futures_util::io::AsyncWriteExt;
-use heph::actor::context::ThreadSafe;
+use heph::actor::context::{ThreadLocal, ThreadSafe};
 use heph::actor::{self, NewActor};
-use heph::actor_ref::ActorRef;
+use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::{tcp, TcpStream};
 use heph::rt::options::{ActorOptions, Priority};
 use heph::rt::{self, Runtime};
 use heph::supervisor::{RestartSupervisor, SupervisorStrategy};
 use log::{debug, warn};
+use serde::{Deserialize, Serialize};
 
-use crate::{config, db, Buffer};
+use crate::{config, db, Buffer, Key};
 
 pub mod coordinator;
 pub mod participant;
 
-use coordinator::RelayMessage;
+use coordinator::{RelayError, RelayMessage};
 
 /// Start the all actors related to peer interaction.
 pub fn start(
@@ -69,32 +76,131 @@ pub fn start(
     Ok(peers)
 }
 
-/// Collection of [`Peer`]s.
-#[derive(Clone, Debug)]
+// TODO: replace `Peers` with `ActorGroup`.
+
+/// Id of a consensus algorithm run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[repr(transparent)]
+pub struct ConsensusId(usize);
+
+/// Collection of connections peers.
+#[derive(Clone)]
 pub struct Peers {
-    peers: Arc<RwLock<Vec<Peer>>>,
+    inner: Arc<PeersInner>,
+}
+
+impl fmt::Debug for Peers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Peers")
+            .field("peers", &self.inner.peers)
+            .field("consensus_id", &self.inner.consensus_id)
+            .finish()
+    }
+}
+
+struct PeersInner {
+    peers: RwLock<Vec<Peer>>,
+    /// Unique id for each consensus run.
+    consensus_id: AtomicUsize,
+}
+
+#[derive(Debug, Clone)]
+struct Peer {
+    actor_ref: ActorRef<RelayMessage>,
+    address: SocketAddr,
 }
 
 impl Peers {
-    fn empty() -> Peers {
+    /// Create an empty collection of peers.
+    pub fn empty() -> Peers {
         Peers {
-            peers: Arc::new(RwLock::new(Vec::new())),
+            inner: Arc::new(PeersInner {
+                peers: RwLock::new(Vec::new()),
+                consensus_id: AtomicUsize::new(0),
+            }),
         }
     }
 
     /// Returns `true` if the collection is empty.
     pub fn is_empty(&self) -> bool {
-        self.peers.read().unwrap().is_empty()
+        self.inner.peers.read().unwrap().is_empty()
     }
 
     /// Returns the number of peers in the collection.
     fn len(&self) -> usize {
-        self.peers.read().unwrap().len()
+        self.inner.peers.read().unwrap().len()
+    }
+
+    /// Start a consensus algorithm to add blob with `key`.
+    pub fn add_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        key: Key,
+    ) -> (ConsensusId, PeerRpc<SystemTime>) {
+        let id = self.new_consensus_id();
+        let rpc = self.rpc(ctx, id, coordinator::AddBlob(key));
+        (id, rpc)
+    }
+
+    /// Commit to add blob.
+    pub fn commit_to_add_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        id: ConsensusId,
+        key: Key,
+        timestamp: SystemTime,
+    ) -> PeerRpc<()> {
+        self.rpc(ctx, id, coordinator::CommitAddBlob(key, timestamp))
+    }
+
+    /*
+    pub fn remove_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        key: Key,
+    ) -> (ConsensusId, PeerRpc<SystemTime>) {
+        let id = self.new_consensus_id();
+        let self.rpc(coordinator::RemoveBlob(key));
+        (id, rpc)
+    }
+    */
+
+    /// Rpc with all peers in the collection.
+    fn rpc<M, Req, Res>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        id: ConsensusId,
+        request: Req,
+    ) -> PeerRpc<Res>
+    where
+        RelayMessage: From<RpcMessage<(ConsensusId, Req), Result<Res, RelayError>>>,
+        Req: Clone,
+    {
+        let rpcs = self
+            .inner
+            .peers
+            .read()
+            .unwrap()
+            .iter()
+            .map(
+                |peer| match peer.actor_ref.rpc(ctx, (id, request.clone())) {
+                    Ok(rpc) => RpcStatus::InProgress(rpc),
+                    Err(SendError) => RpcStatus::Done(Err(RelayError::Failed)),
+                },
+            )
+            .collect();
+        PeerRpc { rpcs }
+    }
+
+    fn new_consensus_id(&self) -> ConsensusId {
+        // This wraps around, which is OK.
+        ConsensusId(self.inner.consensus_id.fetch_add(1, Ordering::AcqRel))
     }
 
     /// Get a private copy of all known peer addresses.
     fn addresses(&self) -> Vec<SocketAddr> {
-        self.peers
+        self.inner
+            .peers
             .read()
             .unwrap()
             .iter()
@@ -112,8 +218,8 @@ impl Peers {
         addresses: &[SocketAddr],
         server: SocketAddr,
     ) {
-        // NOTE: we don't lock here because we don't want to hold the lock for
-        // too long, we just use `Peers::add`.
+        // NOTE: we don't lock the entire collection up front here because we
+        // don't want to hold the lock for too long.
 
         for address in addresses.into_iter().copied() {
             if self.known(&address) {
@@ -136,7 +242,7 @@ impl Peers {
 
     /// Attempts to add `peer` to the collection.
     fn add(&self, peer: Peer) {
-        let mut peers = self.peers.write().unwrap();
+        let mut peers = self.inner.peers.write().unwrap();
         if !known_peer(&peers, &peer.address) {
             peers.push(peer);
         } else {
@@ -146,7 +252,7 @@ impl Peers {
 
     /// Returns `true` if a peer at `address` is already in the collection.
     fn known(&self, address: &SocketAddr) -> bool {
-        known_peer(&*self.peers.read().unwrap(), address)
+        known_peer(&*self.inner.peers.read().unwrap(), address)
     }
 }
 
@@ -154,16 +260,61 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
     peers.iter().any(|peer| peer.address == *address)
 }
 
-#[derive(Debug, Clone)]
-pub struct Peer {
-    actor_ref: ActorRef<RelayMessage>,
-    address: SocketAddr,
+pub struct PeerRpc<Res> {
+    rpcs: Box<[RpcStatus<Res>]>,
 }
 
-impl Peer {
-    /// Returns a reference to the actor reference.
-    pub fn actor_ref(&self) -> &ActorRef<RelayMessage> {
-        &self.actor_ref
+/// Status of a [`Rpc`] future in [`PeerRpc`].
+enum RpcStatus<Res> {
+    /// Future is in progress.
+    InProgress(Rpc<Result<Res, RelayError>>),
+    /// Future has returned a result.
+    Done(Result<Res, RelayError>),
+    /// Future has returned and its result has been taken.
+    Completed,
+}
+
+impl<Res> RpcStatus<Res> {
+    /// Take the result.
+    ///
+    /// # Panics
+    ///
+    /// This will panic if the status is not `Done`.
+    fn take(&mut self) -> Result<Res, RelayError> {
+        match replace(self, RpcStatus::Completed) {
+            RpcStatus::Done(result) => result,
+            _ => unreachable!("folled `PeerRpc` after completion"),
+        }
+    }
+}
+
+impl<Res> Future for PeerRpc<Res> {
+    type Output = Vec<Result<Res, RelayError>>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
+        // Check all the statuses.
+        for status in self.rpcs.iter_mut() {
+            match status {
+                RpcStatus::InProgress(rpc) => match Pin::new(rpc).poll(ctx) {
+                    Poll::Ready(result) => {
+                        // Map no response to a failed response.
+                        let result = match result {
+                            Ok(result) => result,
+                            Err(NoResponse) => Err(RelayError::Failed),
+                        };
+                        drop(replace(status, RpcStatus::Done(result)));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                // RpcStatus::Done(..) => {}, // Continue.
+                // RpcStatus::Complete => unreachable!(),
+                _ => {}
+            }
+        }
+
+        // If we reached this point all statuses should be `Done`.
+        let results = self.rpcs.iter_mut().map(|status| status.take()).collect();
+        Poll::Ready(results)
     }
 }
 

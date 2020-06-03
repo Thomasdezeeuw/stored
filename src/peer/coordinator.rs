@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::time::SystemTime;
 
 use futures_util::future::{select, Either};
 use futures_util::io::AsyncWriteExt;
@@ -15,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::peer::participant::{Response, ResponseKind};
-use crate::peer::{Peers, PARTICIPANT_MAGIC};
+use crate::peer::{ConsensusId, Peers, PARTICIPANT_MAGIC};
 use crate::storage::{BlobEntry, PAGE_SIZE};
 use crate::{db, Key};
 
@@ -23,9 +24,19 @@ use crate::{db, Key};
 #[derive(Debug)]
 pub enum RelayMessage {
     /// Add the blob with [`Key`].
-    AddBlob(RpcMessage<Key, Result<(), RelayError>>),
+    ///
+    /// Returns the peer's time at which the blob was added.
+    AddBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, RelayError>>),
+    /// Commit to adding blob with [`Key`] at the provided timestamp.
+    CommitAddBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
     /// Remove the blob with [`Key`].
-    RemoveBlob(RpcMessage<Key, Result<(), RelayError>>),
+    ///
+    /// Returns the peer's time at which the blob was added.
+    RemoveBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, RelayError>>),
+    /*
+    /// Commit to removing blob with [`Key`].
+    CommitRemoveBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
+    */
 }
 
 /// Error return to [`RelayMessage`].
@@ -37,13 +48,66 @@ pub enum RelayError {
     Failed,
 }
 
+/// Macro to allow `concat!` to used in creating the `doc` attribute.
+macro_rules! doc_comment {
+    ($doc: expr, $( $tt: tt )*) => {
+        #[doc = $doc]
+        $($tt)*
+    };
+}
+
+/// Macro to create stand-alone types for [`RelayMessage`] variants.
+/// This is required because the most of them have the same request type
+/// ([`Key`]) when using RPC.
+// TODO: maybe add something like this to Heph?
+macro_rules! msg_types {
+    ($name: ident ($inner_type1: ty, $inner_type2: ty) -> $return_type: ty) => {
+        msg_types!(struct $name, $inner_type1, $inner_type2, stringify!($name));
+        msg_types!(impl $name, $name, $return_type, 0, 1);
+    };
+    ($name: ident ($inner_type: ty) -> $return_type: ty) => {
+        msg_types!(struct $name, $inner_type, stringify!($name));
+        msg_types!(impl $name, $name, $return_type, 0);
+    };
+    (struct $name: ident, $inner_type: ty, $doc: expr) => {
+        doc_comment! {
+            concat!("Message type to use with [`ActorRef::rpc`] for [`RelayMessage::", $doc, "`]."),
+            #[derive(Debug, Clone)]
+            pub(super) struct $name(pub $inner_type);
+        }
+    };
+    (struct $name: ident, $inner_type1: ty, $inner_type2: ty, $doc: expr) => {
+        doc_comment! {
+            concat!("Message type to use with [`ActorRef::rpc`] for [`RelayMessage::", $doc, "`]."),
+            #[derive(Debug, Clone)]
+            pub(super) struct $name(pub $inner_type1, pub $inner_type2);
+        }
+    };
+    (impl $name: ident, $ty: ty, $return_type: ty, $( $field: tt ),*) => {
+        impl From<RpcMessage<(ConsensusId, $ty), Result<$return_type, RelayError>>> for RelayMessage {
+            fn from(msg: RpcMessage<(ConsensusId, $ty), Result<$return_type, RelayError>>) -> RelayMessage {
+                RelayMessage::$name(RpcMessage {
+                    request: (msg.request.0, $( (msg.request.1).$field ),* ),
+                    response: msg.response,
+                })
+            }
+        }
+    };
+}
+
+msg_types!(AddBlob(Key) -> SystemTime);
+msg_types!(CommitAddBlob(Key, SystemTime) -> ());
+msg_types!(RemoveBlob(Key) -> SystemTime);
+
 /// Enum to collect all possible [`RpcResponse`]s from [`RelayMessage`].
 #[derive(Debug)]
 enum RelayResponse {
     /// Response for [`RelayMessage::AddBlob`].
-    AddBlob(RpcResponse<Result<(), RelayError>>),
+    AddBlob(RpcResponse<Result<SystemTime, RelayError>>),
+    /// Response for [`RelayMessage::CommitAddBlob`].
+    CommitAddBlob(RpcResponse<Result<(), RelayError>>),
     /// Response for [`RelayMessage::RemoveBlob`].
-    RemoveBlob(RpcResponse<Result<(), RelayError>>),
+    RemoveBlob(RpcResponse<Result<SystemTime, RelayError>>),
 }
 
 /// Actor that relays messages to a [`participant::dispatcher`] actor running on
@@ -146,18 +210,35 @@ async fn write_message<'b>(
     id: usize,
     msg: RelayMessage,
 ) -> io::Result<()> {
-    let kind = match &msg {
-        RelayMessage::AddBlob(RpcMessage { request: key, .. }) => RequestKind::AddBlob(&key),
-        RelayMessage::RemoveBlob(RpcMessage { request: key, .. }) => RequestKind::RemoveBlob(&key),
+    let (consensus_id, kind) = match &msg {
+        RelayMessage::AddBlob(RpcMessage {
+            request: (consensus_id, key),
+            ..
+        }) => (consensus_id, RequestKind::AddBlob(key)),
+        RelayMessage::CommitAddBlob(RpcMessage {
+            request: (consensus_id, key, timestamp),
+            ..
+        }) => (consensus_id, RequestKind::CommitAddBlob(key, timestamp)),
+        RelayMessage::RemoveBlob(RpcMessage {
+            request: (consensus_id, key),
+            ..
+        }) => (consensus_id, RequestKind::RemoveBlob(key)),
     };
 
-    let request = Request { id, kind };
+    let request = Request {
+        id,
+        consensus_id: *consensus_id,
+        kind,
+    };
     serde_json::to_writer(&mut wbuf, &request)?;
     stream.write_all(&wbuf.as_bytes()).await?;
 
     match msg {
         RelayMessage::AddBlob(RpcMessage { response, .. }) => {
             responses.insert(id, RelayResponse::AddBlob(response));
+        }
+        RelayMessage::CommitAddBlob(RpcMessage { response, .. }) => {
+            responses.insert(id, RelayResponse::CommitAddBlob(response));
         }
         RelayMessage::RemoveBlob(RpcMessage { response, .. }) => {
             responses.insert(id, RelayResponse::RemoveBlob(response));
@@ -180,6 +261,17 @@ fn relay_responses(
             Ok(response) => match responses.remove(&response.request_id) {
                 Some(relay) => match relay {
                     RelayResponse::AddBlob(relay) | RelayResponse::RemoveBlob(relay) => {
+                        // Convert the response into the type required for
+                        // `RelayResponse`.
+                        let response = match response.response {
+                            // FIXME: get timestamp form peer.
+                            ResponseKind::Commit => Ok(SystemTime::now()),
+                            ResponseKind::Abort => Err(RelayError::Abort),
+                            ResponseKind::Fail => Err(RelayError::Failed),
+                        };
+                        let _ = relay.respond(response);
+                    }
+                    RelayResponse::CommitAddBlob(relay) => {
                         // Convert the response into the type required for
                         // `RelayResponse`.
                         let response = match response.response {
@@ -216,6 +308,7 @@ const MAX_REQ_SIZE: usize = 1000;
 #[derive(Debug, Serialize)]
 pub struct Request<'a> {
     pub id: usize,
+    pub consensus_id: ConsensusId,
     pub kind: RequestKind<'a>,
 }
 
@@ -223,7 +316,11 @@ pub struct Request<'a> {
 #[derive(Debug, Serialize)]
 pub enum RequestKind<'a> {
     /// Add the blob with [`Key`].
+    // TODO: provide the length so we can pre-allocate a buffer at the
+    // participant?
     AddBlob(&'a Key),
+    /// Commit to add the blob.
+    CommitAddBlob(&'a Key, &'a SystemTime),
     /// Remove the blob with [`Key`].
     RemoveBlob(&'a Key),
 }

@@ -439,7 +439,7 @@ impl AddBlob {
         data: &mut Data,
         index: &mut Index,
         created_at: SystemTime,
-    ) -> io::Result<(EntryIndex, Key, Blob)> {
+    ) -> io::Result<(EntryIndex, Blob)> {
         // Ensure the data is synced to disk.
         data.sync(self.offset, self.length)?;
 
@@ -452,7 +452,6 @@ impl AddBlob {
         // the blob into our database.
         Ok((
             entry_index,
-            self.key,
             Blob {
                 // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
                 // because of the `lifetime` added below.
@@ -473,7 +472,7 @@ impl AddBlob {
 
 impl Query for AddBlob {
     type Arg = SystemTime;
-    type Return = Key;
+    type Return = ();
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
         debug_assert_eq!(
@@ -489,29 +488,28 @@ impl Query for AddBlob {
         match storage.blobs.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
                 (_, BlobEntry::Stored(_)) => {
-                    // If the blob has already been added we don't want to modify
-                    // it.
-                    let key = self.key.clone();
-                    return self.abort(storage).map(|()| key);
+                    // If the blob has already been added we don't want to
+                    // modify it.
+                    self.abort(storage)
                 }
                 entry @ (_, BlobEntry::Removed(_)) => {
                     // First add our new index entry.
-                    let (entry_index, key, blob) =
+                    let (entry_index, blob) =
                         self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
                     let (old_entry_index, _) =
                         replace(entry, (entry_index, BlobEntry::Stored(blob)));
                     storage.length += 1;
 
                     // Next mark the old index entry as invalid.
-                    storage.index.mark_as_invalid(old_entry_index).map(|()| key)
+                    storage.index.mark_as_invalid(old_entry_index)
                 }
             },
             Vacant(entry) => {
-                let (entry_index, key, blob) =
+                let (entry_index, blob) =
                     self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
-                Ok(key)
+                Ok(())
             }
         }
     }

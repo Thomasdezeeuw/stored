@@ -23,7 +23,6 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fmt, mem, str};
 
@@ -40,8 +39,9 @@ use log::{debug, error};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
+use crate::peer::coordinator::RelayError;
 use crate::peer::Peers;
-use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
+use crate::storage::{AddBlob, Blob, BlobEntry, PAGE_SIZE};
 use crate::Key;
 
 /// Setup the HTTP listener.
@@ -50,9 +50,8 @@ use crate::Key;
 pub fn setup(
     address: SocketAddr,
     db_ref: ActorRef<db::Message>,
-    peers: Option<Peers>,
+    peers: Peers,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
-    let peers = peers.map(Arc::new);
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
     let http_listener =
@@ -122,14 +121,11 @@ pub async fn actor(
     stream: TcpStream,
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
-    peers: Option<Arc<Peers>>,
+    peers: Peers,
 ) -> io::Result<()> {
     debug!("accepted connection: remote_address={}", address);
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
-
-    // TODO: use.
-    drop(peers);
 
     let mut timeout = TIMEOUT;
     loop {
@@ -139,7 +135,7 @@ pub async fn actor(
         let start = Instant::now();
         let response = match result {
             // Parsed a request, now route and process it.
-            Ok(true) => route_request(&mut ctx, &mut db_ref, &mut conn, &request).await?,
+            Ok(true) => route_request(&mut ctx, &mut db_ref, &peers, &mut conn, &request).await?,
             // Read all requests on the stream, so this actor's work is done.
             Ok(false) => break,
             // Try operator returns the I/O errors.
@@ -463,6 +459,7 @@ const BLOB_PATH_PREFIX: &str = "/blob/";
 async fn route_request(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
+    peers: &Peers,
     conn: &mut Connection,
     request: &Request,
 ) -> io::Result<Response> {
@@ -470,7 +467,7 @@ async fn route_request(
     match (request.method, &*request.path) {
         (Post, "/blob") | (Post, "/blob/") => match request.length {
             Some(length) => {
-                let (kind, should_close) = store_blob(ctx, db_ref, conn, length).await?;
+                let (kind, should_close) = store_blob(ctx, db_ref, conn, peers, length).await?;
                 Ok(Response {
                     is_head: false,
                     should_close,
@@ -575,13 +572,57 @@ async fn store_blob(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
     conn: &mut Connection,
+    peers: &Peers,
     body_length: usize,
 ) -> io::Result<(ResponseKind, bool)> {
+    match read_blob(ctx, conn, body_length).await {
+        Ok(Status::Continue(())) => {}
+        Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
+        Err(err) => return Err(err),
+    }
+
+    let query = match add_blob_to_db(ctx, conn, db_ref, body_length).await {
+        Ok(Status::Continue(query)) => query,
+        Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
+        Err(err) => return Err(err),
+    };
+
+    let key = query.key().clone();
+    if !peers.is_empty() {
+        match add_blob_consensus(ctx, db_ref, peers, query).await {
+            Ok(Status::Continue(())) => Ok((ResponseKind::Stored(key), false)),
+            Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
+            Err(err) => return Err(err),
+        }
+    } else {
+        match commit_blob_to_db(ctx, db_ref, query, SystemTime::now()).await {
+            Ok(Status::Continue(())) => Ok((ResponseKind::Stored(key), false)),
+            Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Status of processing the request.
+enum Status<T> {
+    /// Continue processing the request.
+    Continue(T),
+    /// Early return in case a condition is not method, e.g. a blob is too large
+    /// to store.
+    Return(ResponseKind, bool),
+}
+
+/// Read a blob of length `body_length` from the `conn`ection.
+async fn read_blob(
+    ctx: &mut actor::Context<!>,
+    conn: &mut Connection,
+    body_length: usize,
+) -> io::Result<Status<()>> {
     // TODO: get this from a configuration.
     const MAX_SIZE: usize = 1024 * 1024; // 1MB.
 
     if body_length > MAX_SIZE {
-        return Ok((ResponseKind::TooLargePayload, true));
+        return Ok(Status::Return(ResponseKind::TooLargePayload, true));
     }
 
     conn.buf.reserve_atleast(body_length);
@@ -591,56 +632,168 @@ async fn store_blob(
             .map(|res| res.map_err(Into::into).flatten());
         match future.await {
             // No more bytes left, but didn't yet read the entire request body.
-            Ok(0) => return Ok((ResponseKind::BadRequest("Incomplete blob"), true)),
+            Ok(0) => {
+                return Ok(Status::Return(
+                    ResponseKind::BadRequest("Incomplete blob"),
+                    true,
+                ))
+            }
             // Read some bytes.
             Ok(_) => continue,
             Err(err) => return Err(err),
         }
     }
 
+    if conn.buf.is_empty() {
+        Ok(Status::Return(
+            ResponseKind::BadRequest("Can't store empty blob"),
+            false,
+        ))
+    } else {
+        Ok(Status::Continue(()))
+    }
+}
+
+/// Add the blob in `conn.buf` (with length `blob_length`) to the database.
+/// Returns the query to commit the blob to the database.
+async fn add_blob_to_db(
+    ctx: &mut actor::Context<!>,
+    conn: &mut Connection,
+    db_ref: &mut ActorRef<db::Message>,
+    blob_length: usize,
+) -> io::Result<Status<AddBlob>> {
     // Take the body from the connection and use it as a blob to send to the
     // storage actor.
     let blob = mem::replace(&mut conn.buf, Buffer::empty());
 
-    if blob.is_empty() {
-        Ok((ResponseKind::BadRequest("Can't store empty blob"), false))
-    } else {
-        match db_ref.rpc(ctx, (blob, body_length)) {
-            Ok(rpc) => match rpc.await {
-                Ok((result, mut buffer)) => {
-                    // Mark the body as processed and put back the buffer.
-                    buffer.processed(body_length);
-                    conn.buf = buffer;
-                    match result {
-                        AddBlobResponse::Query(query) => match db_ref
-                            .rpc(ctx, (query, SystemTime::now()))
-                        {
-                            Ok(rpc) => match rpc.await {
-                                Ok(key) => Ok((ResponseKind::Stored(key), false)),
-                                Err(err) => {
-                                    error!("error waiting for RPC response from database: {}", err);
-                                    Ok((ResponseKind::ServerError, true))
-                                }
-                            },
-                            Err(err) => {
-                                error!("error making RPC call to database: {}", err);
-                                Ok((ResponseKind::ServerError, true))
-                            }
-                        },
-                        AddBlobResponse::AlreadyStored(key) => {
-                            Ok((ResponseKind::Stored(key), false))
-                        }
+    match db_ref.rpc(ctx, (blob, blob_length)) {
+        Ok(rpc) => match rpc.await {
+            Ok((result, mut buffer)) => {
+                // Mark the body as processed and put back the buffer.
+                buffer.processed(blob_length);
+                conn.buf = buffer;
+                match result {
+                    AddBlobResponse::Query(query) => Ok(Status::Continue(query)),
+                    AddBlobResponse::AlreadyStored(key) => {
+                        Ok(Status::Return(ResponseKind::Stored(key), false))
                     }
                 }
-                Err(err) => {
-                    error!("error waiting for RPC response from database: {}", err);
-                    Ok((ResponseKind::ServerError, true))
-                }
-            },
-            Err(err) => {
-                error!("error making RPC call to database: {}", err);
-                Ok((ResponseKind::ServerError, true))
             }
+            Err(err) => {
+                error!("error waiting for RPC response from database: {}", err);
+                Ok(Status::Return(ResponseKind::ServerError, true))
+            }
+        },
+        Err(err) => {
+            error!("error making RPC call to database: {}", err);
+            Ok(Status::Return(ResponseKind::ServerError, true))
+        }
+    }
+}
+
+/// Runs the consensus algorithm for adding the blob (with `key`).
+async fn add_blob_consensus(
+    ctx: &mut actor::Context<!>,
+    db_ref: &mut ActorRef<db::Message>,
+    peers: &Peers,
+    query: AddBlob,
+) -> io::Result<Status<()>> {
+    // Phase one: start the consensus algorithm, letting the participants
+    // (peers) know we want to store a blob.
+    // TODO: add a timeout.
+    let (consensus_id, rpc) = peers.add_blob(ctx, query.key().clone());
+    let results = rpc.await;
+    let (commit, abort, failed) = count_consensus_votes(&results);
+
+    if abort > 0 || failed > 0 {
+        // FIXME: support partial success.
+        error!(
+            "failed consensus algorithm: key={}, votes_commit={}, votes_abort={} failed_votes={}",
+            query.key(),
+            commit,
+            abort,
+            failed
+        );
+        // TODO: let the peers know to abort the query.
+        return Ok(Status::Return(ResponseKind::ServerError, true));
+    }
+    debug!(
+        "consensus algorithm succeeded: key={}, votes_commit={}, votes_abort={} failed_votes={}",
+        query.key(),
+        commit,
+        abort,
+        failed
+    );
+
+    let timestamp = select_timestamp(&results);
+    // Phase two: let the participants know to commit to adding the blob.
+    let rpc = peers.commit_to_add_blob(ctx, consensus_id, query.key().clone(), timestamp);
+
+    let key = query.key().clone();
+    match commit_blob_to_db(ctx, db_ref, query, SystemTime::now()).await {
+        Ok(Status::Continue(())) => {}
+        Ok(Status::Return(response, should_close)) => {
+            return Ok(Status::Return(response, should_close));
+        }
+        Err(err) => return Err(err),
+    }
+
+    // FIXME: do something with the results.
+    let results = rpc.await;
+    let (commit, abort, failed) = count_consensus_votes(&results);
+    debug!(
+        "committed blob results: key={}, votes_commit={}, votes_abort={} failed_votes={}",
+        key, commit, abort, failed
+    );
+
+    Ok(Status::Continue(()))
+}
+
+/// Returns the (commit, abort, failed) votes.
+fn count_consensus_votes<T>(results: &[Result<T, RelayError>]) -> (usize, usize, usize) {
+    let mut commit = 1; // This peer votes to commit.
+    let mut abort = 0;
+    let mut failed = 0;
+
+    for result in results {
+        match result {
+            Ok(..) => commit += 1,
+            Err(RelayError::Abort) => abort += 1,
+            Err(RelayError::Failed) => failed += 1,
+        }
+    }
+
+    (commit, abort, failed)
+}
+
+/// Select the timestamp to use from consensus results.
+fn select_timestamp(_results: &[Result<SystemTime, RelayError>]) -> SystemTime {
+    let timestamp = SystemTime::now();
+    // TODO: sync the time somehow? To ensure that if this peer has an incorrect
+    // time we don't use that? We could use the largest timestamp (the most in
+    // the future), but we don't want a time in the year 2100 because a peer's
+    // time is incorrect.
+    timestamp
+}
+
+/// Commit the blob in the `query` to the database.
+async fn commit_blob_to_db(
+    ctx: &mut actor::Context<!>,
+    db_ref: &mut ActorRef<db::Message>,
+    query: AddBlob,
+    timestamp: SystemTime,
+) -> io::Result<Status<()>> {
+    match db_ref.rpc(ctx, (query, timestamp)) {
+        Ok(rpc) => match rpc.await {
+            Ok(()) => Ok(Status::Continue(())),
+            Err(err) => {
+                error!("error waiting for RPC response from database: {}", err);
+                Ok(Status::Return(ResponseKind::ServerError, true))
+            }
+        },
+        Err(err) => {
+            error!("error making RPC call to database: {}", err);
+            Ok(Status::Return(ResponseKind::ServerError, true))
         }
     }
 }

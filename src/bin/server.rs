@@ -7,7 +7,8 @@ use heph::Runtime;
 use log::{error, info};
 
 use stored::config::Config;
-use stored::{db, http, peer};
+use stored::peer::{self, Peers};
+use stored::{db, http};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const USAGE: &str = concat!(
@@ -74,9 +75,9 @@ fn try_main() -> Result<(), ExitCode> {
 
         // TODO: sync already stored blobs.
 
-        Some(peers)
+        peers
     } else {
-        None
+        Peers::empty()
     };
 
     info!("listening on http://{}", config.http.address);

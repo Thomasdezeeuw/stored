@@ -99,9 +99,9 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
             }
             Message::CommitAddBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
-                let key = storage.commit(query, created_at)?;
+                storage.commit(query, created_at)?;
                 // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(key);
+                let _ = response.respond(());
             }
             Message::AbortAddBlob(RpcMessage { request, response }) => {
                 storage.abort(request)?;
@@ -167,10 +167,7 @@ pub enum Message {
     /// Commit to a blob being added.
     ///
     /// Request is the query to add the blob, returned by [`Message::AddBlob`].
-    ///
-    /// Responds with the `Key` of the added blob.
-    // TODO: change return type to `()`, can get `Key` from `AddBlob`.
-    CommitAddBlob(RpcMessage<(AddBlob, SystemTime), Key>),
+    CommitAddBlob(RpcMessage<(AddBlob, SystemTime), ()>),
     /// Abort adding of a blob.
     ///
     /// Request is the query to abort, returned by [`Message::AddBlob`].
@@ -193,8 +190,6 @@ pub enum Message {
     ///
     /// Request is the query to remove the blob, returned by
     /// [`Message::RemoveBlob`].
-    ///
-    /// Responds with the time at which the blob is removed.
     CommitRemoveBlob(RpcMessage<(RemoveBlob, SystemTime), SystemTime>),
     /// Abort removing of a blob.
     ///
@@ -217,9 +212,15 @@ impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
     }
 }
 
-impl From<RpcMessage<(AddBlob, SystemTime), Key>> for Message {
-    fn from(msg: RpcMessage<(AddBlob, SystemTime), Key>) -> Message {
+impl From<RpcMessage<(AddBlob, SystemTime), ()>> for Message {
+    fn from(msg: RpcMessage<(AddBlob, SystemTime), ()>) -> Message {
         Message::CommitAddBlob(msg)
+    }
+}
+
+impl From<RpcMessage<AddBlob, ()>> for Message {
+    fn from(msg: RpcMessage<AddBlob, ()>) -> Message {
+        Message::AbortAddBlob(msg)
     }
 }
 
@@ -244,6 +245,12 @@ impl From<RpcMessage<Key, RemoveBlobResponse>> for Message {
 impl From<RpcMessage<(RemoveBlob, SystemTime), SystemTime>> for Message {
     fn from(msg: RpcMessage<(RemoveBlob, SystemTime), SystemTime>) -> Message {
         Message::CommitRemoveBlob(msg)
+    }
+}
+
+impl From<RpcMessage<RemoveBlob, ()>> for Message {
+    fn from(msg: RpcMessage<RemoveBlob, ()>) -> Message {
+        Message::AbortRemoveBlob(msg)
     }
 }
 
