@@ -17,20 +17,23 @@ use serde::Deserialize;
 
 /// Macro to include the configuration file for the `Config` docs.
 macro_rules! doc {
-    (#[doc = $doc1: expr], $file: expr, $( $tt2: tt )*) => {
-        doc!($doc1, include_str!($file), $( $tt2 )*);
+    ( $( #[ $doc1: meta ] )* include: $file: expr, $( $tt: tt )*) => {
+        doc!(_ $( #[ $doc1 ] )*, include_str!($file), $( $tt )*);
     };
-    ($doc1: expr, $doc2: expr, $( $tt: tt )*) => {
-        #[doc = $doc1]
+    (_ $( #[ $doc1: meta ] )*, $doc2: expr, $( $tt: tt )*) => {
+        $( #[$doc1] )*
         #[doc = $doc2]
-        $( $tt )*
+        $($tt)*
     };
 }
 
 doc!(
-    #[doc = "Stored configuration.\n\nLook at `config.example.toml` example
-    below to see what each option means.\n\n```toml"],
-    "../config.example.toml",
+    /// Stored configuration.
+    ///
+    /// Look at `config.example.toml` example below to see what each option means.
+    ///
+    /// ```toml
+    include: "../config.example.toml",
     /// ```
     ///
     /// # Notes
