@@ -17,7 +17,7 @@ use serde::Deserialize;
 
 /// Macro to include the configuration file for the `Config` docs.
 macro_rules! doc {
-    ( $( #[ $doc1: meta ] )* include: $file: expr, $( $tt: tt )*) => {
+    ($( #[ $doc1: meta ] )* include: $file: expr, $( $tt: tt )*) => {
         doc!(_ $( #[ $doc1 ] )*, include_str!($file), $( $tt )*);
     };
     (_ $( #[ $doc1: meta ] )*, $doc2: expr, $( $tt: tt )*) => {

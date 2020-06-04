@@ -39,26 +39,29 @@ fn main() -> ExitCode {
         Err(code) => code,
     };
     log::logger().flush();
-    return code;
+    code
+}
+
+/// Macro to log an error and map it to `ExitCode::FAILURE`.
+macro_rules! map_err {
+    ($format: expr) => {
+        |err| {
+            error!($format, err);
+            ExitCode::FAILURE
+        }
+    };
 }
 
 fn try_main() -> Result<(), ExitCode> {
     let config_path = parse_args()?;
-    let config = Config::from_file(&config_path).map_err(|err| {
-        error!("error opening configuration file: {}", err);
-        ExitCode::FAILURE
-    })?;
+    let config = Config::from_file(&config_path)
+        .map_err(map_err!("error opening configuration file: {}"))?;
 
-    let mut runtime = Runtime::new().map_err(|err| {
-        error!("error creating Heph runtime: {}", err);
-        ExitCode::FAILURE
-    })?;
+    let mut runtime = Runtime::new().map_err(map_err!("error creating Heph runtime: {}"))?;
 
     info!("opening database '{}'", config.path.display());
-    let db_ref = db::start(&mut runtime, config.path).map_err(|err| {
-        error!("error opening database: {}", err);
-        ExitCode::FAILURE
-    })?;
+    let db_ref =
+        db::start(&mut runtime, config.path).map_err(map_err!("error opening database: {}"))?;
 
     let peers = if let Some(distributed_config) = config.distributed {
         info!(
@@ -67,33 +70,21 @@ fn try_main() -> Result<(), ExitCode> {
         );
         info!("connecting to peers: {}", distributed_config.peers);
         info!("blob replication method: {}", distributed_config.replicas);
-        let peers =
-            peer::start(&mut runtime, distributed_config, db_ref.clone()).map_err(|err| {
-                error!("error setting up peer actor: {}", err);
-                ExitCode::FAILURE
-            })?;
-
-        // TODO: sync already stored blobs.
-
-        peers
+        peer::start(&mut runtime, distributed_config, db_ref.clone())
+            .map_err(map_err!("error setting up peer actors: {}"))?
     } else {
         Peers::empty()
     };
 
     info!("listening on http://{}", config.http.address);
-    let start_listener = http::setup(config.http.address, db_ref, peers).map_err(|err| {
-        error!("error binding HTTP server: {}", err);
-        ExitCode::FAILURE
-    })?;
+    let start_listener = http::setup(config.http.address, db_ref, peers)
+        .map_err(map_err!("error binding HTTP server: {}"))?;
 
     runtime
         .use_all_cores()
         .with_setup(move |mut runtime_ref| start_listener(&mut runtime_ref))
         .start()
-        .map_err(|err| {
-            error!("{}", err);
-            ExitCode::FAILURE
-        })
+        .map_err(map_err!("{}"))
 }
 
 /// Parses the arguments.
