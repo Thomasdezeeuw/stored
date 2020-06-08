@@ -15,7 +15,7 @@ const FILTER: LevelFilter = LevelFilter::Error;
 start_stored_fn!(&[CONF_PATH], &[], FILTER);
 
 /// Make a GET and HEAD request and check the response.
-macro_rules! request {
+macro_rules! test {
     (
         // Request path and body.
         $path: expr, $body: expr,
@@ -25,19 +25,23 @@ macro_rules! request {
     ) => {{
         let _p = start_stored();
 
-        let response = request("GET", $path, DB_PORT, &[], $body).unwrap();
-        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], $want_body);
+        request!(
+            GET DB_PORT, $path, $body,
+            expected: $want_status, $want_body,
+            $($header_name => $header_value),*,
+        );
 
-        // HEAD must always be the same as the response to a GET request, but
-        // must return an empty body.
-        let response = request("HEAD", $path, DB_PORT, &[], $body).unwrap();
-        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], body::EMPTY);
+        request!(
+            HEAD DB_PORT, $path, $body,
+            expected: $want_status,
+            $($header_name => $header_value),*,
+        );
     }};
 }
 
 #[test]
 fn index() {
-    request!(
+    test!(
         "/", body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
@@ -48,7 +52,7 @@ fn index() {
 
 #[test]
 fn not_found() {
-    request!(
+    test!(
         "/404", body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
@@ -60,7 +64,7 @@ fn not_found() {
 #[test]
 fn hello_world_blob() {
     let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
-    request!(
+    test!(
         url, body::EMPTY,
         expected: StatusCode::OK, b"Hello world",
         CONTENT_LENGTH => "11",
@@ -98,7 +102,7 @@ fn zero_content_length() {
 #[test]
 fn hello_mars_blob() {
     let url = "/blob/b09bcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c";
-    request!(
+    test!(
         url, body::EMPTY,
         expected: StatusCode::OK, b"Hello mars",
         CONTENT_LENGTH => "10",
@@ -110,7 +114,7 @@ fn hello_mars_blob() {
 #[test]
 fn not_present_blob() {
     let url = "/blob/a09bcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c";
-    request!(
+    test!(
         url, body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
@@ -121,7 +125,7 @@ fn not_present_blob() {
 
 #[test]
 fn blob_index() {
-    request!(
+    test!(
         "/blob", body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
@@ -132,7 +136,7 @@ fn blob_index() {
 
 #[test]
 fn empty_key_blob() {
-    request!(
+    test!(
         "/blob/", body::EMPTY,
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
@@ -143,7 +147,7 @@ fn empty_key_blob() {
 
 #[test]
 fn invalid_key_blob_too_short() {
-    request!(
+    test!(
         "/blob/abc", body::EMPTY,
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
@@ -155,7 +159,7 @@ fn invalid_key_blob_too_short() {
 #[test]
 fn invalid_key_blob_too_long() {
     let url = "/blob/a09bcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c123";
-    request!(
+    test!(
         url, body::EMPTY,
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
@@ -167,7 +171,7 @@ fn invalid_key_blob_too_long() {
 #[test]
 fn invalid_key_blob_too_not_hex() {
     let url = "/blob/zzzbcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c";
-    request!(
+    test!(
         url, body::EMPTY,
         expected: StatusCode::BAD_REQUEST, body::INVALID_KEY,
         CONTENT_LENGTH => body::INVALID_KEY_LEN,
@@ -204,7 +208,7 @@ fn with_body() {
 
 #[test]
 fn health_check() {
-    request!(
+    test!(
         "/health", body::EMPTY,
         expected: StatusCode::OK, body::OK,
         CONTENT_LENGTH => body::OK_LEN,

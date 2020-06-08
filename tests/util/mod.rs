@@ -173,6 +173,7 @@ impl Drop for ChildCommand {
     }
 }
 
+#[macro_use]
 pub mod http {
     //! Simple http client.
 
@@ -186,6 +187,84 @@ pub mod http {
     use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
+
+    /// Make a request and check the response.
+    macro_rules! request {
+        (
+            // GET request port, path and body.
+            GET $port: expr, $path: expr, $body: expr,
+            // The wanted status, body and headers in the response.
+            expected: $want_status: expr, $want_body: expr,
+            $($header_name: ident => $header_value: expr),*,
+        ) => {{
+            request!(
+                "GET", $port, $path, $body,
+                /* No request headers. */;
+                expected: $want_status, $want_body,
+                $($header_name => $header_value),*,
+            );
+        }};
+        (
+            // HEAD request port, path and body.
+            HEAD $port: expr, $path: expr, $body: expr,
+            // The wanted status and headers in the response.
+            expected: $want_status: expr,
+            $($header_name: ident => $header_value: expr),*,
+        ) => {{
+            request!(
+                "HEAD", $port, $path, $body,
+                /* No request headers. */;
+                expected: $want_status, &[],
+                $($header_name => $header_value),*,
+            );
+        }};
+        (
+            // POST request port, path, body and headers.
+            POST $port: expr, $path: expr, $body: expr,
+            $($r_header_name: ident => $r_header_value: expr),*;
+            // The wanted status, body and headers in the response.
+            expected: $want_status: expr, $want_body: expr,
+            $($header_name: ident => $header_value: expr),*,
+        ) => {{
+            request!(
+                "POST", $port, $path, $body,
+                $($r_header_name => $r_header_value),*;
+                expected: $want_status, $want_body,
+                $($header_name => $header_value),*,
+            );
+        }};
+        (
+            // DELETE request port, path, body and headers.
+            DELETE $port: expr, $path: expr, $body: expr,
+            // The wanted status, body and headers in the response.
+            expected: $want_status: expr, $want_body: expr,
+            $($header_name: ident => $header_value: expr),*,
+        ) => {{
+            request!(
+                "DELETE", $port, $path, $body,
+                /* No request headers. */;
+                expected: $want_status, $want_body,
+                $($header_name => $header_value),*,
+            );
+        }};
+        (
+            $method: expr, $port: expr, $path: expr, $body: expr,
+            $($r_header_name: ident => $r_header_value: expr),*;
+            expected: $want_status: expr, $want_body: expr,
+            $($header_name: ident => $header_value: expr),*,
+        ) => {{
+            let response = $crate::util::http::request(
+                $method, $path, $port,
+                &[ $( ($r_header_name, $r_header_value),)* ],
+                $body
+            ).unwrap();
+            $crate::util::http::assert_response(
+                response, $want_status,
+                &[ $( ($header_name, $header_value),)* ],
+                $want_body
+            );
+        }};
+    }
 
     pub mod body {
         //! HTTP bodies and there lengths (in text for the "Content-Length"

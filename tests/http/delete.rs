@@ -15,50 +15,13 @@ const FILTER: LevelFilter = LevelFilter::Error;
 
 start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
-/// Make a request and check the response.
-macro_rules! request {
-    (
-        // DELETE request path, body and headers.
-        DELETE $path: expr, $body: expr,
-        // The wanted status, body and headers in the response.
-        expected: $want_status: expr, $want_body: expr,
-        $($header_name: ident => $header_value: expr),*,
-    ) => {{
-        let response = request("DELETE", $path, DB_PORT, &[], $body).unwrap();
-        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], $want_body);
-    }};
-    (
-        // POST request path, body and headers.
-        POST $path: expr, $body: expr,
-        $($r_header_name: ident => $r_header_value: expr),*;
-        // The wanted status, body and headers in the response.
-        expected: $want_status: expr, $want_body: expr,
-        $($header_name: ident => $header_value: expr),*,
-    ) => {{
-        let response = request("POST", $path, DB_PORT,
-            &[ $( ($r_header_name, $r_header_value),)* ],
-            $body).unwrap();
-        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], $want_body);
-    }};
-    (
-        // GET request path and body.
-        GET $path: expr, $body: expr,
-        // The wanted status, body and headers in the response.
-        expected: $want_status: expr, $want_body: expr,
-        $($header_name: ident => $header_value: expr),*,
-    ) => {{
-        let response = request("GET", $path, DB_PORT, &[], $body).unwrap();
-        assert_response(response, $want_status, &[ $( ($header_name, $header_value),)* ], $want_body);
-    }};
-}
-
 #[test]
 fn remove_hello_world() {
     let _p = start_stored();
 
     let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
     request!(
-        POST "/blob", b"Hello world",
+        POST DB_PORT, "/blob", b"Hello world",
         CONTENT_LENGTH => "11";
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
@@ -68,7 +31,7 @@ fn remove_hello_world() {
 
     let last_modified = date_header();
     request!(
-        GET url, body::EMPTY,
+        GET DB_PORT, url, body::EMPTY,
         expected: StatusCode::OK, b"Hello world",
         CONTENT_LENGTH => "11",
         LAST_MODIFIED => &last_modified,
@@ -76,7 +39,7 @@ fn remove_hello_world() {
     );
 
     request!(
-        DELETE url, body::EMPTY,
+        DELETE DB_PORT, url, body::EMPTY,
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LAST_MODIFIED => &last_modified,
@@ -84,7 +47,7 @@ fn remove_hello_world() {
     );
 
     request!(
-        GET url, body::EMPTY,
+        GET DB_PORT, url, body::EMPTY,
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LAST_MODIFIED => &last_modified,
@@ -100,7 +63,7 @@ fn remove_hello_mars_twice() {
     let blob = b"Hello mars";
     let blob_len = "10";
     request!(
-        POST "/blob", blob,
+        POST DB_PORT, "/blob", blob,
         CONTENT_LENGTH => blob_len;
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
@@ -110,7 +73,7 @@ fn remove_hello_mars_twice() {
 
     let last_modified = date_header();
     request!(
-        GET url, body::EMPTY,
+        GET DB_PORT, url, body::EMPTY,
         expected: StatusCode::OK, blob,
         CONTENT_LENGTH => blob_len,
         LAST_MODIFIED => &last_modified,
@@ -119,7 +82,7 @@ fn remove_hello_mars_twice() {
 
     let last_modified = date_header();
     request!(
-        DELETE url, body::EMPTY,
+        DELETE DB_PORT, url, body::EMPTY,
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LAST_MODIFIED => &last_modified,
@@ -127,7 +90,7 @@ fn remove_hello_mars_twice() {
     );
 
     request!(
-        DELETE url, body::EMPTY,
+        DELETE DB_PORT, url, body::EMPTY,
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LAST_MODIFIED => &last_modified, // Mustn't overwrite the time.
@@ -141,7 +104,7 @@ fn remove_blob_never_stored() {
 
     let url = "/blob/aaaaaa84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c";
     request!(
-        DELETE url, body::EMPTY,
+        DELETE DB_PORT, url, body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
@@ -153,7 +116,7 @@ fn remove_blob_never_stored() {
 fn index() {
     let _p = start_stored();
     request!(
-        DELETE "/", body::EMPTY,
+        DELETE DB_PORT, "/", body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
@@ -165,7 +128,7 @@ fn index() {
 fn not_found() {
     let _p = start_stored();
     request!(
-        DELETE "/404", body::EMPTY,
+        DELETE DB_PORT, "/404", body::EMPTY,
         expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
         CONTENT_LENGTH => body::NOT_FOUND_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,
