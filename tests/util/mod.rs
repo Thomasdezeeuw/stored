@@ -1,4 +1,4 @@
-#![allow(dead_code)] // Note: not all tests use all functions/types.
+#![allow(dead_code, unused_macros)] // Note: not all tests use all functions/types.
 
 use std::future::Future;
 use std::io;
@@ -11,6 +11,33 @@ use std::time::Duration;
 
 use futures_util::task::noop_waker;
 use log::LevelFilter;
+
+/// Macro to create `start_stored` function to start a stored process.
+macro_rules! start_stored_fn {
+    (
+        // Starts a new stored process for each configuration.
+        &[ $( $conf_path: ident ),* ],
+        // Removes all the old database files.
+        &[ $( $remove_db_path: ident ),* ],
+        // Log severity that gets printed.
+        $filter: ident $(,)*
+    ) => {
+        /// Start the stored server.
+        fn start_stored() -> $crate::util::Proc<'static> {
+            lazy_static::lazy_static! {
+                static ref PROC: $crate::util::ProcLock = $crate::util::ProcLock::new(None);
+            }
+
+            static REMOVE: std::sync::Once = std::sync::Once::new();
+            REMOVE.call_once(|| {
+                // Remove the old databases from previous tests.
+                $( let _ = fs::remove_dir_all($remove_db_path); ),*
+            });
+
+            $crate::util::start_stored(&[$( $conf_path ),*], &PROC, $filter)
+        }
+    };
+}
 
 pub fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
 where

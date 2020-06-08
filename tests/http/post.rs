@@ -1,35 +1,19 @@
 //! Tests for POST requests.
 
-use std::sync::Once;
 use std::{fs, str};
 
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
-use lazy_static::lazy_static;
 use log::LevelFilter;
 
 use crate::util::http::{assert_response, body, date_header, header, request};
-use crate::util::{Proc, ProcLock};
 
 const DB_PORT: u16 = 9002;
 const DB_PATH: &'static str = "/tmp/stored_post_tests.db";
 const CONF_PATH: &'static str = "tests/config/post.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
-/// Start the stored server.
-fn start_stored() -> Proc<'static> {
-    lazy_static! {
-        static ref PROC: ProcLock = ProcLock::new(None);
-    }
-
-    static REMOVE: Once = Once::new();
-    REMOVE.call_once(|| {
-        // Remove the old database from previous tests.
-        let _ = fs::remove_dir_all(DB_PATH);
-    });
-
-    crate::util::start_stored(&[CONF_PATH], &PROC, FILTER)
-}
+start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
 /// Make a POST request and check the response.
 macro_rules! request {

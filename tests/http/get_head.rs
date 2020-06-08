@@ -4,23 +4,15 @@ use std::str;
 
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
 use http::status::StatusCode;
-use lazy_static::lazy_static;
 use log::LevelFilter;
 
 use crate::util::http::{assert_response, body, header, request};
-use crate::util::{self, Proc, ProcLock};
 
 const DB_PORT: u16 = 9001;
 const CONF_PATH: &'static str = "tests/config/get_head.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
-/// Start the stored server.
-fn start_stored() -> Proc<'static> {
-    lazy_static! {
-        static ref PROC: ProcLock = ProcLock::new(None);
-    }
-    util::start_stored(&[CONF_PATH], &PROC, FILTER)
-}
+start_stored_fn!(&[CONF_PATH], &[], FILTER);
 
 /// Make a GET and HEAD request and check the response.
 macro_rules! request {

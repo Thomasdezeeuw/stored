@@ -3,39 +3,23 @@
 // TODO: expand testing.
 
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
-use std::sync::Once;
 use std::{fs, str};
 
 use http::header::{HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::method::Method;
 use http::status::StatusCode;
-use lazy_static::lazy_static;
 use log::LevelFilter;
 
 use crate::util::http::{
     assert_response, body, date_header, header, read_responses, write_request,
 };
-use crate::util::{self, Proc, ProcLock};
 
 const DB_PORT: u16 = 9003;
 const DB_PATH: &'static str = "/tmp/stored_pipelining_tests.db";
 const CONF_PATH: &'static str = "tests/config/pipelining.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
-/// Start the stored server.
-fn start_stored() -> Proc<'static> {
-    lazy_static! {
-        static ref PROC: ProcLock = ProcLock::new(None);
-    }
-
-    static REMOVE: Once = Once::new();
-    REMOVE.call_once(|| {
-        // Remove the old database from previous tests.
-        let _ = fs::remove_dir_all(DB_PATH);
-    });
-
-    util::start_stored(&[CONF_PATH], &PROC, FILTER)
-}
+start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
 /// Make multiple request pipelining them on the same connection.
 macro_rules! pipeline {

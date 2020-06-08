@@ -6,12 +6,10 @@ use std::process::{Command, Output};
 use std::sync::Once;
 use std::{fs, str};
 
-use lazy_static::lazy_static;
 use log::LevelFilter;
 
+#[macro_use]
 mod util;
-
-use util::{Proc, ProcLock};
 
 #[allow(dead_code)] // FIXME: use this along with the tests.
 const DB_PORT: u16 = 9004;
@@ -19,20 +17,7 @@ const DB_PATH: &'static str = "/tmp/stored_cli_tests.db";
 const CONF_PATH: &'static str = "tests/config/cli.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
-/// Start the stored server.
-fn start_stored() -> Proc<'static> {
-    lazy_static! {
-        static ref PROC: ProcLock = ProcLock::new(None);
-    }
-
-    static REMOVE: Once = Once::new();
-    REMOVE.call_once(|| {
-        // Remove the old database from previous tests.
-        let _ = fs::remove_dir_all(DB_PATH);
-    });
-
-    util::start_stored(&[CONF_PATH], &PROC, FILTER)
-}
+start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
 fn test(bin: &'static str, args: &[&str], want: &[u8]) {
     let output = run(bin, args);
