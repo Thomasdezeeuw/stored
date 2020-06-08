@@ -27,27 +27,27 @@ where
     }
 }
 
-pub struct Proc {
-    lock: &'static ProcLock,
-    child: Arc<ChildCommand>,
+pub struct Proc<'a> {
+    lock: &'a ProcLock,
+    processes: Arc<Box<[ChildCommand]>>,
 }
 
-impl Drop for Proc {
+impl<'a> Drop for Proc<'a> {
     fn drop(&mut self) {
         // We `lock` first to create a queue of tests that is done. After we got
         // the lock we'll check if we're the last test. If we did this without
         // holding the lock two tests currently ending could both determine
         // there not the last test and never stop the process.
-        let mut child = self.lock.lock().unwrap();
-        if Arc::strong_count(&self.child) == 2 {
+        let mut processes = self.lock.lock().unwrap();
+        if Arc::strong_count(&self.processes) == 2 {
             // Take the (second to) last arc pointer to the process. Which means
             // that if we get dropped the process is stopped.
-            child.take();
+            processes.take();
         }
     }
 }
 
-pub type ProcLock = Mutex<Option<Arc<ChildCommand>>>;
+pub type ProcLock = Mutex<Option<Arc<Box<[ChildCommand]>>>>;
 
 /// Build and start the stored server.
 ///
@@ -56,40 +56,46 @@ pub type ProcLock = Mutex<Option<Arc<ChildCommand>>>;
 ///
 /// If `filter` is not `LevelFilter::Off` it will set the standard out and error
 /// to inherit from this process, making all logs available.
-pub fn start_stored(conf_path: &'static str, lock: &'static ProcLock, filter: LevelFilter) -> Proc {
+pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFilter) -> Proc<'a> {
     build_stored();
 
     let mut proc = lock.lock().unwrap();
-    let child = if let Some(proc) = &mut *proc {
+    let processes = if let Some(proc) = &mut *proc {
         proc.clone()
     } else {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_stored"));
+        let mut processes = Vec::with_capacity(conf_paths.len());
 
-        if filter == LevelFilter::Off {
-            child.stderr(Stdio::null()).stdout(Stdio::null());
-        } else {
-            child
-                .stderr(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .env("LOG_LEVEL", filter.to_string())
-                .env("LOG_TARGET", "stored");
+        for conf_path in conf_paths {
+            let mut child = Command::new(env!("CARGO_BIN_EXE_stored"));
+
+            if filter == LevelFilter::Off {
+                child.stderr(Stdio::null()).stdout(Stdio::null());
+            } else {
+                child
+                    .stderr(Stdio::inherit())
+                    .stdout(Stdio::inherit())
+                    .env("LOG_LEVEL", filter.to_string())
+                    .env("LOG_TARGET", "stored");
+            }
+
+            let child = child
+                .stdin(Stdio::null())
+                .arg(conf_path)
+                .spawn()
+                .map(|inner| ChildCommand { inner })
+                .expect("unable to start server");
+
+            // Give the server some time to start.
+            sleep(Duration::from_millis(500));
+
+            processes.push(child);
         }
 
-        let child = child
-            .stdin(Stdio::null())
-            .arg(conf_path)
-            .spawn()
-            .map(|inner| ChildCommand { inner })
-            .expect("unable to start server");
-
-        // Give the server some time to start.
-        sleep(Duration::from_millis(500));
-
-        let child = Arc::new(child);
-        proc.replace(child.clone());
-        child
+        let processes = Arc::new(processes.into_boxed_slice());
+        proc.replace(processes.clone());
+        processes
     };
-    Proc { lock, child }
+    Proc { lock, processes }
 }
 
 fn build_stored() {

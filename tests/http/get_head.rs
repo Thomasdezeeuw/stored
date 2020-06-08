@@ -15,11 +15,11 @@ const CONF_PATH: &'static str = "tests/config/get_head.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
-fn start_stored() -> Proc {
+fn start_stored() -> Proc<'static> {
     lazy_static! {
         static ref PROC: ProcLock = ProcLock::new(None);
     }
-    util::start_stored(CONF_PATH, &PROC, FILTER)
+    util::start_stored(&[CONF_PATH], &PROC, FILTER)
 }
 
 /// Make a GET and HEAD request and check the response.

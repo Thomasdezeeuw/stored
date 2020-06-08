@@ -9,7 +9,7 @@ use lazy_static::lazy_static;
 use log::LevelFilter;
 
 use crate::util::http::{assert_response, body, date_header, header, request};
-use crate::util::{self, Proc, ProcLock};
+use crate::util::{Proc, ProcLock};
 
 const DB_PORT: u16 = 9002;
 const DB_PATH: &'static str = "/tmp/stored_post_tests.db";
@@ -17,7 +17,7 @@ const CONF_PATH: &'static str = "tests/config/post.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
-fn start_stored() -> Proc {
+fn start_stored() -> Proc<'static> {
     lazy_static! {
         static ref PROC: ProcLock = ProcLock::new(None);
     }
@@ -28,7 +28,7 @@ fn start_stored() -> Proc {
         let _ = fs::remove_dir_all(DB_PATH);
     });
 
-    util::start_stored(CONF_PATH, &PROC, FILTER)
+    crate::util::start_stored(&[CONF_PATH], &PROC, FILTER)
 }
 
 /// Make a POST request and check the response.

@@ -17,7 +17,7 @@ const CONF_PATH: &'static str = "tests/config/delete.toml";
 const FILTER: LevelFilter = LevelFilter::Error;
 
 /// Start the stored server.
-fn start_stored() -> Proc {
+fn start_stored() -> Proc<'static> {
     lazy_static! {
         static ref PROC: ProcLock = ProcLock::new(None);
     }
@@ -28,7 +28,7 @@ fn start_stored() -> Proc {
         let _ = fs::remove_dir_all(DB_PATH);
     });
 
-    util::start_stored(CONF_PATH, &PROC, FILTER)
+    util::start_stored(&[CONF_PATH], &PROC, FILTER)
 }
 
 /// Make a request and check the response.
