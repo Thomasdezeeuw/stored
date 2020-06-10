@@ -41,8 +41,9 @@ macro_rules! pipeline {
 
         $(
             write_request(&mut stream, Method::$method .as_str(), $path, &[
-                $( ($r_header_name, $r_header_value),)*
-            ], $body).unwrap();
+                    $( ($r_header_name, $r_header_value),)*
+                ], $body
+            );
         )+
 
         // By shutting down the writing since the server will know not to expect
@@ -52,7 +53,7 @@ macro_rules! pipeline {
         stream.shutdown(Shutdown::Write).unwrap();
 
         // FIXME: second argument -> request.method == "HEAD".
-        let responses = read_responses(&mut stream, false).unwrap();
+        let responses = read_responses(&mut stream, false);
         let want: &[(StatusCode, &[(HeaderName, &str)], &[u8])] = &[
         $(
             ($want_status, &[ $( ($header_name, $header_value),)* ], $want_body),

@@ -80,8 +80,7 @@ fn zero_content_length() {
     let _p = start_stored();
 
     for method in &["GET", "HEAD"] {
-        let response =
-            request(method, url, DB_PORT, &[(CONTENT_LENGTH, "0")], body::EMPTY).unwrap();
+        let response = request(method, url, DB_PORT, &[(CONTENT_LENGTH, "0")], body::EMPTY);
         assert_response(
             response,
             StatusCode::OK,
@@ -187,8 +186,7 @@ fn with_body() {
     let _p = start_stored();
 
     for method in &["GET", "HEAD"] {
-        let response =
-            request(method, url, DB_PORT, &[(CONTENT_LENGTH, "9")], b"some body").unwrap();
+        let response = request(method, url, DB_PORT, &[(CONTENT_LENGTH, "9")], b"some body");
         assert_response(
             response,
             StatusCode::BAD_REQUEST,

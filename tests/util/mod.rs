@@ -31,7 +31,7 @@ macro_rules! start_stored_fn {
             static REMOVE: std::sync::Once = std::sync::Once::new();
             REMOVE.call_once(|| {
                 // Remove the old databases from previous tests.
-                $( let _ = fs::remove_dir_all($remove_db_path); ),*
+                $( let _ = fs::remove_dir_all($remove_db_path); )*
             });
 
             $crate::util::start_stored(&[$( $conf_path ),*], &PROC, $filter)
@@ -112,11 +112,12 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
                 .map(|inner| ChildCommand { inner })
                 .expect("unable to start server");
 
-            // Give the server some time to start.
-            sleep(Duration::from_millis(500));
-
             processes.push(child);
         }
+
+        // Give the processes some time to start and sync up.
+        // TODO: see if this can be lowered.
+        sleep(Duration::from_millis(processes.len() as u64 * 200));
 
         let processes = Arc::new(processes.into_boxed_slice());
         proc.replace(processes.clone());
@@ -173,11 +174,28 @@ impl Drop for ChildCommand {
     }
 }
 
+/// Helper type that runs `F` if the thread is panicking (e.g. when an assertion
+/// failed) to provided extra context to the error.
+pub struct OnPanic<F>(pub F)
+where
+    F: FnMut();
+
+impl<F> Drop for OnPanic<F>
+where
+    F: FnMut(),
+{
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            (self.0)();
+        }
+    }
+}
+
 #[macro_use]
 pub mod http {
     //! Simple http client.
 
-    use std::io::{self, Read, Write};
+    use std::io::{Read, Write};
     use std::mem::replace;
     use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
     use std::str::{self, FromStr};
@@ -253,14 +271,18 @@ pub mod http {
             expected: $want_status: expr, $want_body: expr,
             $($header_name: ident => $header_value: expr),*,
         ) => {{
+            let _ctx = $crate::util::OnPanic(|| {
+                eprintln!("Request failed: {} to localhost:{}{}",
+                    $method, $port, $path);
+            });
             let response = $crate::util::http::request(
                 $method, $path, $port,
-                &[ $( ($r_header_name, $r_header_value),)* ],
+                &[ $( ($r_header_name, $r_header_value), )* ],
                 $body
-            ).unwrap();
+            );
             $crate::util::http::assert_response(
                 response, $want_status,
-                &[ $( ($header_name, $header_value),)* ],
+                &[ $( ($header_name, $header_value), )* ],
                 $want_body
             );
         }};
@@ -310,20 +332,24 @@ pub mod http {
         port: u16,
         headers: &[(HeaderName, &'static str)],
         body: &[u8],
-    ) -> io::Result<Response<Vec<u8>>> {
+    ) -> Response<Vec<u8>> {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let address = SocketAddr::new(ip, port);
-        let mut stream = TcpStream::connect(address)?;
+        let mut stream = TcpStream::connect(address).expect("failed to connect");
 
         // Write the request and shutdown the writing side to indicate we're
         // only sending a single request.
-        write_request(&mut stream, method, path, headers, body)?;
-        stream.shutdown(Shutdown::Write).unwrap();
+        write_request(&mut stream, method, path, headers, body);
+        stream
+            .shutdown(Shutdown::Write)
+            .expect("failed to shutdown writing side");
 
-        let mut responses = read_responses(&mut stream, method == "HEAD")?;
+        let mut responses = read_responses(&mut stream, method == "HEAD");
         assert_eq!(responses.len(), 1);
-        Ok(responses.pop().unwrap())
+        responses.pop().unwrap()
     }
+
+    const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(15));
 
     /// Write a HTTP request to `stream`.
     pub fn write_request(
@@ -332,7 +358,7 @@ pub mod http {
         path: &'static str,
         headers: &[(HeaderName, &'static str)],
         body: &[u8],
-    ) -> io::Result<()> {
+    ) {
         let mut req = Request::builder()
             .method(method)
             .uri(Uri::from_static(path))
@@ -345,30 +371,35 @@ pub mod http {
 
         let req = req.body(body).unwrap();
 
-        stream.set_write_timeout(Some(Duration::from_secs(1)))?;
+        stream
+            .set_write_timeout(IO_TIMEOUT)
+            .expect("failed to set write timeout");
 
         // Write the Status line.
-        write!(stream, "{} {} HTTP/1.1\r\n", req.method(), req.uri().path())?;
+        write!(stream, "{} {} HTTP/1.1\r\n", req.method(), req.uri().path())
+            .expect("failed to write request status line");
         // Headers.
         for (name, value) in req.headers() {
-            write!(stream, "{}: {}\r\n", name, value.to_str().unwrap())?;
+            write!(stream, "{}: {}\r\n", name, value.to_str().unwrap())
+                .expect("failed to write request headers");
         }
-        write!(stream, "\r\n")?;
+        write!(stream, "\r\n").unwrap();
         // Body.
-        stream.write_all(req.body())?;
-        stream.flush()
+        stream.write_all(req.body()).expect("failed to write body");
+        stream.flush().expect("failed to flush request");
     }
 
     /// Read a number of HTTP response from `stream`.
-    pub fn read_responses(
-        stream: &mut TcpStream,
-        was_head: bool,
-    ) -> io::Result<Vec<Response<Vec<u8>>>> {
-        stream.set_read_timeout(Some(Duration::from_secs(1)))?;
+    pub fn read_responses(stream: &mut TcpStream, was_head: bool) -> Vec<Response<Vec<u8>>> {
+        stream
+            .set_read_timeout(IO_TIMEOUT)
+            .expect("failed to set read timeout");
 
         // Read the all the responses.
         let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes)?;
+        stream
+            .read_to_end(&mut bytes)
+            .expect("failed to read response (WouldBlock means time out/no response)");
 
         let mut responses = Vec::new();
         while !bytes.is_empty() {
@@ -421,7 +452,7 @@ pub mod http {
             responses.push(response);
         }
 
-        Ok(responses)
+        responses
     }
 
     /// Assert that `response` has all the `want`ed fields.

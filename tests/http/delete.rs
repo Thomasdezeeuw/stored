@@ -148,8 +148,7 @@ fn invalid_content_length_text() {
         DB_PORT,
         &[(CONTENT_LENGTH, "abc")],
         b"some body",
-    )
-    .unwrap();
+    );
     assert_response(
         response,
         StatusCode::LENGTH_REQUIRED,
@@ -174,8 +173,7 @@ fn with_body() {
         DB_PORT,
         &[(CONTENT_LENGTH, "9")],
         b"some body",
-    )
-    .unwrap();
+    );
     assert_response(
         response,
         StatusCode::BAD_REQUEST,
