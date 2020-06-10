@@ -975,8 +975,8 @@ mod storage {
     }
 
     #[test]
-    fn uncommited_blobs() {
-        let path = temp_dir("uncommited_blobs.db");
+    fn uncommitted_blobs() {
+        let path = temp_dir("uncommitted_blobs.db");
         let mut storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 0);
@@ -1084,7 +1084,8 @@ mod storage {
         assert!(storage.lookup(&key).is_none());
         assert_eq!(
             storage.data_size(),
-            (DATA_MAGIC.len() + blob.len() + blob.len()) as u64
+            // Blob should only be stored once.
+            (DATA_MAGIC.len() + blob.len()) as u64
         );
 
         // We should be able to commit in any order.
@@ -1107,7 +1108,8 @@ mod storage {
         assert_eq!(storage.len(), 1);
         assert_eq!(
             storage.data_size(),
-            (DATA_MAGIC.len() + (blob.len() * 2)) as u64
+            // Blob should only be stored once.
+            (DATA_MAGIC.len() + blob.len()) as u64
         );
         assert_eq!(
             storage.index_size(),

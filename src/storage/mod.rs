@@ -187,20 +187,73 @@ impl fmt::Debug for Blob {
     }
 }
 
+/// A Binary Large OBject (BLOB) that is **not** committed to [`Storage`].
+#[derive(Clone)]
+pub struct UncommitedBlob {
+    offset: u64,
+    length: u32,
+    address: NonNull<u8>,
+    /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
+    /// `UncommitedBlob`, as that would invalidate the `address` field.
+    lifetime: MmapLifetime,
+}
+
+impl UncommitedBlob {
+    /// Returns the bytes that make up the `Blob`.
+    pub fn bytes<'b>(&'b self) -> &'b [u8] {
+        // Safety: this is safe because the lifetime `'b` can't outlive the
+        // lifetime of this `Blob`.
+        unsafe { slice::from_raw_parts(self.address.as_ptr(), self.length as usize) }
+    }
+
+    /// Returns the length of `Blob`.
+    pub fn len(&self) -> usize {
+        self.length as usize
+    }
+
+    /// Prefetch the bytes that make up this `Blob`.
+    ///
+    /// # Notes
+    ///
+    /// If this returns an error it doesn't mean the bytes are inaccessible.
+    pub fn prefetch(&self) -> io::Result<()> {
+        madvise(
+            self.address.as_ptr() as *mut _,
+            self.length as usize,
+            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
+        )
+    }
+}
+
+// Safety: the `lifetime` field ensures the `address` remains valid.
+unsafe impl Send for UncommitedBlob {}
+unsafe impl Sync for UncommitedBlob {}
+
+impl fmt::Debug for UncommitedBlob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("UncommitedBlob")
+            .field("bytes", &self.bytes())
+            .finish()
+    }
+}
+
 /// Handle to a database.
 #[derive(Debug)]
 pub struct Storage {
     index: Index,
-    /// All blobs currently in `Index` and `Data`. The lifetime `'s` refers to
-    /// the `mmap`ed areas in `Data`.
+    /// All blobs currently in [`Index`] and [`Data`].
     ///
     /// # Safety
     ///
-    /// `blobs` must be declared before `data`because it must be dropped before
+    /// `blobs` must be declared before `data` because it must be dropped before
     /// `data`.
     // TODO: use different hashing algorithm.
     blobs: HashMap<Key, (EntryIndex, BlobEntry)>,
-    /// Length of `blob` that are not `BlobEntry::Removed`.
+    /// Uncommited blobs.
+    ///
+    /// The `usize` is the number of [`AddBlob`]s adding the blob.
+    uncommitted: HashMap<Key, (usize, UncommitedBlob)>,
+    /// Length of `blob` that are not [`BlobEntry::Removed`].
     length: usize,
     /// # Safety
     ///
@@ -268,6 +321,7 @@ impl Storage {
             data,
             index,
             blobs,
+            uncommitted: HashMap::new(),
             length,
         })
     }
@@ -321,17 +375,32 @@ impl Storage {
             _ => {}
         }
 
+        // Check if another query is already running to add the blob.
+        match self.uncommitted.get_mut(&key) {
+            Some((count, _)) => {
+                // We can reuse the same query.
+                *count += 1;
+                return AddResult::Ok(AddBlob { key });
+            }
+            None => {}
+        }
+
         // First add the blob to the data file. If something happens the blob
         // will be written (or not), but its not *in* the database as the index
         // defines what is in the database.
         match self.data.add_blob(blob) {
-            Ok((offset, address, lifetime)) => AddResult::Ok(AddBlob {
-                key,
-                offset,
-                length: blob.len() as u32,
-                address,
-                lifetime,
-            }),
+            Ok((offset, address, lifetime)) => {
+                let uncommitted_blob = UncommitedBlob {
+                    offset,
+                    length: blob.len() as u32,
+                    address,
+                    lifetime,
+                };
+                self.uncommitted
+                    .insert(key.clone(), (1, uncommitted_blob.clone()));
+
+                AddResult::Ok(AddBlob { key })
+            }
             Err(err) => AddResult::Err(err),
         }
     }
@@ -423,13 +492,14 @@ pub trait Query {
 /// [add a blob]: Storage::add_blob
 pub struct AddBlob {
     key: Key,
-    offset: u64,
-    length: u32,
-    address: NonNull<u8>,
-    lifetime: MmapLifetime,
 }
 
 impl AddBlob {
+    /// Returns the key for the added blob.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+
     /// Create an `Entry` in `storage.index`.
     ///
     /// This ensures that the blob for which the entry is created is synced to
@@ -439,13 +509,14 @@ impl AddBlob {
         data: &mut Data,
         index: &mut Index,
         created_at: SystemTime,
+        blob: UncommitedBlob,
     ) -> io::Result<(EntryIndex, Blob)> {
         // Ensure the data is synced to disk.
-        data.sync(self.offset, self.length)?;
+        data.sync(blob.offset, blob.length)?;
 
         // The data is already stored so we can add the blob to the
         // index.
-        let index_entry = Entry::new(self.key.clone(), self.offset, self.length, created_at);
+        let index_entry = Entry::new(self.key.clone(), blob.offset, blob.length, created_at);
         let entry_index = index.add_entry(&index_entry)?;
 
         // Now that the data and index entry are stored we can insert
@@ -456,17 +527,23 @@ impl AddBlob {
                 // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
                 // because of the `lifetime` added below.
                 bytes: unsafe {
-                    slice::from_raw_parts(self.address.as_ptr(), self.length as usize)
+                    slice::from_raw_parts(blob.address.as_ptr(), blob.length as usize)
                 },
                 created: created_at,
-                lifetime: self.lifetime,
+                lifetime: blob.lifetime,
             },
         ))
     }
 
-    /// Returns the key for the added blob.
-    pub fn key(&self) -> &Key {
-        &self.key
+    /// Remove blob bytes.
+    fn remove_blob_bytes(self, _storage: &mut Storage) -> io::Result<()> {
+        /* TODO: cleanup the unused bytes.
+        // We add an entry with an invalid time to indicate the bytes are
+        // unused.
+        let index_entry = Entry::new(self.key, self.offset, self.length, DateTime::INVALID);
+        storage.index.add_entry(&index_entry).map(|_| ())
+        */
+        Ok(())
     }
 }
 
@@ -475,27 +552,39 @@ impl Query for AddBlob {
     type Return = ();
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
+        let uncommitted_blob = match storage.uncommitted.remove(&self.key) {
+            Some((_, uncommitted_blob)) => uncommitted_blob,
+            None => {
+                debug_assert!(storage.blobs.contains_key(&self.key));
+                return Ok(());
+            }
+        };
+
         debug_assert_eq!(
             storage
                 .data
-                .address_for(self.offset, self.length)
+                .address_for(uncommitted_blob.offset, uncommitted_blob.length)
                 .unwrap()
                 .0,
-            self.address
+            uncommitted_blob.address
         );
 
         use hash_map::Entry::*;
         match storage.blobs.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
                 (_, BlobEntry::Stored(_)) => {
-                    // If the blob has already been added we don't want to
-                    // modify it.
-                    self.abort(storage)
+                    // This should never happen, but just in case it does we
+                    // don't want to modify the existing entry.
+                    self.remove_blob_bytes(storage)
                 }
                 entry @ (_, BlobEntry::Removed(_)) => {
                     // First add our new index entry.
-                    let (entry_index, blob) =
-                        self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
+                    let (entry_index, blob) = self.create_entry(
+                        &mut storage.data,
+                        &mut storage.index,
+                        created_at,
+                        uncommitted_blob,
+                    )?;
                     let (old_entry_index, _) =
                         replace(entry, (entry_index, BlobEntry::Stored(blob)));
                     storage.length += 1;
@@ -505,8 +594,12 @@ impl Query for AddBlob {
                 }
             },
             Vacant(entry) => {
-                let (entry_index, blob) =
-                    self.create_entry(&mut storage.data, &mut storage.index, created_at)?;
+                let (entry_index, blob) = self.create_entry(
+                    &mut storage.data,
+                    &mut storage.index,
+                    created_at,
+                    uncommitted_blob,
+                )?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
                 Ok(())
@@ -514,17 +607,26 @@ impl Query for AddBlob {
         }
     }
 
-    fn abort(self, _storage: &mut Storage) -> io::Result<()> {
-        // Note: this is also called by `commit` is the blob is already in the
-        // database when committing.
-        Ok(())
+    fn abort(self, storage: &mut Storage) -> io::Result<()> {
+        use hash_map::Entry::*;
+        match storage.uncommitted.entry(self.key.clone()) {
+            Occupied(mut entry) => match entry.get_mut() {
+                (1, _) => {
+                    // We're the only `AddBlob` query that has access to these
+                    // bytes, so we can safely remove them.
+                    entry.remove();
+                }
+                (count, _) => {
+                    // Another `AddBlob` is still using the bytes.
+                    *count -= 1;
+                    return Ok(());
+                }
+            },
+            // Blob already committed by another query.
+            Vacant(..) => return Ok(()),
+        }
 
-        /* TODO: cleanup the unused bytes.
-        // We add an entry with an invalid time to indicate the bytes are
-        // unused.
-        let index_entry = Entry::new(self.key, self.offset, self.length, DateTime::INVALID);
-        storage.index.add_entry(&index_entry).map(|_| ())
-        */
+        self.remove_blob_bytes(storage)
     }
 }
 
