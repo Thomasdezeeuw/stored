@@ -16,5 +16,8 @@ pub mod key;
 pub mod peer;
 pub mod storage;
 
+mod error;
+
 pub use buffer::Buffer;
+pub use error::{DetailResult, ErrorDetail};
 pub use key::Key;
