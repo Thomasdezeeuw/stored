@@ -202,7 +202,9 @@ pub mod http {
     use std::time::Duration;
 
     use chrono::{Datelike, Timelike, Utc};
-    use http::header::{HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, SERVER};
+    use http::header::{
+        HeaderMap, HeaderName, CONTENT_LENGTH, CONTENT_TYPE, DATE, LAST_MODIFIED, SERVER,
+    };
     use http::status::StatusCode;
     use http::{HeaderValue, Request, Response, Uri, Version};
 
@@ -345,7 +347,7 @@ pub mod http {
             .expect("failed to shutdown writing side");
 
         let mut responses = read_responses(&mut stream, method == "HEAD");
-        assert_eq!(responses.len(), 1);
+        assert_eq!(responses.len(), 1, "unexpected number of responses");
         responses.pop().unwrap()
     }
 
@@ -468,8 +470,12 @@ pub mod http {
         want_body: &[u8],
     ) {
         let want_date_header = date_header();
-        assert_eq!(response.status(), want_status);
-        assert_eq!(response.version(), Version::HTTP_11);
+        assert_eq!(response.status(), want_status, "unexpected status");
+        assert_eq!(
+            response.version(),
+            Version::HTTP_11,
+            "unexpected HTTP version"
+        );
         for (name, value) in response.headers() {
             match name {
                 &SERVER => assert_eq!(value, "stored"),
@@ -477,7 +483,11 @@ pub mod http {
                 name => {
                     let want = want_headers.iter().find(|want| name == want.0);
                     if let Some(want) = want {
-                        assert_eq!(value, want.1, "Different '{}' header", name);
+                        if name == LAST_MODIFIED {
+                            cmp_date_header(name, value, want.1);
+                        } else {
+                            assert_eq!(value, want.1, "Different '{}' header", name);
+                        }
                     } else {
                         panic!(
                             "unexpected header: \"{}\" = {:?}, not in: {:?}",
@@ -527,6 +537,38 @@ pub mod http {
             str::from_utf8(got_body),
             str::from_utf8(want_body)
         );
+    }
+
+    fn cmp_date_header(name: &HeaderName, value: &HeaderValue, want: &str) {
+        // Check a second before and after.
+        let before_want = before_date_header(want);
+        if value != want && value != &*before_want {
+            assert_eq!(value, want, "Different '{}' header", name);
+        }
+    }
+
+    fn before_date_header(date: &str) -> String {
+        // Indexes for the 2 second bytes.
+        // Format: `Wed, 10 Jun 2020 18:19:51 GMT`.
+        const SEC1_INDEX: usize = 23;
+        const SEC2_INDEX: usize = 24;
+        const MIN2_INDEX: usize = 21;
+
+        let mut date = date.to_owned();
+        let bytes = unsafe { date.as_bytes_mut() };
+        if bytes[SEC2_INDEX] == b'0' {
+            if bytes[SEC1_INDEX] == b'0' {
+                // TODO: properly support changing the minute.
+                bytes[MIN2_INDEX] -= 1;
+                bytes[SEC1_INDEX] = b'5';
+            } else {
+                bytes[SEC1_INDEX] -= 1;
+            }
+            bytes[SEC2_INDEX] = b'9';
+        } else {
+            bytes[SEC2_INDEX] -= 1;
+        }
+        date
     }
 
     /// Returns header names in `want` but not in `got`.
