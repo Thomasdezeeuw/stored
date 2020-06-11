@@ -11,13 +11,12 @@ pub mod buffer;
 pub mod cli;
 pub mod config;
 pub mod db;
+pub mod error;
 pub mod http;
 pub mod key;
 pub mod peer;
 pub mod storage;
 
-mod error;
-
 pub use buffer::Buffer;
-pub use error::{DetailResult, ErrorDetail};
+pub use error::{Detail, DetailResult, ErrorDetail};
 pub use key::Key;
