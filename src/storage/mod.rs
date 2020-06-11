@@ -28,7 +28,7 @@
 //! can then be committed (by calling [`Storage::commit`]) or aborted (by
 //! calling [`Storage::abort`]). If the query is committed an entry is added to
 //! the index file, ensuring the blob is stored in the database. Only after the
-//! query is commited the blob can be looked up (using [`Storage::lookup`]).
+//! query is committed the blob can be looked up (using [`Storage::lookup`]).
 //! However if the query is aborted, or never used again, no index entry will be
 //! created for the blob and it will thus not be stored in the database. The
 //! bytes stored in the data file for the blob will be left in place.
@@ -40,7 +40,7 @@
 //! blob is present it returns a [`RemoveBlob`] query, if its not present it
 //! returns [`RemoveResult::NotStored`].
 //!
-//! In the second phase, if the query is commited, the time of blob's entry in
+//! In the second phase, if the query is committed, the time of blob's entry in
 //! the index file will be overwritten with a removed time. Next the in-memory
 //! hash map is updated to mark the blob as removed. The other fields, mainly
 //! the `offset` and `length` fields, are not changed. These fields will be used
@@ -189,16 +189,19 @@ impl fmt::Debug for Blob {
 
 /// A Binary Large OBject (BLOB) that is **not** committed to [`Storage`].
 #[derive(Clone)]
-pub struct UncommitedBlob {
+pub struct UncommittedBlob {
+    /// Offset into the data file.
     offset: u64,
+    /// Length of the blob.
     length: u32,
+    /// Mmapped address of the blob in-memory.
     address: NonNull<u8>,
     /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
-    /// `UncommitedBlob`, as that would invalidate the `address` field.
+    /// `UncommittedBlob`, as that would invalidate the `address` field.
     lifetime: MmapLifetime,
 }
 
-impl UncommitedBlob {
+impl UncommittedBlob {
     /// Returns the bytes that make up the `Blob`.
     pub fn bytes<'b>(&'b self) -> &'b [u8] {
         // Safety: this is safe because the lifetime `'b` can't outlive the
@@ -226,12 +229,12 @@ impl UncommitedBlob {
 }
 
 // Safety: the `lifetime` field ensures the `address` remains valid.
-unsafe impl Send for UncommitedBlob {}
-unsafe impl Sync for UncommitedBlob {}
+unsafe impl Send for UncommittedBlob {}
+unsafe impl Sync for UncommittedBlob {}
 
-impl fmt::Debug for UncommitedBlob {
+impl fmt::Debug for UncommittedBlob {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("UncommitedBlob")
+        f.debug_struct("UncommittedBlob")
             .field("bytes", &self.bytes())
             .finish()
     }
@@ -249,10 +252,10 @@ pub struct Storage {
     /// `data`.
     // TODO: use different hashing algorithm.
     blobs: HashMap<Key, (EntryIndex, BlobEntry)>,
-    /// Uncommited blobs.
+    /// Uncommitted blobs.
     ///
     /// The `usize` is the number of [`AddBlob`]s adding the blob.
-    uncommitted: HashMap<Key, (usize, UncommitedBlob)>,
+    uncommitted: HashMap<Key, (usize, UncommittedBlob)>,
     /// Length of `blob` that are not [`BlobEntry::Removed`].
     length: usize,
     /// # Safety
@@ -353,6 +356,11 @@ impl Storage {
             .map(|(_, blob_entry)| blob_entry.clone())
     }
 
+    /// Lookup an uncommitted blob.
+    pub fn lookup_uncommitted(&self, key: &Key) -> Option<UncommittedBlob> {
+        self.uncommitted.get(key).map(|(_, blob)| blob.clone())
+    }
+
     /// Add `blob` to the database.
     ///
     /// Only after the returned [query] is [committed] is the blob stored in the
@@ -390,7 +398,7 @@ impl Storage {
         // defines what is in the database.
         match self.data.add_blob(blob) {
             Ok((offset, address, lifetime)) => {
-                let uncommitted_blob = UncommitedBlob {
+                let uncommitted_blob = UncommittedBlob {
                     offset,
                     length: blob.len() as u32,
                     address,
@@ -475,9 +483,9 @@ pub trait Query {
     /// [committing]: Storage::commit
     type Arg;
 
-    /// Type returned after a `Query` is [commited].
+    /// Type returned after a `Query` is [committed].
     ///
-    /// [commited]: Storage::commit
+    /// [committed]: Storage::commit
     type Return;
 
     /// Commit to the query.
@@ -509,14 +517,14 @@ impl AddBlob {
         data: &mut Data,
         index: &mut Index,
         created_at: SystemTime,
-        blob: UncommitedBlob,
+        blob: UncommittedBlob,
     ) -> io::Result<(EntryIndex, Blob)> {
         // Ensure the data is synced to disk.
         data.sync(blob.offset, blob.length)?;
 
         // The data is already stored so we can add the blob to the
         // index.
-        let index_entry = Entry::new(self.key.clone(), blob.offset, blob.length, created_at);
+        let index_entry = Entry::new(self.key, blob.offset, blob.length, created_at);
         let entry_index = index.add_entry(&index_entry)?;
 
         // Now that the data and index entry are stored we can insert

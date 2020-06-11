@@ -995,6 +995,8 @@ mod storage {
         // Blob shouldn't be accessible.
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
+        // We can lookup the uncommitted blob.
+        assert_eq!(storage.lookup_uncommitted(&key).unwrap().bytes(), blob);
         // But is should be stored.
         assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob.len()) as u64);
 
@@ -1003,6 +1005,7 @@ mod storage {
         storage.commit(query, SystemTime::now()).unwrap();
         assert_eq!(got_key, key);
         assert_eq!(storage.lookup(&key).unwrap().unwrap().bytes(), blob);
+        assert!(storage.lookup_uncommitted(&key).is_none());
 
         // `blobs` should be unchanged.
         let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
@@ -1036,6 +1039,7 @@ mod storage {
         // Blob shouldn't be accessible.
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key1).is_none());
+        assert_eq!(storage.lookup_uncommitted(&key1).unwrap().bytes(), blob1);
         // But is should be stored.
         assert_eq!(storage.data_size(), (DATA_MAGIC.len() + blob1.len()) as u64);
 
@@ -1043,6 +1047,7 @@ mod storage {
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key2).is_none());
+        assert_eq!(storage.lookup_uncommitted(&key2).unwrap().bytes(), blob2);
         assert_eq!(
             storage.data_size(),
             (DATA_MAGIC.len() + blob1.len() + blob2.len()) as u64
@@ -1053,10 +1058,12 @@ mod storage {
         storage.commit(query2, SystemTime::now()).unwrap();
         assert_eq!(got_key2, key2);
         assert_eq!(storage.lookup(&key2).unwrap().unwrap().bytes(), blob2);
+        assert!(storage.lookup_uncommitted(&key2).is_none());
 
         // After committing the blob should be accessible.
         let got_key1 = query1.key().clone();
         storage.commit(query1, SystemTime::now()).unwrap();
+        assert!(storage.lookup_uncommitted(&key1).is_none());
         assert_eq!(got_key1, key1);
         assert_eq!(storage.lookup(&key1).unwrap().unwrap().bytes(), blob1);
     }
@@ -1078,7 +1085,14 @@ mod storage {
         let key = Key::for_blob(blob);
 
         let query1 = storage.add_blob(blob).unwrap();
+        let uncommitted_blob1 = storage.lookup_uncommitted(&key).unwrap();
         let query2 = storage.add_blob(blob).unwrap();
+        let uncommitted_blob2 = storage.lookup_uncommitted(&key).unwrap();
+        // The uncommitted blob should be reused.
+        assert_eq!(uncommitted_blob1.offset, uncommitted_blob2.offset);
+        assert_eq!(uncommitted_blob1.length, uncommitted_blob2.length);
+        assert_eq!(uncommitted_blob1.address, uncommitted_blob2.address);
+        assert_eq!(uncommitted_blob1.bytes(), blob);
 
         assert_eq!(storage.len(), 0);
         assert!(storage.lookup(&key).is_none());
