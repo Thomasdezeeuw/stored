@@ -19,7 +19,9 @@ use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{rt, Runtime};
 use log::{debug, error, info};
 
-use crate::storage::{AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage};
+use crate::storage::{
+    AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, UncommittedBlob,
+};
 use crate::{Buffer, Key};
 
 /// Start the database actor.
@@ -110,8 +112,17 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
             }
             Message::GetBlob(RpcMessage { request, response }) => {
                 let key = request;
-                debug!("retrieve blob: key={}", key);
+                debug!("retrieving blob: key={}", key);
                 let result = storage.lookup(&key);
+                // If the actor is disconnected this is not really a problem.
+                let _ = response.respond(result);
+            }
+            Message::GetUncommittedBlob(RpcMessage { request, response }) => {
+                let key = request;
+                debug!("retrieving uncommitted blob: key={}", key);
+                let result = storage
+                    .lookup_uncommitted(&key)
+                    .ok_or_else(|| storage.lookup(&key));
                 // If the actor is disconnected this is not really a problem.
                 let _ = response.respond(result);
             }
@@ -180,6 +191,16 @@ pub enum Message {
     /// Responds with the `Blob`, if its in the database.
     GetBlob(RpcMessage<Key, Option<BlobEntry>>),
 
+    /// Get an uncommitted blob from storage.
+    ///
+    /// Request is the key to look up.
+    ///
+    /// Responds with the `UncommittedBlob`, if its in the database, or tries the
+    /// committed blobs, returning the same thing as [`GetBlob`].
+    ///
+    /// [`GetBlob`]: Message::GetBlob
+    GetUncommittedBlob(RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>),
+
     /// Remove a blob from the database.
     ///
     /// Request is the key for the blob to remove.
@@ -227,6 +248,12 @@ impl From<RpcMessage<AddBlob, ()>> for Message {
 impl From<RpcMessage<Key, Option<BlobEntry>>> for Message {
     fn from(msg: RpcMessage<Key, Option<BlobEntry>>) -> Message {
         Message::GetBlob(msg)
+    }
+}
+
+impl From<RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>> for Message {
+    fn from(msg: RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>) -> Message {
+        Message::GetUncommittedBlob(msg)
     }
 }
 
