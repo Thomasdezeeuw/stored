@@ -539,6 +539,32 @@ pub mod http {
         );
     }
 
+    #[test]
+    fn test_cmp_date_header() {
+        let tests = &[
+            (
+                "Thu, 11 Jun 2020 10:35:20 GMT",
+                "Thu, 11 Jun 2020 10:35:20 GMT",
+            ),
+            (
+                "Thu, 11 Jun 2020 10:35:20 GMT",
+                "Thu, 11 Jun 2020 10:35:21 GMT",
+            ),
+            (
+                "Thu, 11 Jun 2020 10:35:39 GMT",
+                "Thu, 11 Jun 2020 10:35:40 GMT",
+            ),
+            (
+                "Thu, 11 Jun 2020 10:35:59 GMT",
+                "Thu, 11 Jun 2020 10:36:00 GMT",
+            ),
+        ];
+
+        for (value, want) in tests {
+            cmp_date_header(&LAST_MODIFIED, &HeaderValue::from_static(value), want);
+        }
+    }
+
     fn cmp_date_header(name: &HeaderName, value: &HeaderValue, want: &str) {
         // Check a second before and after.
         let before_want = before_date_header(want);
