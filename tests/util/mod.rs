@@ -16,9 +16,9 @@ use log::LevelFilter;
 macro_rules! start_stored_fn {
     (
         // Starts a new stored process for each configuration.
-        &[ $( $conf_path: ident ),* ],
+        &[ $( $conf_path: expr ),* ],
         // Removes all the old database files.
-        &[ $( $remove_db_path: ident ),* ],
+        &[ $( $remove_db_path: expr ),* ],
         // Log severity that gets printed.
         $filter: ident $(,)*
     ) => {
