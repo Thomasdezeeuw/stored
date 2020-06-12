@@ -1014,6 +1014,8 @@ impl Data {
     ///
     /// The blob is not synced to disk, call [`sync`] to ensure that!
     /// Can't store an empty blob!
+    ///
+    /// [`sync`]: Data::sync
     fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>, MmapLifetime)> {
         assert!(!blob.is_empty(), "tried to store an empty blob");
         // First add the blob to the file.
