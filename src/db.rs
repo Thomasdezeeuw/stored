@@ -19,6 +19,7 @@ use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{rt, Runtime};
 use log::{debug, error, info, trace, warn};
 
+use crate::error::Describe;
 use crate::storage::{
     AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, UncommittedBlob,
 };
@@ -28,12 +29,13 @@ use crate::{Buffer, Key};
 pub fn start(
     runtime: &mut Runtime,
     path: Box<Path>,
-) -> Result<ActorRef<Message>, rt::Error<io::Error>> {
-    let storage = Storage::open(&*path)?;
+) -> crate::Result<ActorRef<Message>, rt::Error<io::Error>> {
+    let storage =
+        Storage::open(&*path).map_err(|err| rt::Error::from(err).describe("opening database"))?;
     let supervisor = Supervisor::new(path);
     runtime
         .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage)
-        .map_err(rt::Error::map_type)
+        .map_err(|err| err.map_type().describe("spawning database actor"))
 }
 
 /// Supervisor for the [`db::actor`].
@@ -53,9 +55,9 @@ impl Supervisor {
 
 impl<A> SyncSupervisor<A> for Supervisor
 where
-    A: SyncActor<Argument = Storage, Error = io::Error>,
+    A: SyncActor<Argument = Storage, Error = crate::Error>,
 {
-    fn decide(&mut self, err: io::Error) -> SupervisorStrategy<Storage> {
+    fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<Storage> {
         error!("error operating on database: {}", err);
         info!("attempting to reopen database: path={}", self.0.display());
         match Storage::open(&self.0) {
@@ -81,7 +83,7 @@ where
 }
 
 /// Actor that handles storage [`Message`]s and applies them to [`Storage`].
-pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<()> {
+pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Result<()> {
     debug!(
         "database actor started: data_size={}, index_size={}, total_size={}",
         storage.data_size(),
@@ -98,7 +100,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let result = match storage.add_blob(&blob.as_bytes()[..length]) {
                     Ok(query) => (AddBlobResponse::Query(query), blob),
                     AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), blob),
-                    Err(err) => return Result::Err(err),
+                    Err(err) => return Result::Err(err.describe("adding a blob")),
                 };
                 if let Result::Err(err) = response.respond(result) {
                     warn!("db actor failed to send response to actor: {}", err);
@@ -106,13 +108,17 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
             }
             Message::CommitAddBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
-                storage.commit(query, created_at)?;
+                storage
+                    .commit(query, created_at)
+                    .map_err(|err| err.describe("committing to adding blob"))?;
                 if let Err(err) = response.respond(()) {
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
             Message::AbortAddBlob(RpcMessage { request, response }) => {
-                storage.abort(request)?;
+                storage
+                    .abort(request)
+                    .map_err(|err| err.describe("aborting adding blob"))?;
                 if let Err(err) = response.respond(()) {
                     warn!("db actor failed to send response to actor: {}", err);
                 }
@@ -148,13 +154,17 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
             }
             Message::CommitRemoveBlob(RpcMessage { request, response }) => {
                 let (query, removed_at) = request;
-                let removed_at = storage.commit(query, removed_at)?;
+                let removed_at = storage
+                    .commit(query, removed_at)
+                    .map_err(|err| err.describe("committing to removing blob"))?;
                 if let Err(err) = response.respond(removed_at) {
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
             Message::AbortRemoveBlob(RpcMessage { request, response }) => {
-                storage.abort(request)?;
+                storage
+                    .abort(request)
+                    .map_err(|err| err.describe("aborting a remove blob operation"))?;
                 // If the actor is disconnected this is not really a problem.
                 if let Err(err) = response.respond(()) {
                     warn!("db actor failed to send response to actor: {}", err);
