@@ -96,9 +96,14 @@ async fn read_server_address(
             }
             None => {} // Continue reading more.
         }
-        buf.read_from(&mut *stream)
+        let n = buf
+            .read_from(&mut *stream)
             .await
             .map_err(|err| err.describe("reading peer's server address"))?;
+        if n == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
+                .describe("reading peer's server address"));
+        }
     }
 }
 
@@ -593,10 +598,19 @@ async fn read_blob<'b>(
     // TODO: this is wasteful, a read system call for 8 bytes?!
     // NOTE: doing this because of the `KeyCalculator` below.
     let mut length_buf = [0; 8];
-    stream
-        .read(&mut length_buf[..])
-        .await
-        .map_err(|err| err.describe("reading blob length"))?;
+    let mut read_bytes: usize = 0;
+    while read_bytes < length_buf.len() {
+        let n = stream
+            .read(&mut length_buf[..])
+            .await
+            .map_err(|err| err.describe("reading blob length"))?;
+        if n == 0 {
+            debug!("coordinator server disconnected connection to consensus actor");
+            // TODO: handle this better?
+            return Ok(None);
+        }
+        read_bytes += n;
+    }
     let blob_length = u64::from_be_bytes(length_buf);
     trace!(
         "read blob length from coordinator server: length={}",
@@ -611,10 +625,14 @@ async fn read_blob<'b>(
     buf.reserve_atleast(blob_length as usize);
     let mut read_bytes: usize = 0;
     while read_bytes < blob_length as usize {
-        read_bytes += buf
+        let n = buf
             .read_from(&mut calc)
             .await
             .map_err(|err| err.describe("reading blob"))?;
+        if n == 0 {
+            return Err(io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading blob"));
+        }
+        read_bytes += n;
     }
     let key = calc.finish();
     trace!(

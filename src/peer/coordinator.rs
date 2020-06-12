@@ -243,9 +243,16 @@ async fn read_known_peers(
 ) -> crate::Result<()> {
     trace!("coordinator relay reading known peers from connection");
     loop {
-        buf.read_from(&mut *stream)
+        let n = buf
+            .read_from(&mut *stream)
             .await
             .map_err(|err| err.describe("reading known peers"))?;
+        if n == 0 {
+            return Err(
+                io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading known peers")
+            );
+        }
+
         // TODO: put `Deserializer` outside the loop.
         let mut iter =
             serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Vec<SocketAddr>>();

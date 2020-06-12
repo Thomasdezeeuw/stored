@@ -1,6 +1,5 @@
 //! Module with the type related to peer interaction.
 
-use std::fmt;
 use std::future::Future;
 use std::mem::replace;
 use std::net::SocketAddr;
@@ -9,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{self, Poll};
 use std::time::{Duration, SystemTime};
+use std::{fmt, io};
 
 use futures_util::io::AsyncWriteExt;
 use heph::actor::context::{ThreadLocal, ThreadSafe};
@@ -437,10 +437,16 @@ pub async fn switcher(
 
     let mut bytes_read = 0;
     while bytes_read < MAGIC_LENGTH {
-        bytes_read += buf
+        let n = buf
             .read_from(&mut stream)
             .await
             .map_err(|err| err.describe("reading magic bytes"))?;
+        if n == 0 {
+            return Err(
+                io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading magic bytes")
+            );
+        }
+        bytes_read += n;
     }
 
     assert_eq!(MAGIC_LENGTH, COORDINATOR_MAGIC.len());
