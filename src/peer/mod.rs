@@ -1,5 +1,6 @@
 //! Module with the type related to peer interaction.
 
+use std::fmt;
 use std::future::Future;
 use std::mem::replace;
 use std::net::SocketAddr;
@@ -7,8 +8,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{self, Poll};
-use std::time::SystemTime;
-use std::{fmt, io};
+use std::time::{Duration, SystemTime};
 
 use futures_util::io::AsyncWriteExt;
 use heph::actor::context::{ThreadLocal, ThreadSafe};
@@ -16,11 +16,13 @@ use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::{tcp, TcpStream};
 use heph::rt::options::{ActorOptions, Priority};
-use heph::rt::{self, Runtime};
 use heph::supervisor::{RestartSupervisor, SupervisorStrategy};
+use heph::timer::Timer;
+use heph::Runtime;
 use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
+use crate::error::Describe;
 use crate::{config, db, Buffer, Key};
 
 pub mod coordinator;
@@ -33,38 +35,88 @@ pub fn start(
     runtime: &mut Runtime,
     config: config::Distributed,
     db_ref: ActorRef<db::Message>,
-) -> Result<Peers, rt::Error<io::Error>> {
+) -> crate::Result<Peers> {
     match config.replicas {
-        config::Replicas::Majority => {}
+        config::Replicas::All => {}
         _ => unimplemented!("currently only replicas = 'all' is supported"),
     }
 
     let peers = Peers::empty();
 
-    // Setup consensus server.
-    let peers2 = peers.clone();
-    let switcher = (switcher as fn(_, _, _, _, _) -> _)
-        .map_arg(move |(stream, address)| (stream, address, peers2.clone(), db_ref.clone()));
-    let server_actor = tcp::Server::setup(
+    start_listener(
+        runtime,
+        db_ref,
         config.peer_address,
+        peers.clone(),
+        config.peer_address,
+    )?;
+    start_relays(runtime, config.peers.0, config.peer_address, peers.clone());
+
+    // TODO: sync already stored blobs.
+
+    Ok(peers)
+}
+
+/// Start the peer listener, listening for incoming TCP connections from its
+/// peers starting a new [`switcher`] actor for each connection.
+fn start_listener(
+    runtime: &mut Runtime,
+    db_ref: ActorRef<db::Message>,
+    address: SocketAddr,
+    peers: Peers,
+    server: SocketAddr,
+) -> crate::Result<()> {
+    debug!("starting peer listener: address={}", address);
+
+    let switcher = (switcher as fn(_, _, _, _, _, _) -> _)
+        .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
+    let server_actor = tcp::Server::setup(
+        address,
         |err| {
             warn!("switcher actor failed: {}", err);
             SupervisorStrategy::Stop
         },
         switcher,
         ActorOptions::default(),
-    )?;
-    let supervisor = RestartSupervisor::new("consensus HTTP server", ());
+    )
+    .map_err(|err| err.describe("creating new tcp::Server"))?;
+    let supervisor = RestartSupervisor::new("consensus listener", ());
     let options = ActorOptions::default().with_priority(Priority::HIGH);
-    let _ = runtime.try_spawn(supervisor, server_actor, (), options)?;
+    let _ = runtime
+        .try_spawn(supervisor, server_actor, (), options)
+        .map_err(|err| err.describe("spawning peer server"))?;
     // FIXME: receive signals.
     //runtime.receive_signals(server_ref.try_map());
 
-    for peer_address in config.peers.0 {
-        let args = (peer_address, peers.clone(), config.peer_address);
+    Ok(())
+}
+
+/// Start a [`coordinator::relay`] actor for each address in `peer_addresses`.
+fn start_relays(
+    runtime: &mut Runtime,
+    mut peer_addresses: Vec<SocketAddr>,
+    server: SocketAddr,
+    peers: Peers,
+) {
+    peer_addresses.sort_unstable();
+    peer_addresses.dedup();
+
+    for peer_address in peer_addresses {
+        if peer_address == server {
+            // Don't want to add ourselves.
+            continue;
+        }
+
+        debug!(
+            "starting relay actor for peer: remote_address={}",
+            peer_address
+        );
+        let args = (peer_address, peers.clone(), server);
         let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
         let relay = coordinator::relay as fn(_, _, _, _) -> _;
-        let options = ActorOptions::default().with_priority(Priority::HIGH);
+        let options = ActorOptions::default()
+            .with_priority(Priority::HIGH)
+            .mark_ready();
         let relay_ref = runtime.spawn(supervisor, relay, args, options);
 
         peers.add(Peer {
@@ -72,16 +124,11 @@ pub fn start(
             address: peer_address,
         });
     }
-
-    Ok(peers)
 }
 
 // TODO: replace `Peers` with `ActorGroup`.
-
-/// Id of a consensus algorithm run.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-#[repr(transparent)]
-pub struct ConsensusId(usize);
+//
+// TODO: remove disconnected/failed peers from `Peers`.
 
 /// Collection of connections peers.
 #[derive(Clone)]
@@ -89,19 +136,21 @@ pub struct Peers {
     inner: Arc<PeersInner>,
 }
 
-impl fmt::Debug for Peers {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Peers")
-            .field("peers", &self.inner.peers)
-            .field("consensus_id", &self.inner.consensus_id)
-            .finish()
-    }
-}
-
 struct PeersInner {
     peers: RwLock<Vec<Peer>>,
     /// Unique id for each consensus run.
     consensus_id: AtomicUsize,
+}
+
+/// Id of a consensus algorithm run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[repr(transparent)]
+pub struct ConsensusId(usize);
+
+impl fmt::Display for ConsensusId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,11 +234,18 @@ impl Peers {
             .map(
                 |peer| match peer.actor_ref.rpc(ctx, (id, request.clone())) {
                     Ok(rpc) => RpcStatus::InProgress(rpc),
-                    Err(SendError) => RpcStatus::Done(Err(RelayError::Failed)),
+                    Err(SendError) => {
+                        warn!(
+                            "failed to send message to peer relay: address={}",
+                            peer.address
+                        );
+                        RpcStatus::Done(Err(RelayError::Failed))
+                    }
                 },
             )
             .collect();
-        PeerRpc { rpcs }
+        let timer = Timer::timeout(ctx, PEER_TIMEOUT);
+        PeerRpc { rpcs, timer }
     }
 
     fn new_consensus_id(&self) -> ConsensusId {
@@ -208,35 +264,57 @@ impl Peers {
             .collect()
     }
 
-    /// Attempts to add multiple peers.
-    ///
-    /// Its spawns a new [`coordinator::relay`] for each address in `addresses`,
-    /// which are not in the collection already.
-    fn extend<M>(
+    /// Attempts to spawn a [`coordinator::relay`] actor for `peer_address`..
+    fn spawn<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadSafe>,
-        addresses: &[SocketAddr],
+        peer_address: SocketAddr,
+        server: SocketAddr,
+    ) {
+        // If we get the known peers addresses from a peer it could be that we
+        // (this node) it a known peer, but we don't want to add ourselves to
+        // this list.
+        if peer_address == server {
+            return;
+        }
+
+        // NOTE: we don't lock while spawning
+        if self.known(&peer_address) {
+            return;
+        }
+
+        // TODO: DRY with code in `start_relays`: need a trait for spawning
+        // in Heph.
+        debug!(
+            "starting relay actor for peer: remote_address={}",
+            peer_address
+        );
+        let args = (peer_address, self.clone(), server);
+        let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
+        let relay = coordinator::relay as fn(_, _, _, _) -> _;
+        let options = ActorOptions::default()
+            .with_priority(Priority::HIGH)
+            .mark_ready();
+        let relay_ref = ctx.spawn(supervisor, relay, args, options);
+        self.add(Peer {
+            actor_ref: relay_ref,
+            address: peer_address,
+        });
+    }
+
+    /// Calls [`spawn`] for each address in `peer_addresses`.
+    ///
+    /// [`spawn`]: Peers::spawn
+    fn spawn_many<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadSafe>,
+        peer_addresses: &[SocketAddr],
         server: SocketAddr,
     ) {
         // NOTE: we don't lock the entire collection up front here because we
         // don't want to hold the lock for too long.
-
-        for address in addresses.into_iter().copied() {
-            if self.known(&address) {
-                continue;
-            }
-
-            // TODO: DRY with code in `peer::start`: need a trait for spawning
-            // in Heph.
-            let args = (address, self.clone(), server);
-            let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
-            let relay = coordinator::relay as fn(_, _, _, _) -> _;
-            let options = ActorOptions::default().with_priority(Priority::HIGH);
-            let relay_ref = ctx.spawn(supervisor, relay, args, options);
-            self.add(Peer {
-                actor_ref: relay_ref,
-                address,
-            });
+        for peer_address in peer_addresses.iter().copied() {
+            self.spawn(ctx, peer_address, server);
         }
     }
 
@@ -256,12 +334,26 @@ impl Peers {
     }
 }
 
+impl fmt::Debug for Peers {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Peers")
+            .field("peers", &self.inner.peers)
+            .field("consensus_id", &self.inner.consensus_id)
+            .finish()
+    }
+}
+
 fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
     peers.iter().any(|peer| peer.address == *address)
 }
 
+// TODO: increase this. Also base this on something... maybe a configuration
+// thing?
+const PEER_TIMEOUT: Duration = Duration::from_secs(2);
+
 pub struct PeerRpc<Res> {
     rpcs: Box<[RpcStatus<Res>]>,
+    timer: Timer,
 }
 
 /// Status of a [`Rpc`] future in [`PeerRpc`].
@@ -274,28 +366,15 @@ enum RpcStatus<Res> {
     Completed,
 }
 
-impl<Res> RpcStatus<Res> {
-    /// Take the result.
-    ///
-    /// # Panics
-    ///
-    /// This will panic if the status is not `Done`.
-    fn take(&mut self) -> Result<Res, RelayError> {
-        match replace(self, RpcStatus::Completed) {
-            RpcStatus::Done(result) => result,
-            _ => unreachable!("folled `PeerRpc` after completion"),
-        }
-    }
-}
-
 impl<Res> Future for PeerRpc<Res> {
     type Output = Vec<Result<Res, RelayError>>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
         // Check all the statuses.
+        let mut has_pending = false;
         for status in self.rpcs.iter_mut() {
-            match status {
-                RpcStatus::InProgress(rpc) => match Pin::new(rpc).poll(ctx) {
+            if let RpcStatus::InProgress(rpc) = status {
+                match Pin::new(rpc).poll(ctx) {
                     Poll::Ready(result) => {
                         // Map no response to a failed response.
                         let result = match result {
@@ -304,16 +383,31 @@ impl<Res> Future for PeerRpc<Res> {
                         };
                         drop(replace(status, RpcStatus::Done(result)));
                     }
-                    Poll::Pending => return Poll::Pending,
-                },
-                // RpcStatus::Done(..) => {}, // Continue.
-                // RpcStatus::Complete => unreachable!(),
-                _ => {}
+                    Poll::Pending => has_pending = true,
+                }
             }
         }
 
+        // If not all futures have returned and the timer hasn't passed we'll
+        // try again later.
+        if has_pending && !self.timer.has_passed() {
+            return Poll::Pending;
+        } else if has_pending {
+            // TODO: provide more context.
+            warn!("peer RPC timed out");
+        }
+
         // If we reached this point all statuses should be `Done`.
-        let results = self.rpcs.iter_mut().map(|status| status.take()).collect();
+        let results = self
+            .rpcs
+            .iter_mut()
+            .map(|status| match replace(status, RpcStatus::Completed) {
+                RpcStatus::Done(result) => result,
+                // If the peer hasn't responded yet and we're here it means the
+                // timeout has passed, we'll consider there vote as failed.
+                _ => Err(RelayError::Failed),
+            })
+            .collect();
         Poll::Ready(results)
     }
 }
@@ -328,13 +422,14 @@ const MAGIC_ERROR_MSG: &[u8] = b"invalid connection magic";
 /// participant.
 pub async fn switcher(
     // The `Response` type is a bit awkward, but required for
-    // participant::dispatcher.
+    // `participant::dispatcher`.
     ctx: actor::Context<participant::Response, ThreadSafe>,
     mut stream: TcpStream,
     remote: SocketAddr,
     peers: Peers,
     db_ref: ActorRef<db::Message>,
-) -> io::Result<()> {
+    server: SocketAddr,
+) -> crate::Result<()> {
     debug!("accepted peer connection: remote_address={}", remote);
     // TODO: 8k is a bit large for `coordinator::server`, only needs to read 1
     // key at a time.
@@ -342,7 +437,10 @@ pub async fn switcher(
 
     let mut bytes_read = 0;
     while bytes_read < MAGIC_LENGTH {
-        bytes_read += buf.read_from(&mut stream).await?;
+        bytes_read += buf
+            .read_from(&mut stream)
+            .await
+            .map_err(|err| err.describe("reading magic bytes"))?;
     }
 
     assert_eq!(MAGIC_LENGTH, COORDINATOR_MAGIC.len());
@@ -358,7 +456,8 @@ pub async fn switcher(
         }
         PARTICIPANT_MAGIC => {
             buf.processed(MAGIC_LENGTH);
-            if let Err(err) = participant::dispatcher(ctx, stream, buf, peers, db_ref).await {
+            if let Err(err) = participant::dispatcher(ctx, stream, buf, peers, db_ref, server).await
+            {
                 warn!("participant dispatcher failed: {}", err);
             }
             // Don't log the error as a problem in the switch part.
@@ -369,7 +468,11 @@ pub async fn switcher(
                 "closing connection: incorrect connection magic: remote_address={}",
                 remote
             );
-            stream.write(MAGIC_ERROR_MSG).await.map(|_| ())
+            stream
+                .write(MAGIC_ERROR_MSG)
+                .await
+                .map(|_| ())
+                .map_err(|err| err.describe("writing error response"))
         }
     }
 }

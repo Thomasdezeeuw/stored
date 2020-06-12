@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::net::SocketAddr;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use futures_util::future::{select, Either};
 use futures_util::io::AsyncWriteExt;
@@ -11,13 +11,14 @@ use heph::actor;
 use heph::actor::context::ThreadSafe;
 use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse};
 use heph::net::TcpStream;
-use log::{debug, error, warn};
-use serde::{Deserialize, Serialize};
+use log::{debug, error, trace, warn};
+use serde::Serialize;
 
 use crate::buffer::{Buffer, WriteBuffer};
+use crate::error::Describe;
 use crate::peer::participant::{Response, ResponseKind};
 use crate::peer::{ConsensusId, Peers, PARTICIPANT_MAGIC};
-use crate::storage::{BlobEntry, PAGE_SIZE};
+use crate::storage::{self, BlobEntry, PAGE_SIZE};
 use crate::{db, Key};
 
 /// Message relayed to the peer the [`relay`] is connected to.
@@ -119,7 +120,12 @@ pub async fn relay(
     remote: SocketAddr,
     peers: Peers,
     server: SocketAddr,
-) -> io::Result<()> {
+) -> crate::Result<()> {
+    debug!(
+        "starting coordinator relay: remote_address={}, server={}",
+        remote, server
+    );
+
     let mut responses = HashMap::new();
     let mut req_id = 0;
     let mut buf = Buffer::new();
@@ -128,26 +134,49 @@ pub async fn relay(
 
     read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
 
-    // FIXME: this loops for ever.
     loop {
         match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
             Either::Left((msg, _)) => {
+                debug!("coordinator relay received a message: {:?}", msg);
                 // Received a message to relay.
                 let req_id = next_id(&mut req_id);
                 let wbuf = buf.split_write(MAX_REQ_SIZE).1;
                 write_message(&mut stream, wbuf, &mut responses, req_id, msg).await?;
+            }
+            Either::Right((Ok(0), _)) => {
+                debug!("peer participant closed connection");
+                while let Some(msg) = ctx.try_receive_next() {
+                    // Write any response left in our mailbox.
+                    // TODO: ignore errors here since the other side is already
+                    // disconnected?
+                    debug!("coordinator relay received a message: {:?}", msg);
+                    let req_id = next_id(&mut req_id);
+                    let wbuf = buf.split_write(MAX_REQ_SIZE).1;
+                    write_message(&mut stream, wbuf, &mut responses, req_id, msg).await?;
+                }
+                return Ok(());
             }
             Either::Right((Ok(_), _)) => {
                 // Read one or more requests from the stream.
                 relay_responses(&mut responses, &mut buf)?;
             }
             // Read error.
-            Either::Right((Err(err), _)) => return Err(err),
+            Either::Right((Err(err), _)) => {
+                return Err(err.describe("reading from peer connection"))
+            }
         }
 
         next_id(&mut req_id);
     }
 }
+
+/// Maximum number of tries `start_participant_connection` attempts to make a
+/// connection to the peer before stopping.
+const CONNECT_TRIES: usize = 5;
+
+/// Time to wait between connection tries in [`start_participant_connection`],
+/// get doubled after each try.
+const START_WAIT: Duration = Duration::from_millis(200);
 
 /// Start a participant connection to `remote` address.
 async fn start_participant_connection(
@@ -155,21 +184,52 @@ async fn start_participant_connection(
     remote: SocketAddr,
     buf: &mut Buffer,
     server: &SocketAddr,
-) -> io::Result<TcpStream> {
-    debug!("connecting to participant: remote_address={}", remote);
-    let mut stream = TcpStream::connect(ctx, remote)?;
+) -> crate::Result<TcpStream> {
+    trace!(
+        "coordinator relay connecting to peer participant: remote_address={}",
+        remote
+    );
+    let mut wait = START_WAIT;
+    let mut i = 0;
+    let mut stream = loop {
+        match TcpStream::connect(ctx, remote) {
+            Ok(stream) => break stream,
+            Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
+            Err(err) => {
+                warn!(
+                    "failed to connect to peer, but trying again ({}/{} tries): {}",
+                    err, i, CONNECT_TRIES
+                );
+            }
+        }
+        // FIXME: don't use sleep here.
+        std::thread::sleep(wait);
+        //Timer::timeout(ctx, wait).await;
+        wait *= 2;
+        i += 1;
+    };
 
     // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
     let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
 
     // The connection magic to request the node to act as participant.
-    let n = wbuf.write(PARTICIPANT_MAGIC)?;
+    let n = wbuf.write(PARTICIPANT_MAGIC).unwrap();
     assert_eq!(n, PARTICIPANT_MAGIC.len());
 
     // The address of the `coordinator::server`.
-    serde_json::to_writer(&mut wbuf, server)?;
+    serde_json::to_writer(&mut wbuf, server)
+        .map_err(|err| io::Error::from(err).describe("serializing server address"))?;
 
-    stream.write_all(wbuf.as_bytes()).await.map(|()| stream)
+    trace!(
+        "coordinator relay writing setup to peer participant: remote_address={}, server_address={}",
+        remote,
+        server,
+    );
+    stream
+        .write_all(wbuf.as_bytes())
+        .await
+        .map(|()| stream)
+        .map_err(|err| err.describe("writing peer connection setup"))
 }
 
 /// Read the known peers from the `stream`, starting a new [`relay`] actor for
@@ -180,18 +240,30 @@ async fn read_known_peers(
     buf: &mut Buffer,
     peers: &Peers,
     server: SocketAddr,
-) -> io::Result<()> {
+) -> crate::Result<()> {
+    trace!("coordinator relay reading known peers from connection");
     loop {
-        buf.read_from(&mut *stream).await?;
+        buf.read_from(&mut *stream)
+            .await
+            .map_err(|err| err.describe("reading known peers"))?;
         // TODO: put `Deserializer` outside the loop.
-        let mut de = serde_json::Deserializer::from_slice(buf.as_bytes());
-        match Vec::<SocketAddr>::deserialize(&mut de) {
-            Ok(addresses) => {
-                peers.extend(ctx, &addresses, server);
+        let mut iter =
+            serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Vec<SocketAddr>>();
+        // This is a bit weird; using an iterator for a single item. But the
+        // `StreamDeserializer` keeps track of the number of bytes processed,
+        // which we need to advance the buffer.
+        match iter.next() {
+            Some(Ok(addresses)) => {
+                peers.spawn_many(ctx, &addresses, server);
+                let bytes_processed = iter.byte_offset();
+                buf.processed(bytes_processed);
                 return Ok(());
             }
-            Err(ref err) if err.is_eof() => continue,
-            Err(err) => return Err(err.into()),
+            Some(Err(ref err)) if err.is_eof() => continue,
+            Some(Err(err)) => {
+                return Err(io::Error::from(err).describe("deserializing known peers"))
+            }
+            None => {} // Continue reading more.
         }
     }
 }
@@ -209,29 +281,37 @@ async fn write_message<'b>(
     responses: &mut HashMap<usize, RelayResponse>,
     id: usize,
     msg: RelayMessage,
-) -> io::Result<()> {
+) -> crate::Result<()> {
     let (consensus_id, kind) = match &msg {
         RelayMessage::AddBlob(RpcMessage {
             request: (consensus_id, key),
             ..
-        }) => (consensus_id, RequestKind::AddBlob(key)),
+        }) => (*consensus_id, RequestKind::AddBlob(key)),
         RelayMessage::CommitAddBlob(RpcMessage {
             request: (consensus_id, key, timestamp),
             ..
-        }) => (consensus_id, RequestKind::CommitAddBlob(key, timestamp)),
+        }) => (*consensus_id, RequestKind::CommitAddBlob(key, timestamp)),
         RelayMessage::RemoveBlob(RpcMessage {
             request: (consensus_id, key),
             ..
-        }) => (consensus_id, RequestKind::RemoveBlob(key)),
+        }) => (*consensus_id, RequestKind::RemoveBlob(key)),
     };
 
     let request = Request {
         id,
-        consensus_id: *consensus_id,
+        consensus_id,
         kind,
     };
-    serde_json::to_writer(&mut wbuf, &request)?;
-    stream.write_all(&wbuf.as_bytes()).await?;
+    serde_json::to_writer(&mut wbuf, &request)
+        .map_err(|err| io::Error::from(err).describe("serializing request"))?;
+    trace!(
+        "coordinator relay writing request to peer participant: {:?}",
+        request
+    );
+    stream
+        .write_all(&wbuf.as_bytes())
+        .await
+        .map_err(|err| err.describe("writing request"))?;
 
     match msg {
         RelayMessage::AddBlob(RpcMessage { response, .. }) => {
@@ -248,48 +328,55 @@ async fn write_message<'b>(
 }
 
 /// Read one or more requests in the `buf`fer and relay the responses to the
-/// correct actor in [`responses`].
+/// correct actor in `responses`.
 fn relay_responses(
     responses: &mut HashMap<usize, RelayResponse>,
     buf: &mut Buffer,
-) -> io::Result<()> {
+) -> crate::Result<()> {
     // TODO: reuse the `Deserializer`, it allocates scratch memory.
     let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
 
-    for result in de.next() {
+    while let Some(result) = de.next() {
         match result {
-            Ok(response) => match responses.remove(&response.request_id) {
-                Some(relay) => match relay {
-                    RelayResponse::AddBlob(relay) | RelayResponse::RemoveBlob(relay) => {
-                        // Convert the response into the type required for
-                        // `RelayResponse`.
-                        let response = match response.response {
-                            // FIXME: get timestamp form peer.
-                            ResponseKind::Commit => Ok(SystemTime::now()),
-                            ResponseKind::Abort => Err(RelayError::Abort),
-                            ResponseKind::Fail => Err(RelayError::Failed),
-                        };
-                        let _ = relay.respond(response);
+            Ok(response) => {
+                debug!("coordinator relay received a response: {:?}", response);
+
+                match responses.remove(&response.request_id) {
+                    Some(relay) => match relay {
+                        RelayResponse::AddBlob(relay) | RelayResponse::RemoveBlob(relay) => {
+                            // Convert the response into the type required for
+                            // `RelayResponse`.
+                            let response = match response.response {
+                                // FIXME: get timestamp form peer.
+                                ResponseKind::Commit => Ok(SystemTime::now()),
+                                ResponseKind::Abort => Err(RelayError::Abort),
+                                ResponseKind::Fail => Err(RelayError::Failed),
+                            };
+                            if let Err(err) = relay.respond(response) {
+                                warn!("failed to relay peer response to actor: {}", err);
+                            }
+                        }
+                        RelayResponse::CommitAddBlob(relay) => {
+                            // Convert the response into the type required for
+                            // `RelayResponse`.
+                            let response = match response.response {
+                                ResponseKind::Commit => Ok(()),
+                                ResponseKind::Abort => Err(RelayError::Abort),
+                                ResponseKind::Fail => Err(RelayError::Failed),
+                            };
+                            if let Err(err) = relay.respond(response) {
+                                warn!("failed to relay peer response to actor: {}", err);
+                            }
+                        }
+                    },
+                    None => {
+                        warn!("got an unexpected response: {:?}", response);
+                        continue;
                     }
-                    RelayResponse::CommitAddBlob(relay) => {
-                        // Convert the response into the type required for
-                        // `RelayResponse`.
-                        let response = match response.response {
-                            ResponseKind::Commit => Ok(()),
-                            ResponseKind::Abort => Err(RelayError::Abort),
-                            ResponseKind::Fail => Err(RelayError::Failed),
-                        };
-                        let _ = relay.respond(response);
-                    }
-                },
-                None => {
-                    // TODO: improve logging.
-                    warn!("got an unexpected response");
-                    continue;
                 }
-            },
+            }
             Err(err) if err.is_eof() => break,
-            Err(err) => return Err(err.into()),
+            Err(err) => return Err(io::Error::from(err).describe("deserializing peer response")),
         }
     }
 
@@ -312,7 +399,7 @@ pub struct Request<'a> {
     pub kind: RequestKind<'a>,
 }
 
-/// Request details.
+/// Kind of request.
 #[derive(Debug, Serialize)]
 pub enum RequestKind<'a> {
     /// Add the blob with [`Key`].
@@ -325,11 +412,44 @@ pub enum RequestKind<'a> {
     RemoveBlob(&'a Key),
 }
 
+/// Blob type used by [`server`].
+#[derive(Debug)]
+enum Blob {
+    Committed(storage::Blob),
+    Uncommitted(storage::UncommittedBlob),
+}
+
+impl Blob {
+    fn bytes(&self) -> &[u8] {
+        use Blob::*;
+        match self {
+            Committed(blob) => blob.bytes(),
+            Uncommitted(blob) => blob.bytes(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        use Blob::*;
+        match self {
+            Committed(blob) => blob.len(),
+            Uncommitted(blob) => blob.len(),
+        }
+    }
+
+    fn prefetch(&self) -> io::Result<()> {
+        use Blob::*;
+        match self {
+            Committed(blob) => blob.prefetch(),
+            Uncommitted(blob) => blob.prefetch(),
+        }
+    }
+}
+
 /// Length send if the blob is not found.
 const NO_BLOB: [u8; 8] = 0u64.to_be_bytes();
 
 /// Actor that serves the [`participant::consensus`] actor in retrieving
-/// uncommited blobs.
+/// uncommitted blobs.
 ///
 /// Expects to read [`Key`]s (as bytes) on the `stream`, responding with
 /// [`Blob`]s (length as `u64`, following by the bytes). If the returned length
@@ -338,35 +458,33 @@ const NO_BLOB: [u8; 8] = 0u64.to_be_bytes();
 /// [`participant::consensus`]: crate::peer::participant::consensus
 /// [`Blob`]: crate::storage::Blob
 pub async fn server(
-    // Having `Response` here as message makes no sense, but its required
-    // because `participant::dispatcher` has it as message. It should be `!`.
+    // Having `Response` here as message type makes no sense, but its required
+    // because `participant::dispatcher` has it as message type. It should be
+    // `!`.
     mut ctx: actor::Context<Response, ThreadSafe>,
     mut stream: TcpStream,
     mut buf: Buffer,
     db_ref: ActorRef<db::Message>,
-) -> io::Result<()> {
+) -> crate::Result<()> {
+    debug!("starting coordinator server");
+
     loop {
         while buf.len() >= Key::LENGTH {
             let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
-            match db_ref.rpc(&mut ctx, key.clone()) {
-                Ok(rpc) => match rpc.await {
-                    Ok(Some(BlobEntry::Stored(blob))) => {
-                        if blob.len() > PAGE_SIZE {
-                            // If the blob is large(-ish) we'll prefetch it from
-                            // disk to improve performance.
-                            // TODO: benchmark this with large(-ish) blobs.
-                            let _ = blob.prefetch();
-                        }
+            debug!("got peer request for blob: key={}", key);
 
-                        // TODO: use vectored I/O here.
-                        let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
-                        stream.write_all(&length).await?;
-                        stream.write_all(blob.bytes()).await?;
-                    }
-                    Ok(Some(BlobEntry::Removed(_))) | Ok(None) => {
+            let blob = match db_ref.rpc(&mut ctx, key.clone()) {
+                Ok(rpc) => match rpc.await {
+                    Ok(Ok(blob)) => Blob::Uncommitted(blob),
+                    Ok(Err(Some(BlobEntry::Stored(blob)))) => Blob::Committed(blob),
+                    Ok(Err(Some(BlobEntry::Removed(_)))) | Ok(Err(None)) => {
                         // By writing a length of 0 we indicate the blob is not
                         // found.
-                        stream.write_all(&NO_BLOB).await?;
+                        stream
+                            .write_all(&NO_BLOB)
+                            .await
+                            .map_err(|err| err.describe("writing no blob length"))?;
+                        continue;
                     }
                     Err(err) => {
                         error!("error making RPC call to database: {}", err);
@@ -380,13 +498,35 @@ pub async fn server(
                     error!("error making RPC call to database: {}", err);
                     return Ok(());
                 }
+            };
+
+            if blob.len() > PAGE_SIZE {
+                // If the blob is large(-ish) we'll prefetch it from
+                // disk to improve performance.
+                // TODO: benchmark this with large(-ish) blobs.
+                if let Err(err) = blob.prefetch() {
+                    warn!("error prefetching blob, continuing: {}", err);
+                }
             }
+
+            // TODO: use vectored I/O here.
+            let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
+            stream
+                .write_all(&length)
+                .await
+                .map_err(|err| err.describe("writing blob length"))?;
+            stream
+                .write_all(blob.bytes())
+                .await
+                .map_err(|err| err.describe("writing blob bytes"))?;
+
+            buf.processed(Key::LENGTH);
         }
 
         match buf.read_from(&mut stream).await {
             Ok(0) => return Ok(()),
             Ok(_) => {}
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.describe("reading from socket")),
         }
     }
 }
