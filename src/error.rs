@@ -1,48 +1,66 @@
+//! Module with the error and related type.
+
 use std::{error, fmt, io};
 
-/// Trait to add details to an error.
-pub trait Detail {
-    /// Add a detail to an error.
-    fn detail(self, detail: &'static str) -> ErrorDetail<Self>
+/// Trait to describe an error, providing additional context over the plain
+/// error.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::io;
+///
+/// use crate::error::Describe;
+///
+/// fn my_fn() -> crate::Result<()> {
+///     write!(io::stdout(), "Hello world!")
+///         .map_err(|err| err.describe("writing to standard out"))?;
+/// }
+/// ```
+pub trait Describe {
+    /// Describe an error.
+    fn describe(self, description: &'static str) -> Error<Self>
     where
         Self: Sized;
 }
 
-impl<E> Detail for E {
-    fn detail(self, detail: &'static str) -> ErrorDetail<E>
+impl<E> Describe for E {
+    fn describe(self, description: &'static str) -> Error<E>
     where
         Self: Sized,
     {
-        ErrorDetail::new(self, detail)
+        Error::new(self, description)
     }
 }
 
-/// Convenience type to use with [`ErrorDetail`].
-pub type DetailResult<T, E = std::io::Error> = std::result::Result<T, ErrorDetail<E>>;
+/// Convenience type to use with [`Error`].
+pub type Result<T, E = io::Error> = std::result::Result<T, Error<E>>;
 
-/// A context describing error.
+/// An error with an description of the failed operation.
+///
+/// This can be easily created using the [`Describe`] trait.
 #[derive(Debug)]
-pub struct ErrorDetail<E = io::Error> {
+pub struct Error<E = io::Error> {
     /// The original error.
     err: E,
-    /// Additional details for the context which the error occurred.
-    detail: &'static str,
+    /// Description of the failed operation.
+    description: &'static str,
 }
 
-impl<E> ErrorDetail<E> {
-    /// Create a new error with a context description.
-    pub const fn new(err: E, detail: &'static str) -> ErrorDetail<E> {
-        ErrorDetail { detail, err }
+impl<E> Error<E> {
+    /// Create a new error with a description.
+    pub const fn new(err: E, description: &'static str) -> Error<E> {
+        Error { err, description }
     }
 }
 
-impl<E: fmt::Display> fmt::Display for ErrorDetail<E> {
+impl<E: fmt::Display> fmt::Display for Error<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}: {}", self.detail, self.err)
+        write!(f, "{}: {}", self.description, self.err)
     }
 }
 
-impl<E: error::Error + 'static> error::Error for ErrorDetail<E> {
+impl<E: error::Error + 'static> error::Error for Error<E> {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         Some(&self.err)
     }
@@ -53,24 +71,24 @@ mod tests {
     use std::io;
     use std::mem::size_of;
 
-    use super::ErrorDetail;
+    use super::{Describe, Error};
 
     #[test]
     fn size() {
-        assert_eq!(size_of::<ErrorDetail<io::Error>>(), 32);
-        assert_eq!(size_of::<ErrorDetail<()>>(), 16);
+        assert_eq!(size_of::<Error<io::Error>>(), 32);
+        assert_eq!(size_of::<Error<()>>(), 16);
     }
 
     #[test]
     fn display() {
-        let err = ErrorDetail::<io::Error>::new(io::ErrorKind::WouldBlock.into(), "whoopsie");
+        let err = Error::<io::Error>::new(io::ErrorKind::WouldBlock.into(), "whoopsie");
         assert_eq!(err.to_string(), "whoopsie: operation would block");
     }
 
     #[test]
-    fn detail_trait() {
-        let err = io::Error::from(io::ErrorKind::WouldBlock.into());
-        err.detail("made a boo boo");
+    fn describe_trait() {
+        let err = io::Error::from(io::ErrorKind::WouldBlock);
+        let err = err.describe("made a boo boo");
         assert_eq!(err.to_string(), "made a boo boo: operation would block");
     }
 }

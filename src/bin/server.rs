@@ -99,7 +99,7 @@ fn parse_args() -> Result<String, ExitCode> {
             println!("{}", USAGE);
             Err(ExitCode::SUCCESS)
         }
-        Some(arg) if arg.starts_with("-") => {
+        Some(arg) if arg.starts_with('-') => {
             eprintln!("unknown argument '{}'.\n\n{}", arg, USAGE);
             Err(ExitCode::FAILURE)
         }
