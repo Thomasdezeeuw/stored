@@ -118,7 +118,7 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 use std::{fmt, slice, thread};
 
-use log::{error, warn};
+use log::{error, trace, warn};
 
 use crate::Key;
 
@@ -202,19 +202,19 @@ pub struct UncommittedBlob {
 }
 
 impl UncommittedBlob {
-    /// Returns the bytes that make up the `Blob`.
+    /// Returns the bytes that make up the `UncommittedBlob`.
     pub fn bytes<'b>(&'b self) -> &'b [u8] {
         // Safety: this is safe because the lifetime `'b` can't outlive the
-        // lifetime of this `Blob`.
+        // lifetime of this `UncommittedBlob`.
         unsafe { slice::from_raw_parts(self.address.as_ptr(), self.length as usize) }
     }
 
-    /// Returns the length of `Blob`.
+    /// Returns the length of `UncommittedBlob`.
     pub fn len(&self) -> usize {
         self.length as usize
     }
 
-    /// Prefetch the bytes that make up this `Blob`.
+    /// Prefetch the bytes that make up this `UncommittedBlob`.
     ///
     /// # Notes
     ///
@@ -281,6 +281,7 @@ impl Storage {
         let path = path.as_ref();
 
         // Ensure the directory exists.
+        trace!("creating directories for database: path={}", path.display());
         create_dir_all(path)?;
 
         let data = Data::open(path.join("data"))?;
@@ -376,6 +377,7 @@ impl Storage {
     /// [committed]: Storage::commit
     pub fn add_blob(&mut self, blob: &[u8]) -> AddResult {
         let key = Key::for_blob(blob);
+        trace!("adding blob: key={} length={}", key, blob.len());
 
         // Can't have double entries.
         if let Some((_, BlobEntry::Stored(_))) = self.blobs.get(&key) {
@@ -422,6 +424,7 @@ impl Storage {
     /// [query]: RemoveBlob
     /// [committed]: Storage::commit
     pub fn remove_blob(&mut self, key: Key) -> RemoveResult {
+        trace!("removing blob: key={}", key);
         match self.blobs.get(&key) {
             Some((_, BlobEntry::Stored(_))) => RemoveResult::Ok(RemoveBlob { key }),
             Some((_, BlobEntry::Removed(time))) => RemoveResult::NotStored(Some(*time)),
@@ -540,6 +543,7 @@ impl AddBlob {
 
     /// Remove blob bytes.
     fn remove_blob_bytes(self, _storage: &mut Storage) -> io::Result<()> {
+        trace!("removing unused blob bytes: key={}", self.key);
         /* TODO: cleanup the unused bytes.
         // We add an entry with an invalid time to indicate the bytes are
         // unused.
@@ -555,6 +559,11 @@ impl Query for AddBlob {
     type Return = ();
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
+        trace!(
+            "committing to adding blob: key={}, created_at={:?}",
+            self.key,
+            created_at
+        );
         let uncommitted_blob = match storage.uncommitted.remove(&self.key) {
             Some((_, uncommitted_blob)) => uncommitted_blob,
             None => {
@@ -576,6 +585,7 @@ impl Query for AddBlob {
         match storage.blobs.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
                 (_, BlobEntry::Stored(_)) => {
+                    trace!("blob already committed: key={}", self.key);
                     // This should never happen, but just in case it does we
                     // don't want to modify the existing entry.
                     self.remove_blob_bytes(storage)
@@ -611,6 +621,7 @@ impl Query for AddBlob {
     }
 
     fn abort(self, storage: &mut Storage) -> io::Result<()> {
+        trace!("aborting adding blob: key={}", self.key);
         use hash_map::Entry::*;
         match storage.uncommitted.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
@@ -654,6 +665,11 @@ impl Query for RemoveBlob {
     type Return = SystemTime;
 
     fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<Self::Return> {
+        trace!(
+            "committing to removing blob: key={}, removed_at={:?}",
+            self.key,
+            removed_at
+        );
         let res = if let Some((entry_index, blob_entry)) = storage.blobs.get_mut(&self.key) {
             if let BlobEntry::Removed(time) = blob_entry {
                 // The blob was removed in between the time the query was
@@ -670,13 +686,14 @@ impl Query for RemoveBlob {
                     })
             }
         } else {
-            unreachable!("trying to remove a blob that was never stored");
+            unreachable!("trying to commit to removing a blob that was never stored");
         };
         storage.length -= 1;
         res
     }
 
     fn abort(self, _storage: &mut Storage) -> io::Result<()> {
+        trace!("aborting removing blob: key={}", self.key);
         // We don't have to do anything as we didn't change anything.
         Ok(())
     }
@@ -939,6 +956,9 @@ impl MmapArea {
 impl Data {
     /// Open a `Data` file.
     fn open<P: AsRef<Path>>(path: P) -> io::Result<Data> {
+        let path = path.as_ref();
+
+        trace!("opening data file: path={}", path.display());
         let mut data = OpenOptions::new()
             .create(true)
             .read(true)
@@ -957,6 +977,7 @@ impl Data {
         data.synced_length = data.length;
         if length == 0 {
             // New file so we need to add our magic.
+            trace!("new data file, writing magic");
             data.file.write_all(&DATA_MAGIC)?;
             length = DATA_MAGIC.len();
         } else {
@@ -1007,6 +1028,7 @@ impl Data {
             // Already synced.
             Ok(())
         } else {
+            trace!("syncing data file to disk");
             self.file
                 .sync_all()
                 .map(|()| self.synced_length = self.length)
@@ -1253,6 +1275,8 @@ struct Index {
 impl Index {
     /// Open an index file.
     fn open<P: AsRef<Path>>(path: P) -> io::Result<Index> {
+        let path = path.as_ref();
+        trace!("opening index file: path={}", path.display());
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -1264,6 +1288,7 @@ impl Index {
         let mut length = metadata.len();
         if length == 0 {
             // New file so we need to add our magic.
+            trace!("new index file, writing magic");
             file.write_all(&INDEX_MAGIC)?;
             length += INDEX_MAGIC.len() as u64;
         } else {
@@ -1347,6 +1372,7 @@ impl Index {
         // OK. We're also ensured at least `size_of::<Entry>` bytes are valid.
         let bytes: &[u8] =
             unsafe { slice::from_raw_parts(entry as *const _ as *const _, size_of::<Entry>()) };
+        trace!("adding entry to index file: entry={:?}", entry);
         self.file
             .write_all(&bytes)
             .and_then(|()| self.file.sync_all())
@@ -1361,6 +1387,10 @@ impl Index {
 
     /// Marks the `Entry` at index `at` as removed at `removed_at` time.
     fn mark_as_removed(&mut self, at: EntryIndex, removed_at: SystemTime) -> io::Result<()> {
+        trace!(
+            "marking entry in index file as removed: entry_index={:?}",
+            at
+        );
         // The date at which the blob was removed.
         let date = DateTime::from(removed_at).mark_removed();
         self.overwrite_date(at, &date)
@@ -1368,6 +1398,10 @@ impl Index {
 
     /// Marks the `Entry` at index `at` as invalid.
     fn mark_as_invalid(&mut self, at: EntryIndex) -> io::Result<()> {
+        trace!(
+            "marking entry in index file as invalid: entry_index={:?}",
+            at
+        );
         self.overwrite_date(at, &DateTime::INVALID)
     }
 
@@ -1499,6 +1533,7 @@ fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> i
 ///
 /// Once the `file` is dropped it's automatically unlocked.
 fn lock(file: &mut File) -> io::Result<()> {
+    trace!("locking file: file={:?}", file);
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         let err = io::Error::last_os_error();
         if err.kind() == io::ErrorKind::WouldBlock {

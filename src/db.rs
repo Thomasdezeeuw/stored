@@ -89,7 +89,6 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
         match msg {
             Message::AddBlob(RpcMessage { request, response }) => {
                 let (blob, length) = request;
-                debug!("adding new blob: size={}", length);
                 use AddResult::*;
                 let result = match storage.add_blob(&blob.as_bytes()[..length]) {
                     Ok(query) => (AddBlobResponse::Query(query), blob),
