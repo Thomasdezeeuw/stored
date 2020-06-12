@@ -244,59 +244,36 @@ pub struct HealthCheck;
 #[derive(Debug)]
 pub struct HealthOk(());
 
-impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
-    fn from(msg: RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>) -> Message {
-        Message::AddBlob(msg)
-    }
+/// Macro to implement [`From`]`<`[`RpcMessage`]`>` for an enum message type.
+// TODO: maybe add something like this to Heph?
+macro_rules! from_rpc_message {
+    // Single field.
+    ($name: ident :: $variant: ident ( $ty: ty ) -> $return_ty: ty) => {
+        impl From<RpcMessage<$ty, $return_ty>> for $name {
+            fn from(msg: RpcMessage<$ty, $return_ty>) -> $name {
+                $name::$variant(msg)
+            }
+        }
+    };
+    // For multiple fields use the tuple format.
+    ($name: ident :: $variant: ident ( $( $ty: ty ),+ ) -> $return_ty: ty) => {
+        impl From<RpcMessage<( $( $ty ),+ ), $return_ty>> for $name {
+            fn from(msg: RpcMessage<( $( $ty ),+ ), $return_ty>) -> $name {
+                $name::$variant(msg)
+            }
+        }
+    };
 }
 
-impl From<RpcMessage<(AddBlob, SystemTime), ()>> for Message {
-    fn from(msg: RpcMessage<(AddBlob, SystemTime), ()>) -> Message {
-        Message::CommitAddBlob(msg)
-    }
-}
-
-impl From<RpcMessage<AddBlob, ()>> for Message {
-    fn from(msg: RpcMessage<AddBlob, ()>) -> Message {
-        Message::AbortAddBlob(msg)
-    }
-}
-
-impl From<RpcMessage<Key, Option<BlobEntry>>> for Message {
-    fn from(msg: RpcMessage<Key, Option<BlobEntry>>) -> Message {
-        Message::GetBlob(msg)
-    }
-}
-
-impl From<RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>> for Message {
-    fn from(msg: RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>) -> Message {
-        Message::GetUncommittedBlob(msg)
-    }
-}
-
-impl From<RpcMessage<HealthCheck, HealthOk>> for Message {
-    fn from(msg: RpcMessage<HealthCheck, HealthOk>) -> Message {
-        Message::HealthCheck(msg)
-    }
-}
-
-impl From<RpcMessage<Key, RemoveBlobResponse>> for Message {
-    fn from(msg: RpcMessage<Key, RemoveBlobResponse>) -> Message {
-        Message::RemoveBlob(msg)
-    }
-}
-
-impl From<RpcMessage<(RemoveBlob, SystemTime), SystemTime>> for Message {
-    fn from(msg: RpcMessage<(RemoveBlob, SystemTime), SystemTime>) -> Message {
-        Message::CommitRemoveBlob(msg)
-    }
-}
-
-impl From<RpcMessage<RemoveBlob, ()>> for Message {
-    fn from(msg: RpcMessage<RemoveBlob, ()>) -> Message {
-        Message::AbortRemoveBlob(msg)
-    }
-}
+from_rpc_message!(Message::AddBlob(Buffer, usize) -> (AddBlobResponse, Buffer));
+from_rpc_message!(Message::CommitAddBlob(AddBlob, SystemTime) -> ());
+from_rpc_message!(Message::AbortAddBlob(AddBlob) -> ());
+from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
+from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
+from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
+from_rpc_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
+from_rpc_message!(Message::AbortRemoveBlob(RemoveBlob) -> ());
+from_rpc_message!(Message::HealthCheck(HealthCheck) -> HealthOk);
 
 /// Response to [`Message::AddBlob`].
 #[derive(Debug)]
