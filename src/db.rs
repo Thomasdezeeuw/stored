@@ -17,7 +17,7 @@ use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{rt, Runtime};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 
 use crate::storage::{
     AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, UncommittedBlob,
@@ -96,26 +96,30 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                     AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), blob),
                     Err(err) => return Result::Err(err),
                 };
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(result);
+                if let Result::Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::CommitAddBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
                 storage.commit(query, created_at)?;
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(());
+                if let Err(err) = response.respond(()) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::AbortAddBlob(RpcMessage { request, response }) => {
                 storage.abort(request)?;
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(());
+                if let Err(err) = response.respond(()) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::GetBlob(RpcMessage { request, response }) => {
                 let key = request;
                 debug!("retrieving blob: key={}", key);
                 let result = storage.lookup(&key);
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(result);
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::GetUncommittedBlob(RpcMessage { request, response }) => {
                 let key = request;
@@ -123,34 +127,40 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
                 let result = storage
                     .lookup_uncommitted(&key)
                     .ok_or_else(|| storage.lookup(&key));
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(result);
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::RemoveBlob(RpcMessage { request, response }) => {
                 let key = request;
                 use RemoveResult::*;
-                let res = match storage.remove_blob(key) {
+                let result = match storage.remove_blob(key) {
                     Ok(query) => RemoveBlobResponse::Query(query),
                     NotStored(t) => RemoveBlobResponse::NotStored(t),
                 };
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(res);
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::CommitRemoveBlob(RpcMessage { request, response }) => {
                 let (query, removed_at) = request;
                 let removed_at = storage.commit(query, removed_at)?;
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(removed_at);
+                if let Err(err) = response.respond(removed_at) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::AbortRemoveBlob(RpcMessage { request, response }) => {
                 storage.abort(request)?;
                 // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(());
+                if let Err(err) = response.respond(()) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
             Message::HealthCheck(RpcMessage { response, .. }) => {
                 debug!("database health check");
-                // If the actor is disconnected this is not really a problem.
-                let _ = response.respond(HealthOk(()));
+                if let Err(err) = response.respond(HealthOk(())) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
             }
         }
     }
