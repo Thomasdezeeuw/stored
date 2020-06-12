@@ -118,7 +118,7 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 use std::{fmt, slice, thread};
 
-use log::error;
+use log::{error, warn};
 
 use crate::Key;
 
@@ -378,19 +378,15 @@ impl Storage {
         let key = Key::for_blob(blob);
 
         // Can't have double entries.
-        match self.blobs.get(&key) {
-            Some((_, BlobEntry::Stored(_))) => return AddResult::AlreadyStored(key),
-            _ => {}
+        if let Some((_, BlobEntry::Stored(_))) = self.blobs.get(&key) {
+            return AddResult::AlreadyStored(key);
         }
 
         // Check if another query is already running to add the blob.
-        match self.uncommitted.get_mut(&key) {
-            Some((count, _)) => {
-                // We can reuse the same query.
-                *count += 1;
-                return AddResult::Ok(AddBlob { key });
-            }
-            None => {}
+        if let Some((count, _)) = self.uncommitted.get_mut(&key) {
+            // We can reuse the same query.
+            *count += 1;
+            return AddResult::Ok(AddBlob { key });
         }
 
         // First add the blob to the data file. If something happens the blob
@@ -404,8 +400,7 @@ impl Storage {
                     address,
                     lifetime,
                 };
-                self.uncommitted
-                    .insert(key.clone(), (1, uncommitted_blob.clone()));
+                self.uncommitted.insert(key.clone(), (1, uncommitted_blob));
 
                 AddResult::Ok(AddBlob { key })
             }
@@ -1080,7 +1075,9 @@ impl Data {
         // Inform the OS that our access pattern are likely to be random, this
         // way it doesn't load pages we won't need. We can use `Blob::prefetch`
         // to inform the OS when we do need pages.
-        let _ = madvise(address, aligned_length, libc::MADV_RANDOM);
+        if let Err(err) = madvise(address, aligned_length, libc::MADV_RANDOM) {
+            warn!("madvise failed, continuing: {}", err);
+        }
 
         // Safety: `mmap` doesn't return a null address.
         let address = NonNull::new(address).unwrap();
@@ -1324,11 +1321,13 @@ impl Index {
         // so it can prefetch the pages from disk.
         // Note that we don't care about the result as its just an advise to the
         // OS, if t can't comply we'll continue on.
-        let _ = madvise(
+        if let Err(err) = madvise(
             mmap_address,
             mmap_length,
             libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-        );
+        ) {
+            warn!("madvise failed, continuing: {}", err);
+        }
 
         Ok(MmapSlice {
             address: mmap_address,
