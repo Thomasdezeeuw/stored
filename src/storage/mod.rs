@@ -450,6 +450,7 @@ impl Storage {
 }
 
 /// Result returned by [`Storage::add_blob`].
+#[derive(Debug)]
 pub enum AddResult {
     /// Blob was successfully stored, but not yet added to the index nor
     /// database.
@@ -461,6 +462,7 @@ pub enum AddResult {
 }
 
 /// Result returned by [`Storage::remove_blob`].
+#[derive(Debug)]
 pub enum RemoveResult {
     /// Blob is prepared to be removed, but not yet removed from the database.
     Ok(RemoveBlob),
@@ -496,6 +498,7 @@ pub trait Query {
 /// A [`Query`] to [add a blob] to the [`Storage`].
 ///
 /// [add a blob]: Storage::add_blob
+#[derive(Debug)]
 pub struct AddBlob {
     key: Key,
 }
@@ -651,6 +654,7 @@ unsafe impl Sync for AddBlob {}
 /// A [`Query`] to [remove a blob] to the [`Storage`].
 ///
 /// [remove a blob]: Storage::remove_blob
+#[derive(Debug)]
 pub struct RemoveBlob {
     key: Key,
 }

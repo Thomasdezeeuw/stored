@@ -17,7 +17,7 @@ use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{rt, Runtime};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 
 use crate::storage::{
     AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, UncommittedBlob,
@@ -57,18 +57,22 @@ where
 {
     fn decide(&mut self, err: io::Error) -> SupervisorStrategy<Storage> {
         error!("error operating on database: {}", err);
-        info!("attempting to reopen database");
+        info!("attempting to reopen database: path={}", self.0.display());
         match Storage::open(&self.0) {
             Ok(storage) => {
-                info!("successfully reopened database, restarting database actor");
+                info!(
+                    "successfully reopened database, restarting database actor: path={}",
+                    self.0.display()
+                );
                 SupervisorStrategy::Restart(storage)
             }
             Err(err) => {
                 // FIXME: shutdown the entire server somehow? Maybe by sending
                 // the TCP server a shutdown message?
                 error!(
-                    "failed to reopen database, not restarting database actor: {}",
-                    err
+                    "failed to reopen database, not restarting database actor: {}: path={}",
+                    err,
+                    self.0.display(),
                 );
                 SupervisorStrategy::Stop
             }
@@ -79,13 +83,14 @@ where
 /// Actor that handles storage [`Message`]s and applies them to [`Storage`].
 pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<()> {
     debug!(
-        "storage actor started: data_size={}, index_size={}, total_size={}",
+        "database actor started: data_size={}, index_size={}, total_size={}",
         storage.data_size(),
         storage.index_size(),
         storage.total_size()
     );
 
     while let Ok(msg) = ctx.receive_next() {
+        trace!("database actor received message: {:?}", msg);
         match msg {
             Message::AddBlob(RpcMessage { request, response }) => {
                 let (blob, length) = request;
@@ -169,6 +174,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> io::Result<
 }
 
 /// Message type send to the storage [`actor`].
+#[derive(Debug)]
 pub enum Message {
     /// Add a blob to the database.
     ///
@@ -231,9 +237,11 @@ pub enum Message {
 }
 
 /// Message to check if the database actor is running.
+#[derive(Debug)]
 pub struct HealthCheck;
 
 /// Message returned to [`HealthCheck`].
+#[derive(Debug)]
 pub struct HealthOk(());
 
 impl From<RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>> for Message {
@@ -291,6 +299,7 @@ impl From<RpcMessage<RemoveBlob, ()>> for Message {
 }
 
 /// Response to [`Message::AddBlob`].
+#[derive(Debug)]
 pub enum AddBlobResponse {
     /// Query to commit to adding a blob.
     Query(AddBlob),
@@ -299,6 +308,7 @@ pub enum AddBlobResponse {
 }
 
 /// Response to [`Message::RemoveBlob`].
+#[derive(Debug)]
 pub enum RemoveBlobResponse {
     /// Query to commit to removing a blob.
     Query(RemoveBlob),
