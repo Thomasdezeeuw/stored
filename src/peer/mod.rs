@@ -474,6 +474,8 @@ pub async fn switcher(
                 "closing connection: incorrect connection magic: remote_address={}",
                 remote
             );
+            // We don't really can if we didn't write all the bytes here, the
+            // connection is invalid anyway.
             stream
                 .write(MAGIC_ERROR_MSG)
                 .await

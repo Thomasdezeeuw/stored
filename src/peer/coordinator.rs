@@ -213,8 +213,7 @@ async fn start_participant_connection(
     let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
 
     // The connection magic to request the node to act as participant.
-    let n = wbuf.write(PARTICIPANT_MAGIC).unwrap();
-    assert_eq!(n, PARTICIPANT_MAGIC.len());
+    wbuf.write_all(PARTICIPANT_MAGIC).unwrap();
 
     // The address of the `coordinator::server`.
     serde_json::to_writer(&mut wbuf, server)
