@@ -896,7 +896,7 @@ async fn health_check(
 ) -> ResponseKind {
     match op::Health::start(ctx, db_ref) {
         Ok(state) => match state.await {
-            Ok(()) => ResponseKind::HealthOk,
+            Ok(..) => ResponseKind::HealthOk,
             Err(()) => ResponseKind::ServerError,
         },
         Err(()) => ResponseKind::ServerError,
