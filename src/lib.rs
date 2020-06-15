@@ -14,6 +14,7 @@ pub mod db;
 pub mod error;
 pub mod http;
 pub mod key;
+pub mod op;
 pub mod peer;
 pub mod storage;
 

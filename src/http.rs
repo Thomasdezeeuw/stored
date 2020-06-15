@@ -37,12 +37,12 @@ use httparse::EMPTY_HEADER;
 use log::{debug, error, trace, warn};
 
 use crate::buffer::{Buffer, WriteBuffer};
-use crate::db::{self, AddBlobResponse, HealthCheck, RemoveBlobResponse};
+use crate::db::{self, AddBlobResponse, RemoveBlobResponse};
 use crate::error::Describe;
 use crate::peer::coordinator::RelayError;
 use crate::peer::Peers;
 use crate::storage::{AddBlob, Blob, BlobEntry, PAGE_SIZE};
-use crate::Key;
+use crate::{op, Key};
 
 /// Setup the HTTP listener.
 ///
@@ -901,13 +901,12 @@ async fn health_check(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
 ) -> ResponseKind {
-    debug!("handling health check request");
-    match db_ref.rpc(ctx, HealthCheck) {
-        Ok(_health_ok) => ResponseKind::HealthOk,
-        Err(err) => {
-            error!("error making RPC call to database: {}", err);
-            ResponseKind::ServerError
-        }
+    match op::Health::start(ctx, db_ref) {
+        Ok(state) => match state.await {
+            Ok(()) => ResponseKind::HealthOk,
+            Err(()) => ResponseKind::ServerError,
+        },
+        Err(()) => ResponseKind::ServerError,
     }
 }
 
