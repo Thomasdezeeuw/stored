@@ -504,7 +504,7 @@ async fn route_request(
                 Ok(key) => Ok(Response {
                     is_head: false,
                     should_close: false,
-                    kind: retrieve_blob(ctx, db_ref, key).await,
+                    kind: retrieve_blob(ctx, db_ref, key, false).await,
                 }),
                 Err(err) => Ok(Response {
                     is_head: false,
@@ -519,7 +519,7 @@ async fn route_request(
                 Ok(key) => Ok(Response {
                     is_head: true,
                     should_close: false,
-                    kind: retrieve_blob(ctx, db_ref, key).await,
+                    kind: retrieve_blob(ctx, db_ref, key, true).await,
                 }),
                 Err(err) => Ok(Response {
                     is_head: true,
@@ -824,11 +824,12 @@ async fn retrieve_blob(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
     key: Key,
+    is_head: bool,
 ) -> ResponseKind {
     match op::Retrieve::start(ctx, db_ref, key) {
         Ok(state) => match state.await {
             Ok(Some(BlobEntry::Stored(blob))) => {
-                if blob.len() > PAGE_SIZE {
+                if blob.len() > PAGE_SIZE && !is_head {
                     // If the blob is large(-ish) we'll prefetch it from disk to
                     // improve performance.
                     // TODO: benchmark this with large(-ish) blobs.
