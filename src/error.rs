@@ -8,13 +8,13 @@ use std::{error, fmt, io};
 /// # Examples
 ///
 /// ```rust
-/// use std::io;
+/// use std::io::{self, Write};
 ///
-/// use crate::error::Describe;
+/// use stored::error::Describe;
 ///
-/// fn my_fn() -> crate::Result<()> {
-///     write!(io::stdout(), "Hello world!")
-///         .map_err(|err| err.describe("writing to standard out"))?;
+/// fn my_fn() -> stored::Result<()> {
+///     io::stdout().write_all(b"Hello world!")
+///         .map_err(|err| err.describe("writing to standard out"))
 /// }
 /// ```
 pub trait Describe {
