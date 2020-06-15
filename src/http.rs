@@ -825,9 +825,8 @@ async fn retrieve_blob(
     db_ref: &mut ActorRef<db::Message>,
     key: Key,
 ) -> ResponseKind {
-    debug!("handling retrieve blob request");
-    match db_ref.rpc(ctx, key) {
-        Ok(rpc) => match rpc.await {
+    match op::Retrieve::start(ctx, db_ref, key) {
+        Ok(state) => match state.await {
             Ok(Some(BlobEntry::Stored(blob))) => {
                 if blob.len() > PAGE_SIZE {
                     // If the blob is large(-ish) we'll prefetch it from disk to
@@ -841,15 +840,9 @@ async fn retrieve_blob(
             }
             Ok(Some(BlobEntry::Removed(removed_at))) => ResponseKind::Removed(removed_at),
             Ok(None) => ResponseKind::NotFound,
-            Err(err) => {
-                error!("error waiting for RPC response from database: {}", err);
-                ResponseKind::ServerError
-            }
+            Err(()) => ResponseKind::ServerError,
         },
-        Err(err) => {
-            error!("error making RPC call to database: {}", err);
-            ResponseKind::ServerError
-        }
+        Err(()) => ResponseKind::ServerError,
     }
 }
 

@@ -1,4 +1,4 @@
-//! Module with the `Health` state machine.
+//! Module with the `Retrieve` state machine.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -9,27 +9,29 @@ use heph::timer::Timer;
 use heph::{actor, ActorRef};
 use log::{debug, error};
 
-use crate::db::{self, HealthCheck, HealthOk};
 use crate::op::DB_TIMEOUT;
+use crate::storage::BlobEntry;
+use crate::{db, Key};
 
 /// State machine that runs a health check.
-pub struct Health {
-    // Health check only has a single state.
-    rpc: Rpc<HealthOk>,
+pub struct Retrieve {
+    // Retrieve only has a single state.
+    rpc: Rpc<Option<BlobEntry>>,
     timer: Timer,
 }
 
-impl Health {
-    /// Start a health check operation.
+impl Retrieve {
+    /// Start a retrieve operation.
     ///
     /// Returns an error if the database actor can't be accessed.
     pub fn start<M>(
         ctx: &mut actor::Context<M>,
         db_ref: &mut ActorRef<db::Message>,
-    ) -> Result<Health, ()> {
-        debug!("running health check");
-        match db_ref.rpc(ctx, HealthCheck) {
-            Ok(rpc) => Ok(Health {
+        key: Key,
+    ) -> Result<Retrieve, ()> {
+        debug!("running retrieve operation");
+        match db_ref.rpc(ctx, key) {
+            Ok(rpc) => Ok(Retrieve {
                 rpc,
                 timer: Timer::timeout(ctx, DB_TIMEOUT),
             }),
@@ -41,9 +43,9 @@ impl Health {
     }
 }
 
-impl Future for Health {
+impl Future for Retrieve {
     /// Returns an error if the database doesn't respond.
-    type Output = Result<(), ()>;
+    type Output = Result<Option<BlobEntry>, ()>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.rpc).poll(ctx) {
@@ -51,7 +53,7 @@ impl Future for Health {
                 error!("timeout waiting for RPC response from database");
                 Err(())
             }),
-            Poll::Ready(Ok(..)) => Poll::Ready(Ok(())),
+            Poll::Ready(Ok(blob)) => Poll::Ready(Ok(blob)),
             Poll::Ready(Err(err)) => {
                 error!("error waiting for RPC response from database: {}", err);
                 Poll::Ready(Err(()))
