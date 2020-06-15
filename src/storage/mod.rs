@@ -659,6 +659,13 @@ pub struct RemoveBlob {
     key: Key,
 }
 
+impl RemoveBlob {
+    /// Returns the key for the to be removed blob.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+}
+
 impl Query for RemoveBlob {
     type Arg = SystemTime;
     /// Returns the time at which the blob is actually removed. This is the same
