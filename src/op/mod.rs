@@ -1,4 +1,4 @@
-//! Module with state machine for support operations.
+//! Module with state machines for the supported operations.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -47,8 +47,7 @@ where
 /// errors.
 ///
 /// See [`db_rpc`].
-pub struct DbRpc<Res> {
-    // Retrieve only has a single state.
+struct DbRpc<Res> {
     rpc: Rpc<Res>,
     timer: Timer,
 }
