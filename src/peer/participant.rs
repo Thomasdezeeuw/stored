@@ -663,6 +663,7 @@ async fn add_blob_to_db(
     match db_ref.rpc(ctx, (buf, blob_length)) {
         Ok(rpc) => match rpc.await {
             Ok((AddBlobResponse::Query(query), ..)) => Status::Continue(query),
+            // FIXME: make a distinction here in already stored?
             Ok((AddBlobResponse::AlreadyStored(..), ..)) => Status::Return(ResponseKind::Abort),
             // Storage actor failed.
             Err(NoResponse) => Status::Return(ResponseKind::Abort),

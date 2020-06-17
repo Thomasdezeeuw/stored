@@ -733,6 +733,7 @@ async fn add_blob_consensus(
             "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
             consensus_id, key, commit, abort, failed
         );
+        // FIXME: if too many peers want to abort: try again -> max 3 times.
         // TODO: let the peers know to abort the query.
         // TODO: abort `AddBlob` query.
         return Status::Return(ResponseKind::ServerError, true);
@@ -750,6 +751,10 @@ async fn add_blob_consensus(
         consensus_id, query, timestamp
     );
     let rpc = peers.commit_to_add_blob(ctx, consensus_id, key.clone(), timestamp);
+
+    // FIXME: its crucial here that at least a single peer received the
+    // notification before we commit to added the blob ourselves. Also add a
+    // note about this.
 
     match commit_blob_to_db(ctx, db_ref, query, SystemTime::now()).await {
         Status::Continue(()) => {}
