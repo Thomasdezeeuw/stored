@@ -1,4 +1,4 @@
-//! Module with state machines for the supported operations.
+//! Module with functions for the supported operations.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -8,15 +8,40 @@ use std::time::Duration;
 use heph::actor_ref::rpc::{Rpc, RpcMessage};
 use heph::timer::Timer;
 use heph::{actor, ActorRef};
-use log::error;
+use log::{debug, error};
 
-use crate::db;
+use crate::db::{self, HealthCheck, HealthOk};
+use crate::storage::BlobEntry;
+use crate::Key;
 
-pub mod health;
-pub mod retrieve;
+/// Retrieve the blob with `key`.
+///
+/// Returns an error if the database actor can't be accessed.
+pub async fn retrieve_blob<M>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+    key: Key,
+) -> Result<Option<BlobEntry>, ()> {
+    debug!("running retrieve operation");
+    match db_rpc(ctx, db_ref, key) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
+}
 
-pub use health::Health;
-pub use retrieve::Retrieve;
+/// Runs a health check on the database.
+///
+/// Returns an error if the database actor can't be accessed.
+pub async fn check_health<M>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+) -> Result<HealthOk, ()> {
+    debug!("running health check");
+    match db_rpc(ctx, db_ref, HealthCheck) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
+}
 
 /// Timeout for connecting to the database.
 // TODO: base this on something.

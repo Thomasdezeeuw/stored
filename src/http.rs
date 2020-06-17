@@ -826,23 +826,20 @@ async fn retrieve_blob(
     key: Key,
     is_head: bool,
 ) -> ResponseKind {
-    match op::Retrieve::start(ctx, db_ref, key) {
-        Ok(state) => match state.await {
-            Ok(Some(BlobEntry::Stored(blob))) => {
-                if blob.len() > PAGE_SIZE && !is_head {
-                    // If the blob is large(-ish) we'll prefetch it from disk to
-                    // improve performance.
-                    // TODO: benchmark this with large(-ish) blobs.
-                    if let Err(err) = blob.prefetch() {
-                        warn!("error prefetching blob, continuing: {}", err);
-                    }
+    match op::retrieve_blob(ctx, db_ref, key).await {
+        Ok(Some(BlobEntry::Stored(blob))) => {
+            if blob.len() > PAGE_SIZE && !is_head {
+                // If the blob is large(-ish) we'll prefetch it from disk to
+                // improve performance.
+                // TODO: benchmark this with large(-ish) blobs.
+                if let Err(err) = blob.prefetch() {
+                    warn!("error prefetching blob, continuing: {}", err);
                 }
-                ResponseKind::Ok(blob)
             }
-            Ok(Some(BlobEntry::Removed(removed_at))) => ResponseKind::Removed(removed_at),
-            Ok(None) => ResponseKind::NotFound,
-            Err(()) => ResponseKind::ServerError,
-        },
+            ResponseKind::Ok(blob)
+        }
+        Ok(Some(BlobEntry::Removed(removed_at))) => ResponseKind::Removed(removed_at),
+        Ok(None) => ResponseKind::NotFound,
         Err(()) => ResponseKind::ServerError,
     }
 }
@@ -895,11 +892,8 @@ async fn health_check(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
 ) -> ResponseKind {
-    match op::Health::start(ctx, db_ref) {
-        Ok(state) => match state.await {
-            Ok(..) => ResponseKind::HealthOk,
-            Err(()) => ResponseKind::ServerError,
-        },
+    match op::check_health(ctx, db_ref).await {
+        Ok(..) => ResponseKind::HealthOk,
         Err(()) => ResponseKind::ServerError,
     }
 }
