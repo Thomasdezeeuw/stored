@@ -14,6 +14,11 @@ use crate::db::{self, HealthCheck, HealthOk};
 use crate::storage::BlobEntry;
 use crate::Key;
 
+pub mod store;
+
+#[doc(inline)]
+pub use store::store_blob;
+
 /// Retrieve the blob with `key`.
 ///
 /// Returns an error if the database actor can't be accessed.

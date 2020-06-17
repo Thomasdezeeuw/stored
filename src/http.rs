@@ -24,7 +24,7 @@ use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant, SystemTime};
-use std::{fmt, mem, str};
+use std::{fmt, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::io::AsyncWriteExt;
@@ -37,11 +37,10 @@ use httparse::EMPTY_HEADER;
 use log::{debug, error, trace, warn};
 
 use crate::buffer::{Buffer, WriteBuffer};
-use crate::db::{self, AddBlobResponse, RemoveBlobResponse};
+use crate::db::{self, RemoveBlobResponse};
 use crate::error::Describe;
-use crate::peer::coordinator::RelayError;
 use crate::peer::Peers;
-use crate::storage::{AddBlob, Blob, BlobEntry, PAGE_SIZE};
+use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
 use crate::{op, Key};
 
 /// Setup the HTTP listener.
@@ -583,34 +582,15 @@ async fn store_blob(
     peers: &Peers,
     body_length: usize,
 ) -> crate::Result<(ResponseKind, bool)> {
-    debug!("handling store blob request");
     match read_blob(ctx, conn, body_length).await {
         Ok(Status::Continue(())) => {}
         Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
         Err(err) => return Err(err),
     }
 
-    let query = match add_blob_to_db(ctx, conn, db_ref, body_length).await {
-        Status::Continue(query) => query,
-        Status::Return(response, should_close) => return Ok((response, should_close)),
-    };
-
-    let key = query.key().clone();
-    if !peers.is_empty() {
-        debug!("running consensus algorithm to store blob: key={}", key);
-        match add_blob_consensus(ctx, db_ref, peers, query).await {
-            Status::Continue(()) => Ok((ResponseKind::Stored(key), false)),
-            Status::Return(response, should_close) => Ok((response, should_close)),
-        }
-    } else {
-        debug!(
-            "running in single mode, not running consensus algorithm: key={}",
-            key
-        );
-        match commit_blob_to_db(ctx, db_ref, query, SystemTime::now()).await {
-            Status::Continue(()) => Ok((ResponseKind::Stored(key), false)),
-            Status::Return(response, should_close) => Ok((response, should_close)),
-        }
+    match op::store_blob(ctx, db_ref, peers, &mut conn.buf, body_length).await {
+        Ok(key) => Ok((ResponseKind::Stored(key), false)),
+        Err(()) => Ok((ResponseKind::ServerError, true)),
     }
 }
 
@@ -668,160 +648,6 @@ async fn read_blob(
         conn.buf.len()
     );
     Ok(Status::Continue(()))
-}
-
-/// Add the blob in `conn.buf` (with length `blob_length`) to the database.
-/// Returns the query to commit the blob to the database.
-async fn add_blob_to_db(
-    ctx: &mut actor::Context<!>,
-    conn: &mut Connection,
-    db_ref: &mut ActorRef<db::Message>,
-    blob_length: usize,
-) -> Status<AddBlob> {
-    // Take the body from the connection and use it as a blob to send to the
-    // storage actor.
-    let blob = mem::replace(&mut conn.buf, Buffer::empty());
-
-    trace!("adding blob to database: blob_length={}", blob_length);
-    match db_ref.rpc(ctx, (blob, blob_length)) {
-        Ok(rpc) => match rpc.await {
-            Ok((result, mut buffer)) => {
-                // Mark the body as processed and put back the buffer.
-                buffer.processed(blob_length);
-                conn.buf = buffer;
-                match result {
-                    AddBlobResponse::Query(query) => Status::Continue(query),
-                    AddBlobResponse::AlreadyStored(key) => {
-                        Status::Return(ResponseKind::Stored(key), false)
-                    }
-                }
-            }
-            Err(err) => {
-                error!("error waiting for RPC response from database: {}", err);
-                Status::Return(ResponseKind::ServerError, true)
-            }
-        },
-        Err(err) => {
-            error!("error making RPC call to database: {}", err);
-            Status::Return(ResponseKind::ServerError, true)
-        }
-    }
-}
-
-/// Runs the consensus algorithm for adding the blob (with `key`).
-async fn add_blob_consensus(
-    ctx: &mut actor::Context<!>,
-    db_ref: &mut ActorRef<db::Message>,
-    peers: &Peers,
-    query: AddBlob,
-) -> Status<()> {
-    // Phase one: start the consensus algorithm, letting the participants
-    // (peers) know we want to store a blob.
-    let key = query.key().clone();
-    // TODO: add a timeout.
-    let (consensus_id, rpc) = peers.add_blob(ctx, key.clone());
-    debug!(
-        "requesting peers to store blob: consensus_id={}, query={:?}",
-        consensus_id, query
-    );
-    let results = rpc.await;
-    let (commit, abort, failed) = count_consensus_votes(&results);
-
-    if abort > 0 || failed > 0 {
-        // FIXME: support partial success.
-        error!(
-            "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-            consensus_id, key, commit, abort, failed
-        );
-        // FIXME: if too many peers want to abort: try again -> max 3 times.
-        // TODO: let the peers know to abort the query.
-        // TODO: abort `AddBlob` query.
-        return Status::Return(ResponseKind::ServerError, true);
-    }
-    debug!(
-        "consensus algorithm succeeded: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-        consensus_id, key, commit, abort, failed
-    );
-
-    let timestamp = select_timestamp(&results);
-
-    // Phase two: let the participants know to commit to adding the blob.
-    debug!(
-        "requesting peers to commit to storing blob: consensus_id={}, query={:?}, timestamp={:?}",
-        consensus_id, query, timestamp
-    );
-    let rpc = peers.commit_to_add_blob(ctx, consensus_id, key.clone(), timestamp);
-
-    // FIXME: its crucial here that at least a single peer received the
-    // notification before we commit to added the blob ourselves. Also add a
-    // note about this.
-
-    match commit_blob_to_db(ctx, db_ref, query, SystemTime::now()).await {
-        Status::Continue(()) => {}
-        Status::Return(response, should_close) => {
-            return Status::Return(response, should_close);
-        }
-    }
-
-    // FIXME: do something with the results.
-    let results = rpc.await;
-    let (commit, abort, failed) = count_consensus_votes(&results);
-    debug!(
-        "consensus algorithm commitment: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-        consensus_id, key, commit, abort, failed
-    );
-
-    Status::Continue(())
-}
-
-/// Returns the (commit, abort, failed) votes.
-fn count_consensus_votes<T>(results: &[Result<T, RelayError>]) -> (usize, usize, usize) {
-    let mut commit = 1; // This peer votes to commit.
-    let mut abort = 0;
-    let mut failed = 0;
-
-    for result in results {
-        match result {
-            Ok(..) => commit += 1,
-            Err(RelayError::Abort) => abort += 1,
-            Err(RelayError::Failed) => failed += 1,
-        }
-    }
-
-    (commit, abort, failed)
-}
-
-/// Select the timestamp to use from consensus results.
-fn select_timestamp(_results: &[Result<SystemTime, RelayError>]) -> SystemTime {
-    let timestamp = SystemTime::now();
-    // TODO: sync the time somehow? To ensure that if this peer has an incorrect
-    // time we don't use that? We could use the largest timestamp (the most in
-    // the future), but we don't want a time in the year 2100 because a peer's
-    // time is incorrect.
-    timestamp
-}
-
-/// Commit the blob in the `query` to the database.
-async fn commit_blob_to_db(
-    ctx: &mut actor::Context<!>,
-    db_ref: &mut ActorRef<db::Message>,
-    query: AddBlob,
-    timestamp: SystemTime,
-) -> Status<()> {
-    trace!("committing to adding blob: query={:?}", query);
-    match db_ref.rpc(ctx, (query, timestamp)) {
-        Ok(rpc) => match rpc.await {
-            Ok(()) => Status::Continue(()),
-            Err(err) => {
-                error!("error waiting for RPC response from database: {}", err);
-                Status::Return(ResponseKind::ServerError, true)
-            }
-        },
-        Err(err) => {
-            error!("error making RPC call to database: {}", err);
-            Status::Return(ResponseKind::ServerError, true)
-        }
-    }
 }
 
 /// Retrieve the blob associated with `key` from the actor behind the `db_ref`.
