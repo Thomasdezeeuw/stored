@@ -36,6 +36,32 @@ fn buffer_simple_read() {
 }
 
 #[test]
+fn buf_view() {
+    let buf = Buffer::new();
+    let view = buf.view(0);
+
+    assert_eq!(view.len(), 0);
+    assert!(view.is_empty());
+    assert_eq!(view.as_bytes(), EMPTY);
+
+    let mut buf = view.into_inner();
+    let mut reader = Cursor::new([1, 2, 3, 4, 5]);
+    let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
+    assert_eq!(bytes_read, 5);
+    buf.processed(1);
+
+    let view = buf.view(2);
+    assert_eq!(view.len(), 2);
+    assert!(!view.is_empty());
+    assert_eq!(view.as_bytes(), &[2, 3]);
+
+    let buf = view.into_inner();
+    assert_eq!(buf.len(), 4);
+    assert!(!buf.is_empty());
+    assert_eq!(buf.as_bytes(), &[2, 3, 4, 5]);
+}
+
+#[test]
 fn empty_buffer_reserve_atleast() {
     let mut buf = Buffer::new();
 

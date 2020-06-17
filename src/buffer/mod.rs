@@ -87,6 +87,12 @@ impl Buffer {
         &self.data[self.processed..]
     }
 
+    /// Create a new `BufView` from the `Buffer`.
+    pub fn view(self, length: usize) -> BufView {
+        debug_assert!(self.len() >= length);
+        BufView { buf: self, length }
+    }
+
     /// Split the buffer in the currently read bytes and a temporary read
     /// buffer.
     ///
@@ -215,6 +221,35 @@ impl Buffer {
             "marking bytes as read beyond read range"
         );
         self.data.set_len(self.data.len() + n)
+    }
+}
+
+/// An immutable view into a [`Buffer`].
+#[derive(Debug)]
+pub struct BufView {
+    buf: Buffer,
+    length: usize,
+}
+
+impl BufView {
+    /// Returns the number of bytes.
+    pub fn len(&self) -> usize {
+        self.length
+    }
+
+    /// Returns `true` if the view is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.buf.as_bytes()[..self.length]
+    }
+
+    /// Returns the `Buffer` this views into.
+    pub fn into_inner(self) -> Buffer {
+        self.buf
     }
 }
 
