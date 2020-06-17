@@ -662,7 +662,8 @@ async fn add_blob_to_db(
     blob_length: usize,
 ) -> Status<StoreBlob> {
     trace!("consensus actor adding blob: length={}", blob_length);
-    match db_ref.rpc(ctx, (buf, blob_length)) {
+    let view = buf.view(blob_length);
+    match db_ref.rpc(ctx, view) {
         Ok(rpc) => match rpc.await {
             Ok((AddBlobResponse::Query(query), ..)) => Status::Continue(query),
             // FIXME: make a distinction here in already stored?

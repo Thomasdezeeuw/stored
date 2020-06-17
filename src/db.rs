@@ -19,11 +19,12 @@ use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{rt, Runtime};
 use log::{debug, error, info, trace, warn};
 
+use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
     AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, StoreBlob, UncommittedBlob,
 };
-use crate::{Buffer, Key};
+use crate::Key;
 
 /// Start the database actor.
 pub fn start(
@@ -95,11 +96,11 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
         trace!("database actor received message: {:?}", msg);
         match msg {
             Message::AddBlob(RpcMessage { request, response }) => {
-                let (blob, length) = request;
+                let view = request;
                 use AddResult::*;
-                let result = match storage.add_blob(&blob.as_bytes()[..length]) {
-                    Ok(query) => (AddBlobResponse::Query(query), blob),
-                    AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), blob),
+                let result = match storage.add_blob(view.as_bytes()) {
+                    Ok(query) => (AddBlobResponse::Query(query), view),
+                    AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), view),
                     Err(err) => return Result::Err(err.describe("adding a blob")),
                 };
                 if let Result::Err(err) = response.respond(result) {
@@ -199,7 +200,7 @@ pub enum Message {
     ///
     /// This will panic if the `length` is larger then the bytes in the
     /// `Buffer`.
-    AddBlob(RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>),
+    AddBlob(RpcMessage<BufView, (AddBlobResponse, BufView)>),
     /// Commit to a blob being stored, phase two of storing the blob.
     ///
     /// Request is the query to store the blob, returned by [`Message::AddBlob`].
@@ -275,7 +276,7 @@ macro_rules! from_rpc_message {
     };
 }
 
-from_rpc_message!(Message::AddBlob(Buffer, usize) -> (AddBlobResponse, Buffer));
+from_rpc_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
 from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> ());
 from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);

@@ -66,11 +66,12 @@ async fn add_blob<M>(
 ) -> Result<Success<StoreBlob, Key>, ()> {
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
-    let blob = replace(buf, Buffer::empty());
+    let view = replace(buf, Buffer::empty()).view(blob_length);
 
-    match db_rpc(ctx, db_ref, (blob, blob_length)) {
+    match db_rpc(ctx, db_ref, view) {
         Ok(rpc) => match rpc.await {
-            Ok((result, mut buffer)) => {
+            Ok((result, view)) => {
+                let mut buffer = view.into_inner();
                 // Mark the blob's bytes as processed and put back the buffer.
                 buffer.processed(blob_length);
                 *buf = buffer;
