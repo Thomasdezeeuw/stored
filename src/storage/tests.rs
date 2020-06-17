@@ -34,7 +34,7 @@ impl BlobEntry {
 }
 
 impl AddResult {
-    fn unwrap(self) -> AddBlob {
+    fn unwrap(self) -> StoreBlob {
         match self {
             AddResult::Ok(query) => query,
             AddResult::AlreadyStored(key) => panic!("blob already stored: {}", key),

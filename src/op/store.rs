@@ -10,7 +10,7 @@ use crate::db::AddBlobResponse;
 use crate::op::db_rpc;
 use crate::peer::coordinator::RelayError;
 use crate::peer::Peers;
-use crate::storage::AddBlob;
+use crate::storage::StoreBlob;
 use crate::{db, Buffer, Key};
 
 /// Stores a blob in the database.
@@ -63,7 +63,7 @@ async fn add_blob<M>(
     db_ref: &mut ActorRef<db::Message>,
     buf: &mut Buffer,
     blob_length: usize,
-) -> Result<Success<AddBlob, Key>, ()> {
+) -> Result<Success<StoreBlob, Key>, ()> {
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
     let blob = replace(buf, Buffer::empty());
@@ -91,7 +91,7 @@ async fn consensus<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
     peers: &Peers,
-    query: AddBlob,
+    query: StoreBlob,
 ) -> Result<(), ()> {
     // Phase one of 2PC: start the algorithm, letting the participants (peers)
     // know we want to store a blob.
@@ -201,7 +201,7 @@ fn select_timestamp(results: &[Result<SystemTime, RelayError>]) -> SystemTime {
 async fn commit_blob<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
-    query: AddBlob,
+    query: StoreBlob,
     timestamp: SystemTime,
 ) -> Result<(), ()> {
     trace!("committing to adding blob: query={:?}", query);

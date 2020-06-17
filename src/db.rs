@@ -21,7 +21,7 @@ use log::{debug, error, info, trace, warn};
 
 use crate::error::Describe;
 use crate::storage::{
-    AddBlob, AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, UncommittedBlob,
+    AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, StoreBlob, UncommittedBlob,
 };
 use crate::{Buffer, Key};
 
@@ -106,7 +106,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
-            Message::CommitAddBlob(RpcMessage { request, response }) => {
+            Message::CommitStoreBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
                 storage
                     .commit(query, created_at)
@@ -115,7 +115,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
-            Message::AbortAddBlob(RpcMessage { request, response }) => {
+            Message::AbortStoreBlob(RpcMessage { request, response }) => {
                 storage
                     .abort(request)
                     .map_err(|err| err.describe("aborting adding blob"))?;
@@ -186,12 +186,12 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
 /// Message type send to the storage [`actor`].
 #[derive(Debug)]
 pub enum Message {
-    /// Add a blob to the database.
+    /// Add a blob to the database, phase one of storing the blob.
     ///
     /// Request is the `Buffer`, of which `length` (usize) bytes are used, that
     /// makes up the blob.
     ///
-    /// Responds with a query to commit to adding the blob, or the key of the
+    /// Responds with a query to commit to storing the blob, or the key of the
     /// blob if the blob is already in the database. Also returns the original,
     /// unchanged `Buffer` in `Message::AddBlob`.
     ///
@@ -200,14 +200,14 @@ pub enum Message {
     /// This will panic if the `length` is larger then the bytes in the
     /// `Buffer`.
     AddBlob(RpcMessage<(Buffer, usize), (AddBlobResponse, Buffer)>),
-    /// Commit to a blob being added.
+    /// Commit to a blob being stored, phase two of storing the blob.
     ///
-    /// Request is the query to add the blob, returned by [`Message::AddBlob`].
-    CommitAddBlob(RpcMessage<(AddBlob, SystemTime), ()>),
-    /// Abort adding of a blob.
+    /// Request is the query to store the blob, returned by [`Message::AddBlob`].
+    CommitStoreBlob(RpcMessage<(StoreBlob, SystemTime), ()>),
+    /// Abort storing a blob.
     ///
     /// Request is the query to abort, returned by [`Message::AddBlob`].
-    AbortAddBlob(RpcMessage<AddBlob, ()>),
+    AbortStoreBlob(RpcMessage<StoreBlob, ()>),
 
     /// Get a blob from storage.
     ///
@@ -276,8 +276,8 @@ macro_rules! from_rpc_message {
 }
 
 from_rpc_message!(Message::AddBlob(Buffer, usize) -> (AddBlobResponse, Buffer));
-from_rpc_message!(Message::CommitAddBlob(AddBlob, SystemTime) -> ());
-from_rpc_message!(Message::AbortAddBlob(AddBlob) -> ());
+from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> ());
+from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
@@ -289,7 +289,7 @@ from_rpc_message!(Message::HealthCheck(HealthCheck) -> HealthOk);
 #[derive(Debug)]
 pub enum AddBlobResponse {
     /// Query to commit to adding a blob.
-    Query(AddBlob),
+    Query(StoreBlob),
     /// The blob is already stored.
     AlreadyStored(Key),
 }

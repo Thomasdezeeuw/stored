@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::{self, AddBlobResponse};
 use crate::error::Describe;
 use crate::peer::{coordinator, ConsensusId, Peers, COORDINATOR_MAGIC};
-use crate::storage::AddBlob;
+use crate::storage::StoreBlob;
 use crate::{Buffer, Key};
 
 /// Actor that accepts messages from [`coordinator::relay`] over the `stream` and
@@ -162,8 +162,8 @@ fn read_requests(
                 debug!("participant dispatcher received a request: {:?}", request);
 
                 let (key, operation) = match request.kind {
-                    RequestKind::AddBlob(key) => (key, ConsensusOperation::AddBlob),
-                    RequestKind::CommitAddBlob(key, timestamp) => {
+                    RequestKind::AddBlob(key) => (key, ConsensusOperation::StoreBlob),
+                    RequestKind::CommitStoreBlob(key, timestamp) => {
                         if let Some(actor_ref) = running.get(&request.consensus_id) {
                             // Relay the message to the correct actor.
                             let msg = ConsensusResultRequest {
@@ -266,10 +266,10 @@ pub enum RequestKind {
     ///
     /// [`coordinator::RequestKind::AddBlob`]: super::coordinator::RequestKind::AddBlob
     AddBlob(Key),
-    /// Same as [`coordinator::RequestKind::CommitAddBlob`].
+    /// Same as [`coordinator::RequestKind::CommitStoreBlob`].
     ///
-    /// [`coordinator::RequestKind::CommitAddBlob`]: super::coordinator::RequestKind::CommitAddBlob
-    CommitAddBlob(Key, SystemTime),
+    /// [`coordinator::RequestKind::CommitStoreBlob`]: super::coordinator::RequestKind::CommitStoreBlob
+    CommitStoreBlob(Key, SystemTime),
     /// Same as [`coordinator::RequestKind::RemoveBlob`].
     ///
     /// [`coordinator::RequestKind::RemoveBlob`]: super::coordinator::RequestKind::RemoveBlob
@@ -285,8 +285,8 @@ impl From<coordinator::Request<'_>> for Request {
             consensus_id: req.consensus_id,
             kind: match req.kind {
                 AddBlob(key) => RequestKind::AddBlob(key.clone()),
-                CommitAddBlob(key, timestamp) => {
-                    RequestKind::CommitAddBlob(key.clone(), *timestamp)
+                CommitStoreBlob(key, timestamp) => {
+                    RequestKind::CommitStoreBlob(key.clone(), *timestamp)
                 }
                 RemoveBlob(key) => RequestKind::RemoveBlob(key.clone()),
             },
@@ -429,7 +429,7 @@ pub struct ConsensusRequest {
 
 #[derive(Debug, Copy, Clone)]
 pub enum ConsensusOperation {
-    AddBlob,
+    StoreBlob,
     RemoveBlob,
 }
 
@@ -459,21 +459,23 @@ pub async fn consensus(
     debug!("consensus actor started: request={:?}", request);
 
     match request.operation {
-        ConsensusOperation::AddBlob => consensus_add_blob(ctx, request, responder, db_ref).await,
+        ConsensusOperation::StoreBlob => {
+            consensus_store_blob(ctx, request, responder, db_ref).await
+        }
         ConsensusOperation::RemoveBlob => {
             consensus_remove_blob(ctx, request, responder, db_ref).await
         }
     }
 }
 
-/// Run the consensus algorithm for adding a blob.
-async fn consensus_add_blob(
+/// Run the consensus algorithm for storing a blob.
+async fn consensus_store_blob(
     mut ctx: actor::Context<ConsensusResultRequest, ThreadSafe>,
     request: ConsensusRequest,
     mut responder: RpcResponder,
     mut db_ref: ActorRef<db::Message>,
 ) -> crate::Result<()> {
-    debug_assert!(matches!(request.operation, ConsensusOperation::AddBlob));
+    debug_assert!(matches!(request.operation, ConsensusOperation::StoreBlob));
 
     // TODO: reuse stream and buffer.
     // TODO: stream large blob to a file directly? Preallocating disk space in
@@ -658,7 +660,7 @@ async fn add_blob_to_db(
     db_ref: &mut ActorRef<db::Message>,
     buf: Buffer,
     blob_length: usize,
-) -> Status<AddBlob> {
+) -> Status<StoreBlob> {
     trace!("consensus actor adding blob: length={}", blob_length);
     match db_ref.rpc(ctx, (buf, blob_length)) {
         Ok(rpc) => match rpc.await {
@@ -677,7 +679,7 @@ async fn add_blob_to_db(
 async fn commit_blob_to_db(
     ctx: &mut actor::Context<ConsensusResultRequest, ThreadSafe>,
     db_ref: &mut ActorRef<db::Message>,
-    query: AddBlob,
+    query: StoreBlob,
     timestamp: SystemTime,
 ) -> Result<(), ()> {
     trace!(
@@ -699,7 +701,7 @@ async fn commit_blob_to_db(
 async fn abort_add_blob(
     ctx: &mut actor::Context<ConsensusResultRequest, ThreadSafe>,
     db_ref: &mut ActorRef<db::Message>,
-    query: AddBlob,
+    query: StoreBlob,
 ) -> Result<(), ()> {
     trace!("consensus actor aborting adding blob: query={:?}", query);
     match db_ref.rpc(ctx, query) {

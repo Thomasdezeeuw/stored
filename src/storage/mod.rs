@@ -15,17 +15,17 @@
 //!
 //! [^1]: Not really, but pretend like they are for now.
 //!
-//! ## Adding blobs
+//! ## Storing blobs
 //!
-//! Adding new blobs to the database is done in two phases. First, by appending
+//! Storing new blobs to the store is done in two phases. First, by appending
 //! the blob's bytes to the data file. Note that in this phase we don't yet
 //! ensure the blob is fully synced to disk. Second, we fully sync the blob to
-//! the data and add a new entry to the index file, ensuring its fully synced.
-//! Only after those two steps is a blob stored in the database.
+//! the data file and add a new entry to the index file, ensuring the entry is
+//! also fully synced. Only after those two steps is a blob considered stored.
 //!
-//! In the code this is done by first calling [`Storage::add_blob`]. This add
-//! the blob's bytes to the datafile and returns a [`AddBlob`] query. This query
-//! can then be committed (by calling [`Storage::commit`]) or aborted (by
+//! In the code this is done by first calling [`Storage::add_blob`]. This adds
+//! the blob's bytes to the data file and returns a [`StoreBlob`] query. This
+//! query can then be committed (by calling [`Storage::commit`]) or aborted (by
 //! calling [`Storage::abort`]). If the query is committed an entry is added to
 //! the index file, ensuring the blob is stored in the database. Only after the
 //! query is committed the blob can be looked up (using [`Storage::lookup`]).
@@ -35,10 +35,10 @@
 //!
 //! ## Removing blobs
 //!
-//! Just like adding new blobs, removing blobs is done in two phases. In the
-//! first phase the in-memory hash map is checked if the blob is present. If the
-//! blob is present it returns a [`RemoveBlob`] query, if its not present it
-//! returns [`RemoveResult::NotStored`].
+//! Just like storing blobs, removing blobs is done in two phases. In the first
+//! phase the in-memory hash map is checked if the blob is present. If the blob
+//! is present it returns a [`RemoveBlob`] query, if its not present it returns
+//! [`RemoveResult::NotStored`].
 //!
 //! In the second phase, if the query is committed, the time of blob's entry in
 //! the index file will be overwritten with a removed time. Next the in-memory
@@ -58,9 +58,9 @@
 //! file system to take of this for us. Note however that is possible to
 //! validate the database, [see below](#validating-the-database).
 //!
-//! As documentation above storing blobs is a two step process. If there is a
-//! failure in step one, for example if the application crashes before the all
-//! bytes are written to disk, it means that we have bytes in the data file
+//! As per the documentation above storing blobs is a two step process. If there
+//! is a failure in step one, for example if the application crashes before the
+//! all bytes are written to disk, it means that we have bytes in the data file
 //! which don't have an entry in the index file. This is fine, the index file
 //! determines what blobs are in the database, and as there is no entry in the
 //! index that points to these possibly invalid bytes the database is not
@@ -139,7 +139,7 @@ pub struct Blob {
     /// **The lifetime is a lie!** However the `lifetime` field ensures that the
     /// bytes are alive.
     bytes: &'static [u8],
-    /// Date at which the `Blob` was created/added.
+    /// Date at which the `Blob` was created/stored.
     created: SystemTime,
     /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
     /// `Blob`, as that would invalidate the `bytes` field.
@@ -159,7 +159,7 @@ impl Blob {
         self.bytes.len()
     }
 
-    /// Returns the time at which the blob was added.
+    /// Returns the time at which the blob was stored.
     pub fn created_at(&self) -> SystemTime {
         self.created
     }
@@ -388,7 +388,7 @@ impl Storage {
         if let Some((count, _)) = self.uncommitted.get_mut(&key) {
             // We can reuse the same query.
             *count += 1;
-            return AddResult::Ok(AddBlob { key });
+            return AddResult::Ok(StoreBlob { key });
         }
 
         // First add the blob to the data file. If something happens the blob
@@ -404,7 +404,7 @@ impl Storage {
                 };
                 self.uncommitted.insert(key.clone(), (1, uncommitted_blob));
 
-                AddResult::Ok(AddBlob { key })
+                AddResult::Ok(StoreBlob { key })
             }
             Err(err) => AddResult::Err(err),
         }
@@ -454,7 +454,7 @@ impl Storage {
 pub enum AddResult {
     /// Blob was successfully stored, but not yet added to the index nor
     /// database.
-    Ok(AddBlob),
+    Ok(StoreBlob),
     /// Blob is already stored.
     AlreadyStored(Key),
     /// I/O error.
@@ -495,16 +495,16 @@ pub trait Query {
     fn abort(self, storage: &mut Storage) -> io::Result<()>;
 }
 
-/// A [`Query`] to [add a blob] to the [`Storage`].
+/// A [`Query`] to [store a blob] to the [`Storage`].
 ///
-/// [add a blob]: Storage::add_blob
+/// [store a blob]: Storage::add_blob
 #[derive(Debug)]
-pub struct AddBlob {
+pub struct StoreBlob {
     key: Key,
 }
 
-impl AddBlob {
-    /// Returns the key for the added blob.
+impl StoreBlob {
+    /// Returns the key for the to be store blob.
     pub fn key(&self) -> &Key {
         &self.key
     }
@@ -557,13 +557,13 @@ impl AddBlob {
     }
 }
 
-impl Query for AddBlob {
+impl Query for StoreBlob {
     type Arg = SystemTime;
     type Return = ();
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
         trace!(
-            "committing to adding blob: key={}, created_at={:?}",
+            "committing to storing blob: key={}, created_at={:?}",
             self.key,
             created_at
         );
@@ -624,7 +624,7 @@ impl Query for AddBlob {
     }
 
     fn abort(self, storage: &mut Storage) -> io::Result<()> {
-        trace!("aborting adding blob: key={}", self.key);
+        trace!("aborting storing blob: key={}", self.key);
         use hash_map::Entry::*;
         match storage.uncommitted.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
@@ -646,10 +646,6 @@ impl Query for AddBlob {
         self.remove_blob_bytes(storage)
     }
 }
-
-// Safety: the `lifetime` field ensures the `address` remains valid.
-unsafe impl Send for AddBlob {}
-unsafe impl Sync for AddBlob {}
 
 /// A [`Query`] to [remove a blob] to the [`Storage`].
 ///
@@ -714,7 +710,7 @@ impl Query for RemoveBlob {
 #[derive(Debug)]
 struct Data {
     /// Data file opened for reading and writing in append-only mode (for
-    /// adding new blobs).
+    /// storing new blobs).
     ///
     /// Note: the seek position is unlikely to be correct after opening.
     file: File,

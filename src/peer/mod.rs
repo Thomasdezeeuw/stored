@@ -199,7 +199,7 @@ impl Peers {
         key: Key,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
-        self.rpc(ctx, id, coordinator::CommitAddBlob(key, timestamp))
+        self.rpc(ctx, id, coordinator::CommitStoreBlob(key, timestamp))
     }
 
     /*

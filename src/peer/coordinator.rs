@@ -29,7 +29,7 @@ pub enum RelayMessage {
     /// Returns the peer's time at which the blob was added.
     AddBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, RelayError>>),
     /// Commit to adding blob with [`Key`] at the provided timestamp.
-    CommitAddBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
+    CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
     /// Remove the blob with [`Key`].
     ///
     /// Returns the peer's time at which the blob was added.
@@ -97,7 +97,7 @@ macro_rules! msg_types {
 }
 
 msg_types!(AddBlob(Key) -> SystemTime);
-msg_types!(CommitAddBlob(Key, SystemTime) -> ());
+msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
 msg_types!(RemoveBlob(Key) -> SystemTime);
 
 /// Enum to collect all possible [`RpcResponse`]s from [`RelayMessage`].
@@ -105,8 +105,8 @@ msg_types!(RemoveBlob(Key) -> SystemTime);
 enum RelayResponse {
     /// Response for [`RelayMessage::AddBlob`].
     AddBlob(RpcResponse<Result<SystemTime, RelayError>>),
-    /// Response for [`RelayMessage::CommitAddBlob`].
-    CommitAddBlob(RpcResponse<Result<(), RelayError>>),
+    /// Response for [`RelayMessage::CommitStoreBlob`].
+    CommitStoreBlob(RpcResponse<Result<(), RelayError>>),
     /// Response for [`RelayMessage::RemoveBlob`].
     RemoveBlob(RpcResponse<Result<SystemTime, RelayError>>),
 }
@@ -293,10 +293,10 @@ async fn write_message<'b>(
             request: (consensus_id, key),
             ..
         }) => (*consensus_id, RequestKind::AddBlob(key)),
-        RelayMessage::CommitAddBlob(RpcMessage {
+        RelayMessage::CommitStoreBlob(RpcMessage {
             request: (consensus_id, key, timestamp),
             ..
-        }) => (*consensus_id, RequestKind::CommitAddBlob(key, timestamp)),
+        }) => (*consensus_id, RequestKind::CommitStoreBlob(key, timestamp)),
         RelayMessage::RemoveBlob(RpcMessage {
             request: (consensus_id, key),
             ..
@@ -323,8 +323,8 @@ async fn write_message<'b>(
         RelayMessage::AddBlob(RpcMessage { response, .. }) => {
             responses.insert(id, RelayResponse::AddBlob(response));
         }
-        RelayMessage::CommitAddBlob(RpcMessage { response, .. }) => {
-            responses.insert(id, RelayResponse::CommitAddBlob(response));
+        RelayMessage::CommitStoreBlob(RpcMessage { response, .. }) => {
+            responses.insert(id, RelayResponse::CommitStoreBlob(response));
         }
         RelayMessage::RemoveBlob(RpcMessage { response, .. }) => {
             responses.insert(id, RelayResponse::RemoveBlob(response));
@@ -362,7 +362,7 @@ fn relay_responses(
                                 warn!("failed to relay peer response to actor: {}", err);
                             }
                         }
-                        RelayResponse::CommitAddBlob(relay) => {
+                        RelayResponse::CommitStoreBlob(relay) => {
                             // Convert the response into the type required for
                             // `RelayResponse`.
                             let response = match response.response {
@@ -412,8 +412,8 @@ pub enum RequestKind<'a> {
     // TODO: provide the length so we can pre-allocate a buffer at the
     // participant?
     AddBlob(&'a Key),
-    /// Commit to add the blob.
-    CommitAddBlob(&'a Key, &'a SystemTime),
+    /// Commit to store the blob.
+    CommitStoreBlob(&'a Key, &'a SystemTime),
     /// Remove the blob with [`Key`].
     RemoveBlob(&'a Key),
 }
