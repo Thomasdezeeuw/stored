@@ -1,5 +1,6 @@
 //! Module with the type related to peer interaction.
 
+use std::fmt;
 use std::future::Future;
 use std::mem::replace;
 use std::net::SocketAddr;
@@ -8,13 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{self, Poll};
 use std::time::{Duration, SystemTime};
-use std::{fmt, io};
 
-use futures_util::io::AsyncWriteExt;
 use heph::actor::context::{ThreadLocal, ThreadSafe};
 use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
-use heph::net::{tcp, TcpStream};
+use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
 use heph::supervisor::{RestartSupervisor, SupervisorStrategy};
 use heph::timer::Timer;
@@ -23,10 +22,13 @@ use log::{debug, warn};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Describe;
-use crate::{config, db, Buffer, Key};
+use crate::{config, db, Key};
 
 pub mod coordinator;
 pub mod participant;
+
+#[cfg(test)]
+mod tests;
 
 use coordinator::{RelayError, RelayMessage};
 
@@ -58,7 +60,9 @@ pub fn start(
 }
 
 /// Start the peer listener, listening for incoming TCP connections from its
-/// peers starting a new [`switcher`] actor for each connection.
+/// peers starting a new [switcher actor] for each connection.
+///
+/// [switcher actor]: switcher::actor
 fn start_listener(
     runtime: &mut Runtime,
     db_ref: ActorRef<db::Message>,
@@ -68,7 +72,7 @@ fn start_listener(
 ) -> crate::Result<()> {
     debug!("starting peer listener: address={}", address);
 
-    let switcher = (switcher as fn(_, _, _, _, _, _) -> _)
+    let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
     let server_actor = tcp::Server::setup(
         address,
@@ -412,75 +416,103 @@ impl<Res> Future for PeerRpc<Res> {
     }
 }
 
+// Magic bytes indicate the kind of connection.
 const COORDINATOR_MAGIC: &[u8] = b"Stored coordinate\0";
 const PARTICIPANT_MAGIC: &[u8] = b"Stored participate";
 const MAGIC_LENGTH: usize = 18;
 
-const MAGIC_ERROR_MSG: &[u8] = b"invalid connection magic";
+pub mod switcher {
+    //! Module with the [switcher actor].
+    //!
+    //! [switcher actor]: actor()
 
-/// Actor that acts as switcher between acting as a coordinator server or
-/// participant.
-pub async fn switcher(
-    // The `Response` type is a bit awkward, but required for
-    // `participant::dispatcher`.
-    ctx: actor::Context<participant::Response, ThreadSafe>,
-    mut stream: TcpStream,
-    remote: SocketAddr,
-    peers: Peers,
-    db_ref: ActorRef<db::Message>,
-    server: SocketAddr,
-) -> crate::Result<()> {
-    debug!("accepted peer connection: remote_address={}", remote);
-    // TODO: 8k is a bit large for `coordinator::server`, only needs to read 1
-    // key at a time.
-    let mut buf = Buffer::new();
+    use std::io;
+    use std::net::SocketAddr;
 
-    let mut bytes_read = 0;
-    while bytes_read < MAGIC_LENGTH {
-        let n = buf
-            .read_from(&mut stream)
-            .await
-            .map_err(|err| err.describe("reading magic bytes"))?;
-        if n == 0 {
-            return Err(
-                io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading magic bytes")
-            );
-        }
-        bytes_read += n;
-    }
+    use futures_util::io::AsyncWriteExt;
+    use heph::actor::context::ThreadSafe;
+    use heph::net::TcpStream;
+    use heph::{actor, ActorRef};
+    use log::{debug, warn};
 
-    assert_eq!(MAGIC_LENGTH, COORDINATOR_MAGIC.len());
-    assert_eq!(MAGIC_LENGTH, PARTICIPANT_MAGIC.len());
-    match &buf.as_bytes()[..MAGIC_LENGTH] {
-        COORDINATOR_MAGIC => {
-            buf.processed(MAGIC_LENGTH);
-            if let Err(err) = coordinator::server(ctx, stream, buf, db_ref).await {
-                warn!("coordinator server failed: {}", err);
+    use crate::error::Describe;
+    use crate::peer::{
+        coordinator, participant, Peers, COORDINATOR_MAGIC, MAGIC_LENGTH, PARTICIPANT_MAGIC,
+    };
+    use crate::{db, Buffer};
+
+    const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
+
+    /// Actor that acts as switcher between acting as a coordinator server or
+    /// participant.
+    pub async fn actor(
+        // The `Response` type is a bit awkward, but required for
+        // `participant::dispatcher`.
+        ctx: actor::Context<participant::Response, ThreadSafe>,
+        mut stream: TcpStream,
+        remote: SocketAddr,
+        peers: Peers,
+        db_ref: ActorRef<db::Message>,
+        server: SocketAddr,
+    ) -> crate::Result<()> {
+        debug!("accepted peer connection: remote_address={}", remote);
+        // TODO: 8k is a bit large for `coordinator::server`, only needs to read
+        // 1 key at a time.
+        let mut buf = Buffer::new();
+
+        let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
+        /* FIXME: add a timeout here.
+        const TIMEOUT: Duration = Duration::from_secs(5); // TODO: move out of function.
+        */
+        match read_n.await {
+            Ok(()) => {}
+            Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                warn!(
+                    "closing connection: missing connection magic: remote_address={}",
+                    remote
+                );
+                // We don't really care if we didn't write all the bytes here,
+                // the connection is invalid anyway.
+                return stream
+                    .write(MAGIC_ERROR_MSG)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| err.describe("writing error response"));
             }
-            // Don't log the error as a problem in the switch part.
-            Ok(())
+            Err(err) => return Err(err.describe("reading connection magic")),
         }
-        PARTICIPANT_MAGIC => {
-            buf.processed(MAGIC_LENGTH);
-            if let Err(err) = participant::dispatcher(ctx, stream, buf, peers, db_ref, server).await
-            {
-                warn!("participant dispatcher failed: {}", err);
+
+        match &buf.as_bytes()[..MAGIC_LENGTH] {
+            COORDINATOR_MAGIC => {
+                buf.processed(MAGIC_LENGTH);
+                // Don't log the error as a problem in the switch actor.
+                if let Err(err) = coordinator::server(ctx, stream, buf, db_ref).await {
+                    warn!("coordinator server failed: {}", err);
+                }
+                Ok(())
             }
-            // Don't log the error as a problem in the switch part.
-            Ok(())
-        }
-        _ => {
-            warn!(
-                "closing connection: incorrect connection magic: remote_address={}",
-                remote
-            );
-            // We don't really can if we didn't write all the bytes here, the
-            // connection is invalid anyway.
-            stream
-                .write(MAGIC_ERROR_MSG)
-                .await
-                .map(|_| ())
-                .map_err(|err| err.describe("writing error response"))
+            PARTICIPANT_MAGIC => {
+                buf.processed(MAGIC_LENGTH);
+                // Don't log the error as a problem in the switch actor.
+                let res = participant::dispatcher(ctx, stream, buf, peers, db_ref, server).await;
+                if let Err(err) = res {
+                    warn!("participant dispatcher failed: {}", err);
+                }
+                Ok(())
+            }
+            _ => {
+                warn!(
+                    "closing connection: incorrect connection magic: remote_address={}",
+                    remote
+                );
+                // We don't really care if we didn't write all the bytes here,
+                // the connection is invalid anyway.
+                stream
+                    .write(MAGIC_ERROR_MSG)
+                    .await
+                    .map(|_| ())
+                    .map_err(|err| err.describe("writing error response"))
+            }
         }
     }
 }
