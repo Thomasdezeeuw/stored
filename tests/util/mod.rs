@@ -470,11 +470,17 @@ pub mod http {
         want_body: &[u8],
     ) {
         let want_date_header = date_header();
-        assert_eq!(response.status(), want_status, "unexpected status");
+        assert_eq!(
+            response.status(),
+            want_status,
+            "unexpected status: response={:?}",
+            response.map(|body| String::from_utf8(body))
+        );
         assert_eq!(
             response.version(),
             Version::HTTP_11,
-            "unexpected HTTP version"
+            "unexpected HTTP version: response={:?}",
+            response.map(|body| String::from_utf8(body))
         );
         for (name, value) in response.headers() {
             match name {
@@ -486,14 +492,19 @@ pub mod http {
                         if name == LAST_MODIFIED {
                             cmp_date_header(name, value, want.1);
                         } else {
-                            assert_eq!(value, want.1, "Different '{}' header", name);
+                            assert_eq!(
+                                value, want.1,
+                                "Different '{}' header: response={:?}",
+                                name, response
+                            );
                         }
                     } else {
                         panic!(
-                            "unexpected header: \"{}\" = {:?}, not in: {:?}",
+                            "unexpected header: \"{}\" = {:?}, not in: {:?}: response={:?}",
                             name,
                             value.to_str(),
-                            want_headers
+                            want_headers,
+                            response
                         );
                     }
                 }
