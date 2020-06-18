@@ -11,7 +11,7 @@ use crate::util::http::{body, date_header, header};
 const DB_PORT: u16 = 9002;
 const DB_PATH: &'static str = "/tmp/stored_post_tests.db";
 const CONF_PATH: &'static str = "tests/config/post.toml";
-const FILTER: LevelFilter = LevelFilter::Error;
+const FILTER: LevelFilter = LevelFilter::Warn;
 
 start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 

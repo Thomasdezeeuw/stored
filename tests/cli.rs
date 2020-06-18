@@ -15,7 +15,7 @@ mod util;
 const DB_PORT: u16 = 9004;
 const DB_PATH: &'static str = "/tmp/stored_cli_tests.db";
 const CONF_PATH: &'static str = "tests/config/cli.toml";
-const FILTER: LevelFilter = LevelFilter::Error;
+const FILTER: LevelFilter = LevelFilter::Warn;
 
 start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 

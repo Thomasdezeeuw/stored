@@ -10,7 +10,7 @@ use crate::util::http::{assert_response, body, header, request};
 
 const DB_PORT: u16 = 9001;
 const CONF_PATH: &'static str = "tests/config/get_head.toml";
-const FILTER: LevelFilter = LevelFilter::Error;
+const FILTER: LevelFilter = LevelFilter::Warn;
 
 start_stored_fn!(&[CONF_PATH], &[], FILTER);
 
