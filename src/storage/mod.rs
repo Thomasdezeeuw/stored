@@ -95,9 +95,9 @@
 //   - MAP_HUGE_1GB
 // - MAP_POPULATE
 
-// TODO: add some safeguard to ensure the `AddBlob` and `RemoveBlob` queries can
-// only be applied to the correct `Storage`? Important when the database actor
-// is restarted.
+// TODO: add some safeguard to ensure the `StoreBlob` and `RemoveBlob` queries
+// can only be applied to the correct `Storage`? Important when the database
+// actor is restarted.
 
 // TODO: use the invalid bit in `Datetime.subsec_nanos` to indicate that the
 // storing the blob was aborted? That would make it easier for the cleanup.
@@ -254,7 +254,7 @@ pub struct Storage {
     blobs: HashMap<Key, (EntryIndex, BlobEntry)>,
     /// Uncommitted blobs.
     ///
-    /// The `usize` is the number of [`AddBlob`]s adding the blob.
+    /// The `usize` is the number of [`StoreBlob`]s adding the blob.
     uncommitted: HashMap<Key, (usize, UncommittedBlob)>,
     /// Length of `blob` that are not [`BlobEntry::Removed`].
     length: usize,
@@ -369,11 +369,11 @@ impl Storage {
     ///
     /// # Notes
     ///
-    /// There is an implicit lifetime between the returned [`AddBlob`] query and
-    /// this `Storage`. The query can only be commit or aborted to this
+    /// There is an implicit lifetime between the returned [`StoreBlob`] query
+    /// and this `Storage`. The query can only be commit or aborted to this
     /// `Storage`, the query may however safely outlive `Storage`.
     ///
-    /// [query]: AddBlob
+    /// [query]: StoreBlob
     /// [committed]: Storage::commit
     pub fn add_blob(&mut self, blob: &[u8]) -> AddResult {
         let key = Key::for_blob(blob);
@@ -472,9 +472,9 @@ pub enum RemoveResult {
 
 /// a `Query` is a partially prepared storage operation.
 ///
-/// An example is [`AddBlob`] that already has the data of the blob stored, but
-/// the blob itself isn't yet in the database. Only after [committing] will the
-/// blob be stored (and thus accessible).
+/// An example is [`StoreBlob`] that already has the data of the blob stored,
+/// but the blob itself isn't yet in the database. Only after [committing] will
+/// the blob be stored (and thus accessible).
 ///
 /// [committing]: Query::commit
 pub trait Query {
@@ -629,12 +629,12 @@ impl Query for StoreBlob {
         match storage.uncommitted.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
                 (1, _) => {
-                    // We're the only `AddBlob` query that has access to these
+                    // We're the only `StoreBlob` query that has access to these
                     // bytes, so we can safely remove them.
                     entry.remove();
                 }
                 (count, _) => {
-                    // Another `AddBlob` is still using the bytes.
+                    // Another `StoreBlob` is still using the bytes.
                     *count -= 1;
                     return Ok(());
                 }
