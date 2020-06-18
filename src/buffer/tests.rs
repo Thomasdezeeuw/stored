@@ -1,8 +1,10 @@
 use std::future::Future;
+use std::io;
 use std::io::Write;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
+use futures_io::AsyncRead;
 use futures_util::io::Cursor;
 use futures_util::task::noop_waker;
 
@@ -19,6 +21,30 @@ const MIN_BUF_SIZE: usize = 2 * 1024;
 
 const EMPTY: &[u8] = &[];
 
+/// [`AsyncRead`] implementation that returns a single slice in `bytes` in each
+/// call.
+struct Bytes<'a> {
+    bytes: &'a [&'a [u8]],
+}
+
+impl<'a> AsyncRead for Bytes<'a> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        _: &mut task::Context,
+        buf: &mut [u8],
+    ) -> Poll<io::Result<usize>> {
+        if self.bytes.is_empty() {
+            Poll::Ready(Ok(0))
+        } else {
+            let len = self.bytes[0].len();
+            // This will panic if the `buf` is too small, but that is fine.
+            buf[..len].copy_from_slice(self.bytes[0]);
+            self.bytes = &self.bytes[1..];
+            Poll::Ready(Ok(len))
+        }
+    }
+}
+
 #[test]
 fn buffer_simple_read() {
     let mut buf = Buffer::new();
@@ -33,6 +59,32 @@ fn buffer_simple_read() {
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), &[1, 2, 3]);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
+}
+
+#[test]
+fn buffer_read_n_from() {
+    let mut buf = Buffer::new();
+
+    // Can read more bytes than we want.
+    let mut reader = Cursor::new([1, 2, 3, 4, 5]);
+    poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap();
+    assert_eq!(buf.len(), 5);
+    assert_eq!(buf.as_bytes(), &[1, 2, 3, 4, 5]);
+    buf.processed(5);
+
+    // Reading less bytes should cause an error.
+    let mut reader = Cursor::new([1, 2]);
+    let err = poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap_err();
+    assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    // First two bytes are read.
+    assert_eq!(buf.as_bytes(), &[1, 2]);
+    buf.processed(2);
+
+    let mut reader = Bytes {
+        bytes: &[&[5, 6, 7], &[8, 9, 10]],
+    };
+    poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 5))).unwrap();
+    assert_eq!(buf.as_bytes(), &[5, 6, 7, 8, 9, 10]);
 }
 
 #[test]

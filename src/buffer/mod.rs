@@ -151,7 +151,7 @@ impl Buffer {
     }
 
     /// Read from `reader` into this buffer.
-    pub fn read_from<R>(&mut self, reader: R) -> Read<R>
+    pub fn read_from<R>(&mut self, reader: R) -> Read<R, Self>
     where
         R: AsyncRead,
     {
@@ -159,6 +159,21 @@ impl Buffer {
         Read {
             buffer: self,
             reader,
+        }
+    }
+
+    /// Read at least `n` bytes from `reader` into this buffer.
+    pub fn read_n_from<R>(&mut self, reader: R, n: usize) -> ReadN<R, Self>
+    where
+        R: AsyncRead,
+    {
+        self.reserve_atleast(n);
+        ReadN {
+            read: Read {
+                buffer: self,
+                reader,
+            },
+            left: n,
         }
     }
 
@@ -314,6 +329,42 @@ where
                 }
                 bytes_read
             })
+    }
+}
+
+/// [`Future`] that reads at least `N` bytes from reader `R` into buffer `B` or
+/// returns [`io::ErrorKind::UnexpectedEof`].
+///
+/// # Notes
+///
+/// This future doesn't implement any waking mechanism, it up to the reader `R`
+/// to handle wakeups.
+#[derive(Debug)]
+pub struct ReadN<'b, R, B = Buffer> {
+    read: Read<'b, R, B>,
+    left: usize,
+}
+
+impl<'b, R, B> Future for ReadN<'b, R, B>
+where
+    Read<'b, R, B>: Future<Output = io::Result<usize>> + Unpin,
+{
+    type Output = io::Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        loop {
+            match Pin::new(&mut self.read).poll(ctx) {
+                Poll::Ready(Ok(0)) => return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into())),
+                Poll::Ready(Ok(n)) if self.left < n => return Poll::Ready(Ok(())),
+                Poll::Ready(Ok(n)) => {
+                    self.left -= n;
+                    // Try to read some more bytes.
+                    continue;
+                }
+                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
+                Poll::Pending => return Poll::Pending,
+            }
+        }
     }
 }
 
