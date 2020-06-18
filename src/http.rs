@@ -622,20 +622,18 @@ async fn read_blob(
         return Ok(Status::Return(ResponseKind::TooLargePayload, true));
     }
 
-    conn.buf.reserve_atleast(body_length);
-
-    while conn.buf.len() < body_length {
-        let future = Deadline::timeout(ctx, TIMEOUT, conn.buf.read_from(&mut conn.stream));
-        match future.await {
-            // No more bytes left, but didn't yet read the entire request body.
-            Ok(Ok(0)) => {
+    if conn.buf.len() < body_length {
+        // Haven't read entire body yet.
+        let want_n = body_length - conn.buf.len();
+        let read_n = conn.buf.read_n_from(&mut conn.stream, want_n);
+        match Deadline::timeout(ctx, TIMEOUT, read_n).await {
+            Ok(Ok(())) => {}
+            Ok(Err(ref err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 return Ok(Status::Return(
                     ResponseKind::BadRequest("Incomplete blob"),
                     true,
                 ))
             }
-            // Read some bytes.
-            Ok(Ok(_)) => continue,
             Ok(Err(err)) => return Err(err.describe("reading blob from HTTP body")),
             Err(err) => {
                 return Err(io::Error::from(err).describe("timeout reading blob from HTTP body"))
