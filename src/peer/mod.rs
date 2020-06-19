@@ -428,10 +428,12 @@ pub mod switcher {
 
     use std::io;
     use std::net::SocketAddr;
+    use std::time::Duration;
 
     use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
+    use heph::timer::Deadline;
     use heph::{actor, ActorRef};
     use log::{debug, warn};
 
@@ -443,12 +445,14 @@ pub mod switcher {
 
     const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
 
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
     /// Actor that acts as switcher between acting as a coordinator server or
     /// participant.
     pub async fn actor(
         // The `Response` type is a bit awkward, but required for
         // `participant::dispatcher`.
-        ctx: actor::Context<participant::Response, ThreadSafe>,
+        mut ctx: actor::Context<participant::Response, ThreadSafe>,
         mut stream: TcpStream,
         remote: SocketAddr,
         peers: Peers,
@@ -461,12 +465,9 @@ pub mod switcher {
         let mut buf = Buffer::new();
 
         let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
-        /* FIXME: add a timeout here.
-        const TIMEOUT: Duration = Duration::from_secs(5); // TODO: move out of function.
-        */
-        match read_n.await {
-            Ok(()) => {}
-            Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+        match Deadline::timeout(&mut ctx, TIMEOUT, read_n).await {
+            Ok(Ok(())) => {}
+            Ok(Err(ref err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!(
                     "closing connection: missing connection magic: remote_address={}",
                     remote
@@ -479,7 +480,10 @@ pub mod switcher {
                     .map(|_| ())
                     .map_err(|err| err.describe("writing error response"));
             }
-            Err(err) => return Err(err.describe("reading connection magic")),
+            Ok(Err(err)) => return Err(err.describe("reading connection magic")),
+            Err(err) => {
+                return Err(io::Error::from(err).describe("timeout reading connection magic"))
+            }
         }
 
         match &buf.as_bytes()[..MAGIC_LENGTH] {
