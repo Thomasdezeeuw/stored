@@ -1,420 +1,424 @@
 //! Coordinator side of the consensus connection.
 
-use std::collections::HashMap;
-use std::io::{self, Write};
-use std::net::SocketAddr;
-use std::time::{Duration, SystemTime};
+pub mod relay {
+    //! Module with the [coordinator relay actor].
+    //!
+    //! [coordinator relay actor]: actor()
 
-use futures_util::future::{select, Either};
-use futures_util::io::AsyncWriteExt;
-use heph::actor;
-use heph::actor::context::ThreadSafe;
-use heph::actor_ref::{RpcMessage, RpcResponse};
-use heph::net::TcpStream;
-use log::{debug, trace, warn};
-use serde::Serialize;
+    use std::collections::HashMap;
+    use std::io::{self, Write};
+    use std::net::SocketAddr;
+    use std::time::{Duration, SystemTime};
 
-use crate::buffer::{Buffer, WriteBuffer};
-use crate::error::Describe;
-use crate::peer::participant::{Response, ResponseKind};
-use crate::peer::{ConsensusId, Peers, PARTICIPANT_MAGIC};
-use crate::Key;
+    use futures_util::future::{select, Either};
+    use futures_util::io::AsyncWriteExt;
+    use heph::actor;
+    use heph::actor::context::ThreadSafe;
+    use heph::actor_ref::{RpcMessage, RpcResponse, SendError};
+    use heph::net::TcpStream;
+    use heph::timer::{Deadline, Timer};
+    use log::{debug, trace, warn};
 
-/// Message relayed to the peer the [`relay`] is connected to.
-#[derive(Debug)]
-pub enum RelayMessage {
-    /// Add the blob with [`Key`].
+    use crate::buffer::{Buffer, WriteBuffer};
+    use crate::error::Describe;
+    use crate::peer::{
+        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, PARTICIPANT_MAGIC,
+    };
+    use crate::Key;
+
+    /// Maximum number of tries `start_participant_connection` attempts to make
+    /// a connection to the peer before stopping.
+    const CONNECT_TRIES: usize = 5;
+
+    /// Time to wait between connection tries in [`connect_to_participant`], get
+    /// doubled after each try.
+    const START_WAIT: Duration = Duration::from_millis(200);
+
+    /// Timeout used for I/O.
+    const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// An estimate of the largest size of an [`Request`] in bytes.
+    const MAX_REQ_SIZE: usize = 300;
+
+    /// Actor that relays messages to a [`participant::dispatcher`] actor
+    /// running on the `remote` node.
     ///
-    /// Returns the peer's time at which the blob was added.
-    AddBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, RelayError>>),
-    /// Commit to adding blob with [`Key`] at the provided timestamp.
-    CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
-    /// Remove the blob with [`Key`].
-    ///
-    /// Returns the peer's time at which the blob was added.
-    RemoveBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, RelayError>>),
-    /*
-    /// Commit to removing blob with [`Key`].
-    CommitRemoveBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), RelayError>>),
-    */
-}
+    /// [`participant::dispatcher`]: super::participant::dispatcher
+    pub async fn actor(
+        mut ctx: actor::Context<Message, ThreadSafe>,
+        remote: SocketAddr,
+        peers: Peers,
+        server: SocketAddr,
+    ) -> crate::Result<()> {
+        debug!(
+            "starting coordinator relay: remote_address={}, server={}",
+            remote, server
+        );
 
-/// Error return to [`RelayMessage`].
-#[derive(Debug)]
-pub enum RelayError {
-    /// Peer wants to abort the operation.
-    Abort,
-    /// Peer failed.
-    Failed,
-}
+        let mut responses = HashMap::new();
+        let mut req_id = 0;
+        let mut buf = Buffer::new();
 
-/// Macro to allow `concat!` to used in creating the `doc` attribute.
-macro_rules! doc_comment {
-    ($doc: expr, $( $tt: tt )*) => {
-        #[doc = $doc]
-        $($tt)*
-    };
-}
+        let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
+        read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
 
-/// Macro to create stand-alone types for [`RelayMessage`] variants.
-/// This is required because the most of them have the same request type
-/// ([`Key`]) when using RPC.
-// TODO: maybe add something like this to Heph?
-macro_rules! msg_types {
-    ($name: ident ($inner_type1: ty, $inner_type2: ty) -> $return_type: ty) => {
-        msg_types!(struct $name, $inner_type1, $inner_type2, stringify!($name));
-        msg_types!(impl $name, $name, $return_type, 0, 1);
-    };
-    ($name: ident ($inner_type: ty) -> $return_type: ty) => {
-        msg_types!(struct $name, $inner_type, stringify!($name));
-        msg_types!(impl $name, $name, $return_type, 0);
-    };
-    (struct $name: ident, $inner_type: ty, $doc: expr) => {
-        doc_comment! {
-            concat!("Message type to use with [`ActorRef::rpc`] for [`RelayMessage::", $doc, "`]."),
-            #[derive(Debug, Clone)]
-            pub(super) struct $name(pub $inner_type);
-        }
-    };
-    (struct $name: ident, $inner_type1: ty, $inner_type2: ty, $doc: expr) => {
-        doc_comment! {
-            concat!("Message type to use with [`ActorRef::rpc`] for [`RelayMessage::", $doc, "`]."),
-            #[derive(Debug, Clone)]
-            pub(super) struct $name(pub $inner_type1, pub $inner_type2);
-        }
-    };
-    (impl $name: ident, $ty: ty, $return_type: ty, $( $field: tt ),*) => {
-        impl From<RpcMessage<(ConsensusId, $ty), Result<$return_type, RelayError>>> for RelayMessage {
-            fn from(msg: RpcMessage<(ConsensusId, $ty), Result<$return_type, RelayError>>) -> RelayMessage {
-                RelayMessage::$name(RpcMessage {
-                    request: (msg.request.0, $( (msg.request.1).$field ),* ),
-                    response: msg.response,
-                })
-            }
-        }
-    };
-}
-
-msg_types!(AddBlob(Key) -> SystemTime);
-msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
-msg_types!(RemoveBlob(Key) -> SystemTime);
-
-/// Enum to collect all possible [`RpcResponse`]s from [`RelayMessage`].
-#[derive(Debug)]
-enum RelayResponse {
-    /// Response for [`RelayMessage::AddBlob`].
-    AddBlob(RpcResponse<Result<SystemTime, RelayError>>),
-    /// Response for [`RelayMessage::CommitStoreBlob`].
-    CommitStoreBlob(RpcResponse<Result<(), RelayError>>),
-    /// Response for [`RelayMessage::RemoveBlob`].
-    RemoveBlob(RpcResponse<Result<SystemTime, RelayError>>),
-}
-
-/// Actor that relays messages to a [`participant::dispatcher`] actor running on
-/// the `remote` node.
-///
-/// [`participant::dispatcher`]: super::participant::dispatcher
-pub async fn relay(
-    mut ctx: actor::Context<RelayMessage, ThreadSafe>,
-    remote: SocketAddr,
-    peers: Peers,
-    server: SocketAddr,
-) -> crate::Result<()> {
-    debug!(
-        "starting coordinator relay: remote_address={}, server={}",
-        remote, server
-    );
-
-    let mut responses = HashMap::new();
-    let mut req_id = 0;
-    let mut buf = Buffer::new();
-
-    let mut stream = start_participant_connection(&mut ctx, remote, &mut buf, &server).await?;
-
-    read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
-
-    loop {
-        match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
-            Either::Left((msg, _)) => {
-                debug!("coordinator relay received a message: {:?}", msg);
-                // Received a message to relay.
-                let req_id = next_id(&mut req_id);
-                let wbuf = buf.split_write(MAX_REQ_SIZE).1;
-                write_message(&mut stream, wbuf, &mut responses, req_id, msg).await?;
-            }
-            Either::Right((Ok(0), _)) => {
-                debug!("peer participant closed connection");
-                while let Some(msg) = ctx.try_receive_next() {
-                    // Write any response left in our mailbox.
-                    // TODO: ignore errors here since the other side is already
-                    // disconnected?
+        loop {
+            match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
+                Either::Left((msg, _)) => {
                     debug!("coordinator relay received a message: {:?}", msg);
                     let req_id = next_id(&mut req_id);
                     let wbuf = buf.split_write(MAX_REQ_SIZE).1;
-                    write_message(&mut stream, wbuf, &mut responses, req_id, msg).await?;
+                    write_message(&mut ctx, &mut stream, wbuf, &mut responses, req_id, msg).await?;
                 }
-                return Ok(());
-            }
-            Either::Right((Ok(_), _)) => {
-                // Read one or more requests from the stream.
-                relay_responses(&mut responses, &mut buf)?;
-            }
-            // Read error.
-            Either::Right((Err(err), _)) => {
-                return Err(err.describe("reading from peer connection"))
+                Either::Right((Ok(0), _)) => {
+                    debug!("peer participant closed connection");
+                    while let Some(msg) = ctx.try_receive_next() {
+                        // Write any response left in our inbox.
+                        // TODO: ignore errors here since the other side is
+                        // already disconnected?
+                        debug!("coordinator relay received a message: {:?}", msg);
+                        let req_id = next_id(&mut req_id);
+                        let wbuf = buf.split_write(MAX_REQ_SIZE).1;
+                        write_message(&mut ctx, &mut stream, wbuf, &mut responses, req_id, msg)
+                            .await?;
+                    }
+                    return Ok(());
+                }
+                Either::Right((Ok(_), _)) => {
+                    // Read one or more requests from the stream.
+                    relay_responses(&mut responses, &mut buf)?;
+                }
+                // Read error.
+                Either::Right((Err(err), _)) => {
+                    return Err(err.describe("reading from peer connection"))
+                }
             }
         }
-
-        next_id(&mut req_id);
     }
-}
 
-/// Maximum number of tries `start_participant_connection` attempts to make a
-/// connection to the peer before stopping.
-const CONNECT_TRIES: usize = 5;
+    /// Message relayed to the peer the [`relay`] is connected to.
+    #[derive(Debug)]
+    pub enum Message {
+        /// Add the blob with [`Key`].
+        ///
+        /// Returns the peer's time at which the blob was added.
+        AddBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, Error>>),
+        /// Commit to storing blob with [`Key`] at the provided timestamp.
+        CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
+        /// Remove the blob with [`Key`].
+        ///
+        /// Returns the peer's time at which the blob was added.
+        RemoveBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, Error>>),
+        /*
+        /// Commit to removing blob with [`Key`].
+        CommitRemoveBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
+        */
+    }
 
-/// Time to wait between connection tries in [`start_participant_connection`],
-/// get doubled after each try.
-const START_WAIT: Duration = Duration::from_millis(200);
+    impl Message {
+        /// Convert this `Message` into a [`Request`] and a [`RpcResponder`].
+        fn convert(self, request_id: usize) -> (Request, RpcResponder) {
+            let (consensus_id, key, op, response) = match self {
+                Message::AddBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::AddBlob,
+                    RpcResponder::AddBlob(response),
+                ),
+                Message::CommitStoreBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::CommitStoreBlob(request.2),
+                    RpcResponder::CommitStoreBlob(response),
+                ),
+                Message::RemoveBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::RemoveBlob,
+                    RpcResponder::RemoveBlob(response),
+                ),
+            };
+            let request = Request {
+                id: request_id,
+                consensus_id,
+                key,
+                op,
+            };
+            (request, response)
+        }
+    }
 
-/// Start a participant connection to `remote` address.
-async fn start_participant_connection(
-    ctx: &mut actor::Context<RelayMessage, ThreadSafe>,
-    remote: SocketAddr,
-    buf: &mut Buffer,
-    server: &SocketAddr,
-) -> crate::Result<TcpStream> {
-    trace!(
-        "coordinator relay connecting to peer participant: remote_address={}",
-        remote
-    );
-    let mut wait = START_WAIT;
-    let mut i = 0;
-    let mut stream = loop {
-        match TcpStream::connect(ctx, remote) {
-            Ok(stream) => break stream,
-            Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
+    /// Error return to [`Message`].
+    #[derive(Debug)]
+    pub enum Error {
+        /// Peer wants to abort the operation.
+        Abort,
+        /// Peer failed.
+        Failed,
+    }
+
+    /// Macro to allow `concat!` to used in creating the `doc` attribute.
+    macro_rules! doc_comment {
+        ($doc: expr, $( $tt: tt )*) => {
+            #[doc = $doc]
+            $($tt)*
+        };
+    }
+
+    /// Macro to create stand-alone types for [`Message`] variants. This is
+    /// required because the most of them have the same request and return types
+    /// when using RPC.
+    // TODO: maybe add something like this to Heph?
+    macro_rules! msg_types {
+        ($name: ident ($inner_type1: ty, $inner_type2: ty) -> $return_type: ty) => {
+            msg_types!(struct $name, $inner_type1, $inner_type2, stringify!($name));
+            msg_types!(impl $name, $name, $return_type, 0, 1);
+        };
+        ($name: ident ($inner_type: ty) -> $return_type: ty) => {
+            msg_types!(struct $name, $inner_type, stringify!($name));
+            msg_types!(impl $name, $name, $return_type, 0);
+        };
+        (struct $name: ident, $inner_type: ty, $doc: expr) => {
+            doc_comment! {
+                concat!("Message type to use with [`ActorRef::rpc`] for [`Message::", $doc, "`]."),
+                #[derive(Debug, Clone)]
+                pub(crate) struct $name(pub $inner_type);
+            }
+        };
+        (struct $name: ident, $inner_type1: ty, $inner_type2: ty, $doc: expr) => {
+            doc_comment! {
+                concat!("Message type to use with [`ActorRef::rpc`] for [`Message::", $doc, "`]."),
+                #[derive(Debug, Clone)]
+                pub(crate) struct $name(pub $inner_type1, pub $inner_type2);
+            }
+        };
+        (impl $name: ident, $ty: ty, $return_type: ty, $( $field: tt ),*) => {
+            impl From<RpcMessage<(ConsensusId, $ty), Result<$return_type, Error>>> for Message {
+                fn from(msg: RpcMessage<(ConsensusId, $ty), Result<$return_type, Error>>) -> Message {
+                    Message::$name(RpcMessage {
+                        request: (msg.request.0, $( (msg.request.1).$field ),* ),
+                        response: msg.response,
+                    })
+                }
+            }
+        };
+    }
+
+    msg_types!(AddBlob(Key) -> SystemTime);
+    msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
+    msg_types!(RemoveBlob(Key) -> SystemTime);
+
+    /// Start a participant connection to `remote` address.
+    async fn connect_to_participant(
+        ctx: &mut actor::Context<Message, ThreadSafe>,
+        remote: SocketAddr,
+        buf: &mut Buffer,
+        server: &SocketAddr,
+    ) -> crate::Result<TcpStream> {
+        trace!(
+            "coordinator relay connecting to peer participant: remote_address={}",
+            remote
+        );
+        let mut wait = START_WAIT;
+        let mut i = 0;
+        let mut stream = loop {
+            match TcpStream::connect(ctx, remote) {
+                Ok(stream) => break stream,
+                Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
+                Err(err) => {
+                    warn!(
+                        "failed to connect to peer, but trying again ({}/{} tries): {}",
+                        err, i, CONNECT_TRIES
+                    );
+                }
+            }
+
+            // Wait a moment before trying to connect again.
+            Timer::timeout(ctx, wait).await;
+            // Wait a little longer next time.
+            wait *= 2;
+            i += 1;
+        };
+
+        // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
+        let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
+        // The connection magic to request the node to act as participant.
+        wbuf.write_all(PARTICIPANT_MAGIC).unwrap();
+        // The address of the `coordinator::server`.
+        serde_json::to_writer(&mut wbuf, server)
+            .map_err(|err| io::Error::from(err).describe("serializing server address"))?;
+
+        trace!(
+            "coordinator relay writing setup to peer participant: remote_address={}, server_address={}",
+            remote,
+            server,
+        );
+        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
+            Ok(Ok(())) => Ok(stream),
+            Ok(Err(err)) => return Err(err.describe("writing peer connection setup")),
             Err(err) => {
-                warn!(
-                    "failed to connect to peer, but trying again ({}/{} tries): {}",
-                    err, i, CONNECT_TRIES
-                );
+                return Err(io::Error::from(err).describe("timeout writing peer connection setup"))
             }
-        }
-        // FIXME: don't use sleep here.
-        std::thread::sleep(wait);
-        //Timer::timeout(ctx, wait).await;
-        wait *= 2;
-        i += 1;
-    };
-
-    // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
-    let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
-
-    // The connection magic to request the node to act as participant.
-    wbuf.write_all(PARTICIPANT_MAGIC).unwrap();
-
-    // The address of the `coordinator::server`.
-    serde_json::to_writer(&mut wbuf, server)
-        .map_err(|err| io::Error::from(err).describe("serializing server address"))?;
-
-    trace!(
-        "coordinator relay writing setup to peer participant: remote_address={}, server_address={}",
-        remote,
-        server,
-    );
-    stream
-        .write_all(wbuf.as_bytes())
-        .await
-        .map(|()| stream)
-        .map_err(|err| err.describe("writing peer connection setup"))
-}
-
-/// Read the known peers from the `stream`, starting a new [`relay`] actor for
-/// each and adding it to `peers`.
-async fn read_known_peers(
-    ctx: &mut actor::Context<RelayMessage, ThreadSafe>,
-    stream: &mut TcpStream,
-    buf: &mut Buffer,
-    peers: &Peers,
-    server: SocketAddr,
-) -> crate::Result<()> {
-    trace!("coordinator relay reading known peers from connection");
-    loop {
-        let n = buf
-            .read_from(&mut *stream)
-            .await
-            .map_err(|err| err.describe("reading known peers"))?;
-        if n == 0 {
-            return Err(
-                io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading known peers")
-            );
-        }
-
-        // TODO: put `Deserializer` outside the loop.
-        let mut iter =
-            serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Vec<SocketAddr>>();
-        // This is a bit weird; using an iterator for a single item. But the
-        // `StreamDeserializer` keeps track of the number of bytes processed,
-        // which we need to advance the buffer.
-        match iter.next() {
-            Some(Ok(addresses)) => {
-                peers.spawn_many(ctx, &addresses, server);
-                let bytes_processed = iter.byte_offset();
-                buf.processed(bytes_processed);
-                return Ok(());
-            }
-            Some(Err(ref err)) if err.is_eof() => continue,
-            Some(Err(err)) => {
-                return Err(io::Error::from(err).describe("deserializing known peers"))
-            }
-            None => {} // Continue reading more.
         }
     }
-}
 
-fn next_id(id: &mut usize) -> usize {
-    let i = *id;
-    *id += 1;
-    i
-}
+    /// Read the known peers from the `stream`, starting a new [`relay`] actor for
+    /// each and adding it to `peers`.
+    async fn read_known_peers(
+        ctx: &mut actor::Context<Message, ThreadSafe>,
+        stream: &mut TcpStream,
+        buf: &mut Buffer,
+        peers: &Peers,
+        server: SocketAddr,
+    ) -> crate::Result<()> {
+        trace!("coordinator relay reading known peers from connection");
+        loop {
+            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
+                Ok(Ok(0)) => {
+                    return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
+                        .describe("reading known peers"))
+                }
+                Ok(Ok(..)) => {}
+                Ok(Err(err)) => return Err(err.describe("reading known peers")),
+                Err(err) => {
+                    return Err(io::Error::from(err).describe("timeout reading known peers"))
+                }
+            }
 
-/// Writes `msg` to `stream`.
-async fn write_message<'b>(
-    stream: &mut TcpStream,
-    mut wbuf: WriteBuffer<'b>,
-    responses: &mut HashMap<usize, RelayResponse>,
-    id: usize,
-    msg: RelayMessage,
-) -> crate::Result<()> {
-    let (consensus_id, kind) = match &msg {
-        RelayMessage::AddBlob(RpcMessage {
-            request: (consensus_id, key),
-            ..
-        }) => (*consensus_id, RequestKind::AddBlob(key)),
-        RelayMessage::CommitStoreBlob(RpcMessage {
-            request: (consensus_id, key, timestamp),
-            ..
-        }) => (*consensus_id, RequestKind::CommitStoreBlob(key, timestamp)),
-        RelayMessage::RemoveBlob(RpcMessage {
-            request: (consensus_id, key),
-            ..
-        }) => (*consensus_id, RequestKind::RemoveBlob(key)),
-    };
-
-    let request = Request {
-        id,
-        consensus_id,
-        kind,
-    };
-    serde_json::to_writer(&mut wbuf, &request)
-        .map_err(|err| io::Error::from(err).describe("serializing request"))?;
-    trace!(
-        "coordinator relay writing request to peer participant: {:?}",
-        request
-    );
-    stream
-        .write_all(&wbuf.as_bytes())
-        .await
-        .map_err(|err| err.describe("writing request"))?;
-
-    match msg {
-        RelayMessage::AddBlob(RpcMessage { response, .. }) => {
-            responses.insert(id, RelayResponse::AddBlob(response));
-        }
-        RelayMessage::CommitStoreBlob(RpcMessage { response, .. }) => {
-            responses.insert(id, RelayResponse::CommitStoreBlob(response));
-        }
-        RelayMessage::RemoveBlob(RpcMessage { response, .. }) => {
-            responses.insert(id, RelayResponse::RemoveBlob(response));
+            // TODO: reuse `Deserializer` in relay actor, would require us to
+            // have access to the `R`eader in the type.
+            let mut iter =
+                serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Vec<SocketAddr>>();
+            // This is a bit weird, using an iterator for a single item. But the
+            // `StreamDeserializer` keeps track of the number of bytes processed,
+            // which we need to advance the buffer.
+            match iter.next() {
+                Some(Ok(addresses)) => {
+                    peers.spawn_many(ctx, &addresses, server);
+                    let bytes_processed = iter.byte_offset();
+                    buf.processed(bytes_processed);
+                    return Ok(());
+                }
+                Some(Err(ref err)) if err.is_eof() => continue,
+                Some(Err(err)) => {
+                    return Err(io::Error::from(err).describe("deserializing known peers"))
+                }
+                None => {} // Continue reading more.
+            }
         }
     }
-    Ok(())
-}
 
-/// Read one or more requests in the `buf`fer and relay the responses to the
-/// correct actor in `responses`.
-fn relay_responses(
-    responses: &mut HashMap<usize, RelayResponse>,
-    buf: &mut Buffer,
-) -> crate::Result<()> {
-    // TODO: reuse the `Deserializer`, it allocates scratch memory.
-    let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
+    /// return id++;
+    fn next_id(id: &mut usize) -> usize {
+        let i = *id;
+        *id += 1;
+        i
+    }
 
-    while let Some(result) = de.next() {
-        match result {
-            Ok(response) => {
-                debug!("coordinator relay received a response: {:?}", response);
+    /// Enum to collect all possible [`RpcResponse`]s from [`Message`].
+    #[derive(Debug)]
+    enum RpcResponder {
+        /// Response for [`Message::AddBlob`].
+        AddBlob(RpcResponse<Result<SystemTime, Error>>),
+        /// Response for [`Message::CommitStoreBlob`].
+        CommitStoreBlob(RpcResponse<Result<(), Error>>),
+        /// Response for [`Message::RemoveBlob`].
+        RemoveBlob(RpcResponse<Result<SystemTime, Error>>),
+    }
 
-                match responses.remove(&response.request_id) {
-                    Some(relay) => match relay {
-                        RelayResponse::AddBlob(relay) | RelayResponse::RemoveBlob(relay) => {
-                            // Convert the response into the type required for
-                            // `RelayResponse`.
-                            let response = match response.response {
-                                // FIXME: get timestamp form peer.
-                                ResponseKind::Commit => Ok(SystemTime::now()),
-                                ResponseKind::Abort => Err(RelayError::Abort),
-                                ResponseKind::Fail => Err(RelayError::Failed),
-                            };
-                            if let Err(err) = relay.respond(response) {
-                                warn!("failed to relay peer response to actor: {}", err);
+    impl RpcResponder {
+        /// Relay the `vote` to the RPC callee.
+        fn respond(self, vote: ConsensusVote) -> Result<(), SendError> {
+            match self {
+                // Both have the same `RpcResponse` type.
+                RpcResponder::AddBlob(rpc_response) | RpcResponder::RemoveBlob(rpc_response) => {
+                    let response = match vote {
+                        ConsensusVote::Commit(timestamp) => Ok(timestamp),
+                        ConsensusVote::Abort => Err(Error::Abort),
+                        ConsensusVote::Fail => Err(Error::Failed),
+                    };
+                    rpc_response.respond(response)
+                }
+                RpcResponder::CommitStoreBlob(rpc_response) => {
+                    let response = match vote {
+                        ConsensusVote::Commit(..) => Ok(()),
+                        ConsensusVote::Abort => Err(Error::Abort),
+                        ConsensusVote::Fail => Err(Error::Failed),
+                    };
+                    rpc_response.respond(response)
+                }
+            }
+        }
+    }
+
+    /// Writes `msg` to `stream`.
+    async fn write_message<'b>(
+        ctx: &mut actor::Context<Message, ThreadSafe>,
+        stream: &mut TcpStream,
+        mut wbuf: WriteBuffer<'b>,
+        responses: &mut HashMap<usize, RpcResponder>,
+        id: usize,
+        msg: Message,
+    ) -> crate::Result<()> {
+        let (request, response) = msg.convert(id);
+        trace!(
+            "coordinator relay writing request to peer participant: {:?}",
+            request
+        );
+        serde_json::to_writer(&mut wbuf, &request)
+            .map_err(|err| io::Error::from(err).describe("serializing request"))?;
+        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&wbuf.as_bytes())).await {
+            Ok(Ok(())) => {
+                responses.insert(id, response);
+                Ok(())
+            }
+            Ok(Err(err)) => Err(err.describe("reading known peers")),
+            Err(err) => Err(io::Error::from(err).describe("timeout reading known peers")),
+        }
+    }
+
+    /// Read one or more requests in the `buf`fer and relay the responses to the
+    /// correct actor in `responses`.
+    fn relay_responses(
+        responses: &mut HashMap<usize, RpcResponder>,
+        buf: &mut Buffer,
+    ) -> crate::Result<()> {
+        let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
+
+        loop {
+            match de.next() {
+                Some(Ok(response)) => {
+                    debug!("coordinator relay received a response: {:?}", response);
+
+                    match responses.remove(&response.request_id) {
+                        Some(rpc_response) => {
+                            if let Err(err) = rpc_response.respond(response.vote) {
+                                warn!(
+                                    "failed to relay peer response to actor: {}: request.id={}",
+                                    err, response.request_id
+                                );
                             }
                         }
-                        RelayResponse::CommitStoreBlob(relay) => {
-                            // Convert the response into the type required for
-                            // `RelayResponse`.
-                            let response = match response.response {
-                                ResponseKind::Commit => Ok(()),
-                                ResponseKind::Abort => Err(RelayError::Abort),
-                                ResponseKind::Fail => Err(RelayError::Failed),
-                            };
-                            if let Err(err) = relay.respond(response) {
-                                warn!("failed to relay peer response to actor: {}", err);
-                            }
+                        None => {
+                            warn!("got an unexpected response: {:?}", response);
+                            continue;
                         }
-                    },
-                    None => {
-                        warn!("got an unexpected response: {:?}", response);
-                        continue;
                     }
                 }
+                // Read a partial response, we'll get it next time.
+                Some(Err(ref err)) if err.is_eof() => break,
+                Some(Err(err)) => {
+                    return Err(io::Error::from(err).describe("deserializing peer response"))
+                }
+                // No more responses.
+                None => break,
             }
-            Err(err) if err.is_eof() => break,
-            Err(err) => return Err(io::Error::from(err).describe("deserializing peer response")),
         }
+
+        let bytes_processed = de.byte_offset();
+        buf.processed(bytes_processed);
+        Ok(())
     }
-
-    let bytes_processed = de.byte_offset();
-    buf.processed(bytes_processed);
-    Ok(())
-}
-
-/// Maximum size of [`Request`].
-// TODO: this.
-const MAX_REQ_SIZE: usize = 1000;
-
-/// Request message send from [`relay`] to [`participant::dispatcher`].
-///
-/// [`participant::dispatcher`]: super::participant::dispatcher
-#[derive(Debug, Serialize)]
-pub struct Request<'a> {
-    pub id: usize,
-    pub consensus_id: ConsensusId,
-    pub kind: RequestKind<'a>,
-}
-
-/// Kind of request.
-#[derive(Debug, Serialize)]
-pub enum RequestKind<'a> {
-    /// Add the blob with [`Key`].
-    // TODO: provide the length so we can pre-allocate a buffer at the
-    // participant?
-    AddBlob(&'a Key),
-    /// Commit to store the blob.
-    CommitStoreBlob(&'a Key, &'a SystemTime),
-    /// Remove the blob with [`Key`].
-    RemoveBlob(&'a Key),
 }
 
 pub mod server {
@@ -439,7 +443,7 @@ pub mod server {
 
     use crate::buffer::Buffer;
     use crate::error::Describe;
-    use crate::peer::participant::Response;
+    use crate::peer::Response;
     use crate::storage::{self, BlobEntry, PAGE_SIZE};
     use crate::{db, op, Key};
 

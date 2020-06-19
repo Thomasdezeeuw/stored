@@ -9,7 +9,7 @@ use log::{debug, error, trace};
 
 use crate::db::AddBlobResponse;
 use crate::op::db_rpc;
-use crate::peer::coordinator::RelayError;
+use crate::peer::coordinator::relay;
 use crate::peer::Peers;
 use crate::storage::StoreBlob;
 use crate::{db, Buffer, Key};
@@ -169,7 +169,7 @@ async fn consensus<M>(
 }
 
 /// Returns the `(commit, abort, failed)` votes.
-fn count_consensus_votes<T>(results: &[Result<T, RelayError>]) -> (usize, usize, usize) {
+fn count_consensus_votes<T>(results: &[Result<T, relay::Error>]) -> (usize, usize, usize) {
     let mut commit = 1; // Coordinator always votes to commit.
     let mut abort = 0;
     let mut failed = 0;
@@ -177,8 +177,8 @@ fn count_consensus_votes<T>(results: &[Result<T, RelayError>]) -> (usize, usize,
     for result in results {
         match result {
             Ok(..) => commit += 1,
-            Err(RelayError::Abort) => abort += 1,
-            Err(RelayError::Failed) => failed += 1,
+            Err(relay::Error::Abort) => abort += 1,
+            Err(relay::Error::Failed) => failed += 1,
         }
     }
 
@@ -186,7 +186,7 @@ fn count_consensus_votes<T>(results: &[Result<T, RelayError>]) -> (usize, usize,
 }
 
 /// Select the timestamp to use from consensus results.
-fn select_timestamp(results: &[Result<SystemTime, RelayError>]) -> SystemTime {
+fn select_timestamp(results: &[Result<SystemTime, relay::Error>]) -> SystemTime {
     let mut timestamp = SystemTime::now();
 
     for result in results {

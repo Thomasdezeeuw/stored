@@ -30,7 +30,7 @@ pub mod participant;
 #[cfg(test)]
 mod tests;
 
-use coordinator::{RelayError, RelayMessage};
+use coordinator::relay;
 
 /// Start the all actors related to peer interaction.
 pub fn start(
@@ -117,7 +117,7 @@ fn start_relays(
         );
         let args = (peer_address, peers.clone(), server);
         let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
-        let relay = coordinator::relay as fn(_, _, _, _) -> _;
+        let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -128,6 +128,69 @@ fn start_relays(
             address: peer_address,
         });
     }
+}
+
+/// Id of a consensus algorithm run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[repr(transparent)]
+pub struct ConsensusId(usize);
+
+impl fmt::Display for ConsensusId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// Request message send from [`coordinator::relay`] to
+/// [`participant::dispatcher`].
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Request {
+    /// Unique id for this request.
+    pub id: usize,
+    /// Id of the consensus run (there may be multiple requests per consensus
+    /// run).
+    pub consensus_id: ConsensusId,
+    /// The key to operate on.
+    pub key: Key,
+    /// The kind of operation.
+    pub op: Operation,
+}
+
+/// Kind of operation to execute.
+#[derive(Debug, Deserialize, Serialize)]
+pub enum Operation {
+    /// Add the blob (phase one in storing it).
+    // TODO: provide the length so we can pre-allocate a buffer at the
+    // participant?
+    AddBlob,
+    /// Commit to storing the blob.
+    CommitStoreBlob(SystemTime),
+    /// Remove the blob.
+    RemoveBlob,
+}
+
+/// Response message send from [`participant::dispatcher`] to
+/// [`coordinator::relay`].
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Response {
+    /// Response to request with this id.
+    pub request_id: usize,
+    /// The vote of the peer.
+    pub vote: ConsensusVote,
+}
+
+/// How the peer voted.
+#[derive(Debug, Deserialize, Serialize)]
+pub enum ConsensusVote {
+    /// Vote to commit to the consensus algorithm.
+    Commit(SystemTime),
+    /// Vote to abort the consensus algorithm.
+    Abort,
+    /// Something when wrong, effectively a vote to abort not a direct one.
+    ///
+    /// This can happen when for example the [`participant::consensus`] actor
+    /// fails.
+    Fail,
 }
 
 // TODO: replace `Peers` with `ActorGroup`.
@@ -146,20 +209,9 @@ struct PeersInner {
     consensus_id: AtomicUsize,
 }
 
-/// Id of a consensus algorithm run.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-#[repr(transparent)]
-pub struct ConsensusId(usize);
-
-impl fmt::Display for ConsensusId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
 #[derive(Debug, Clone)]
 struct Peer {
-    actor_ref: ActorRef<RelayMessage>,
+    actor_ref: ActorRef<relay::Message>,
     address: SocketAddr,
 }
 
@@ -179,11 +231,6 @@ impl Peers {
         self.inner.peers.read().unwrap().is_empty()
     }
 
-    /// Returns the number of peers in the collection.
-    fn len(&self) -> usize {
-        self.inner.peers.read().unwrap().len()
-    }
-
     /// Start a consensus algorithm to add blob with `key`.
     pub fn add_blob<M>(
         &self,
@@ -191,7 +238,7 @@ impl Peers {
         key: Key,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
         let id = self.new_consensus_id();
-        let rpc = self.rpc(ctx, id, coordinator::AddBlob(key));
+        let rpc = self.rpc(ctx, id, coordinator::relay::AddBlob(key));
         (id, rpc)
     }
 
@@ -203,7 +250,7 @@ impl Peers {
         key: Key,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
-        self.rpc(ctx, id, coordinator::CommitStoreBlob(key, timestamp))
+        self.rpc(ctx, id, coordinator::relay::CommitStoreBlob(key, timestamp))
     }
 
     /*
@@ -226,7 +273,7 @@ impl Peers {
         request: Req,
     ) -> PeerRpc<Res>
     where
-        RelayMessage: From<RpcMessage<(ConsensusId, Req), Result<Res, RelayError>>>,
+        relay::Message: From<RpcMessage<(ConsensusId, Req), Result<Res, relay::Error>>>,
         Req: Clone,
     {
         let rpcs = self
@@ -243,7 +290,7 @@ impl Peers {
                             "failed to send message to peer relay: address={}",
                             peer.address
                         );
-                        RpcStatus::Done(Err(RelayError::Failed))
+                        RpcStatus::Done(Err(relay::Error::Failed))
                     }
                 },
             )
@@ -295,7 +342,7 @@ impl Peers {
         );
         let args = (peer_address, self.clone(), server);
         let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
-        let relay = coordinator::relay as fn(_, _, _, _) -> _;
+        let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -363,15 +410,15 @@ pub struct PeerRpc<Res> {
 /// Status of a [`Rpc`] future in [`PeerRpc`].
 enum RpcStatus<Res> {
     /// Future is in progress.
-    InProgress(Rpc<Result<Res, RelayError>>),
+    InProgress(Rpc<Result<Res, relay::Error>>),
     /// Future has returned a result.
-    Done(Result<Res, RelayError>),
+    Done(Result<Res, relay::Error>),
     /// Future has returned and its result has been taken.
     Completed,
 }
 
 impl<Res> Future for PeerRpc<Res> {
-    type Output = Vec<Result<Res, RelayError>>;
+    type Output = Vec<Result<Res, relay::Error>>;
 
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
         // Check all the statuses.
@@ -383,7 +430,7 @@ impl<Res> Future for PeerRpc<Res> {
                         // Map no response to a failed response.
                         let result = match result {
                             Ok(result) => result,
-                            Err(NoResponse) => Err(RelayError::Failed),
+                            Err(NoResponse) => Err(relay::Error::Failed),
                         };
                         drop(replace(status, RpcStatus::Done(result)));
                     }
@@ -409,7 +456,7 @@ impl<Res> Future for PeerRpc<Res> {
                 RpcStatus::Done(result) => result,
                 // If the peer hasn't responded yet and we're here it means the
                 // timeout has passed, we'll consider there vote as failed.
-                _ => Err(RelayError::Failed),
+                _ => Err(relay::Error::Failed),
             })
             .collect();
         Poll::Ready(results)
@@ -439,7 +486,8 @@ pub mod switcher {
 
     use crate::error::Describe;
     use crate::peer::{
-        coordinator, participant, Peers, COORDINATOR_MAGIC, MAGIC_LENGTH, PARTICIPANT_MAGIC,
+        coordinator, participant, Peers, Response, COORDINATOR_MAGIC, MAGIC_LENGTH,
+        PARTICIPANT_MAGIC,
     };
     use crate::{db, Buffer};
 
@@ -452,7 +500,7 @@ pub mod switcher {
     pub async fn actor(
         // The `Response` type is a bit awkward, but required for
         // `participant::dispatcher`.
-        mut ctx: actor::Context<participant::Response, ThreadSafe>,
+        mut ctx: actor::Context<Response, ThreadSafe>,
         mut stream: TcpStream,
         remote: SocketAddr,
         peers: Peers,
@@ -498,7 +546,8 @@ pub mod switcher {
             PARTICIPANT_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
                 // Don't log the error as a problem in the switch actor.
-                let res = participant::dispatcher(ctx, stream, buf, peers, db_ref, server).await;
+                let res =
+                    participant::dispatcher::actor(ctx, stream, buf, peers, db_ref, server).await;
                 if let Err(err) = res {
                     warn!("participant dispatcher failed: {}", err);
                 }
