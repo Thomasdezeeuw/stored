@@ -6,6 +6,7 @@ use std::task::{self, Poll};
 use std::time::Duration;
 
 use heph::actor_ref::rpc::{Rpc, RpcMessage};
+use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
 use heph::{actor, ActorRef};
 use log::{debug, error};
@@ -53,13 +54,14 @@ pub async fn check_health<M>(
 const DB_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Make a RPC to the database (`db_ref`) applying the `DB_TIMEOUT`.
-fn db_rpc<M, Req, Res>(
-    ctx: &mut actor::Context<M>,
+fn db_rpc<M, K, Req, Res>(
+    ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     request: Req,
 ) -> Result<DbRpc<Res>, ()>
 where
     db::Message: From<RpcMessage<Req, Res>>,
+    K: RuntimeAccess,
 {
     match db_ref.rpc(ctx, request) {
         Ok(rpc) => Ok(DbRpc {

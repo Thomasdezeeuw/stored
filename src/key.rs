@@ -106,8 +106,8 @@ impl Key {
         Key::calculator_skip(io, 0)
     }
 
-    /// Same as [`calculator`] but skips `skip` bytes before using them in the
-    /// `Key` calculation.
+    /// Same as [`Key::calculator`] but skips `skip` bytes before using them in
+    /// the `Key` calculation.
     pub fn calculator_skip<IO>(io: IO, skip: usize) -> KeyCalculator<IO> {
         KeyCalculator {
             digest: digest::Context::new(&digest::SHA512),

@@ -3,6 +3,7 @@
 use std::mem::replace;
 use std::time::SystemTime;
 
+use heph::rt::RuntimeAccess;
 use heph::{actor, ActorRef};
 use log::{debug, error, trace};
 
@@ -40,7 +41,7 @@ pub async fn store_blob<M>(
         );
         // We can directly commit to storing the blob, we're always in agreement
         // with ourselves.
-        commit_blob(ctx, db_ref, query, SystemTime::now())
+        commit(ctx, db_ref, query, SystemTime::now())
             .await
             .map(|()| key)
     } else {
@@ -52,18 +53,24 @@ pub async fn store_blob<M>(
 
 /// Operation succeeded, but can return early. E.g. when the blob is already
 /// stored.
-enum Success<T, U> {
+pub(crate) enum Success<T, U> {
+    /// Continue like normal.
     Continue(T),
+    /// We're done early, most like because the blob is already stored by
+    /// another user.
     Done(U),
 }
 
 /// Phase one of storing a blob: adding the bytes to the data file.
-async fn add_blob<M>(
-    ctx: &mut actor::Context<M>,
+pub(crate) async fn add_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     buf: &mut Buffer,
     blob_length: usize,
-) -> Result<Success<StoreBlob, Key>, ()> {
+) -> Result<Success<StoreBlob, Key>, ()>
+where
+    K: RuntimeAccess,
+{
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
     let view = replace(buf, Buffer::empty()).view(blob_length);
@@ -71,8 +78,8 @@ async fn add_blob<M>(
     match db_rpc(ctx, db_ref, view) {
         Ok(rpc) => match rpc.await {
             Ok((result, view)) => {
-                let mut buffer = view.into_inner();
                 // Mark the blob's bytes as processed and put back the buffer.
+                let mut buffer = view.into_inner();
                 buffer.processed(blob_length);
                 *buf = buffer;
 
@@ -105,9 +112,9 @@ async fn consensus<M>(
         query.key()
     );
     let results = rpc.await;
-    let (commit, abort, failed) = count_consensus_votes(&results);
+    let (committed, aborted, failed) = count_consensus_votes(&results);
 
-    if abort > 0 || failed > 0 {
+    if aborted > 0 || failed > 0 {
         // FIXME: if too many peers want to abort: try again -> max 3 times.
         // Before trying again first check if the blob is already in the
         // database, then we when don't have to run the consensus algorithm
@@ -115,14 +122,14 @@ async fn consensus<M>(
         // attempts.
         error!(
             "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-            consensus_id, key, commit, abort, failed
+            consensus_id, key, committed, aborted, failed
         );
-        return Err(());
+        return abort(ctx, db_ref, query).await;
     }
 
     debug!(
         "consensus algorithm succeeded: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-        consensus_id, key, commit, abort, failed
+        consensus_id, key, committed, aborted, failed
     );
 
     // Phase two of 2PC: let the participants know to commit to storing the
@@ -135,17 +142,17 @@ async fn consensus<M>(
     let timestamp = select_timestamp(&results);
     let rpc = peers.commit_to_add_blob(ctx, consensus_id, key.clone(), timestamp);
     let results = rpc.await;
-    let (commit, abort, failed) = count_consensus_votes(&results);
+    let (committed, aborted, failed) = count_consensus_votes(&results);
     debug!(
         "consensus algorithm commitment: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-        consensus_id, key, commit, abort, failed
+        consensus_id, key, committed, aborted, failed
     );
 
-    if abort > 0 || failed > 0 {
+    if aborted > 0 || failed > 0 {
         // FIXME: support partial success.
         error!(
             "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-            consensus_id, key, commit, abort, failed
+            consensus_id, key, committed, aborted, failed
         );
         return Err(());
     }
@@ -158,7 +165,7 @@ async fn consensus<M>(
     // TODO: optimisation: check `rpc` to see if we got a single `Ok` response
     // and then start the commit process ourselves, then we can wait for the
     // peers and the storing concurrently.
-    commit_blob(ctx, db_ref, query, timestamp).await
+    commit(ctx, db_ref, query, timestamp).await
 }
 
 /// Returns the `(commit, abort, failed)` votes.
@@ -199,12 +206,28 @@ fn select_timestamp(results: &[Result<SystemTime, RelayError>]) -> SystemTime {
 }
 
 /// Commit the blob in the `query` to the database.
-async fn commit_blob<M>(
-    ctx: &mut actor::Context<M>,
+pub(crate) async fn commit<M, K>(
+    ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     query: StoreBlob,
     timestamp: SystemTime,
-) -> Result<(), ()> {
-    trace!("committing to adding blob: query={:?}", query);
+) -> Result<(), ()>
+where
+    K: RuntimeAccess,
+{
+    trace!("committing to storing blob: key={}", query.key());
     db_rpc(ctx, db_ref, (query, timestamp))?.await
+}
+
+/// Abort storing the blob in the `query` to the database.
+pub(crate) async fn abort<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    query: StoreBlob,
+) -> Result<(), ()>
+where
+    K: RuntimeAccess,
+{
+    trace!("aborting storing blob: key={}", query.key());
+    db_rpc(ctx, db_ref, query)?.await
 }
