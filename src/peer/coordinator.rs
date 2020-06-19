@@ -583,6 +583,7 @@ pub mod server {
 
             // Read some more bytes.
             match Deadline::timeout(&mut ctx, ALIVE_TIMEOUT, buf.read_from(&mut stream)).await {
+                Ok(Ok(0)) => return Ok(()),
                 Ok(Ok(..)) => {}
                 Ok(Err(err)) => return Err(err.describe("reading from socket")),
                 Err(err) => {
