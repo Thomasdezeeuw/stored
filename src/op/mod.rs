@@ -12,7 +12,7 @@ use heph::{actor, ActorRef};
 use log::{debug, error};
 
 use crate::db::{self, HealthCheck, HealthOk};
-use crate::storage::BlobEntry;
+use crate::storage::{BlobEntry, UncommittedBlob};
 use crate::Key;
 
 pub mod store;
@@ -29,6 +29,24 @@ pub async fn retrieve_blob<M>(
     key: Key,
 ) -> Result<Option<BlobEntry>, ()> {
     debug!("running retrieve operation");
+    match db_rpc(ctx, db_ref, key) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
+}
+
+/// Retrieve a possibly uncommitted blob with `key`.
+///
+/// Returns an error if the database actor can't be accessed.
+pub async fn retrieve_uncommitted_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    key: Key,
+) -> Result<Result<UncommittedBlob, Option<BlobEntry>>, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!("running uncommitted retrieve operation");
     match db_rpc(ctx, db_ref, key) {
         Ok(rpc) => rpc.await,
         Err(err) => Err(err),

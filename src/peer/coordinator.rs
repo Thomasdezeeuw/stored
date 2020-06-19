@@ -9,17 +9,16 @@ use futures_util::future::{select, Either};
 use futures_util::io::AsyncWriteExt;
 use heph::actor;
 use heph::actor::context::ThreadSafe;
-use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse};
+use heph::actor_ref::{RpcMessage, RpcResponse};
 use heph::net::TcpStream;
-use log::{debug, error, trace, warn};
+use log::{debug, trace, warn};
 use serde::Serialize;
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
 use crate::peer::participant::{Response, ResponseKind};
 use crate::peer::{ConsensusId, Peers, PARTICIPANT_MAGIC};
-use crate::storage::{self, BlobEntry, PAGE_SIZE};
-use crate::{db, Key};
+use crate::Key;
 
 /// Message relayed to the peer the [`relay`] is connected to.
 #[derive(Debug)]
@@ -418,121 +417,174 @@ pub enum RequestKind<'a> {
     RemoveBlob(&'a Key),
 }
 
-/// Blob type used by [`server`].
-#[derive(Debug)]
-enum Blob {
-    Committed(storage::Blob),
-    Uncommitted(storage::UncommittedBlob),
-}
+pub mod server {
+    //! Module with the [coordinator server actor].
+    //!
+    //! The [participant consensus actor] connects to this actor to retrieve the
+    //! blobs it needs to store.
+    //!
+    //! [coordinator server actor]: actor()
+    //! [participant consensus actor]: crate::peer::participant::consensus
 
-impl Blob {
-    fn bytes(&self) -> &[u8] {
-        use Blob::*;
-        match self {
-            Committed(blob) => blob.bytes(),
-            Uncommitted(blob) => blob.bytes(),
+    use std::io;
+    use std::mem::size_of;
+    use std::time::Duration;
+
+    use futures_util::io::AsyncWriteExt;
+    use heph::actor::context::ThreadSafe;
+    use heph::net::TcpStream;
+    use heph::timer::Deadline;
+    use heph::{actor, ActorRef};
+    use log::{debug, warn};
+
+    use crate::buffer::Buffer;
+    use crate::error::Describe;
+    use crate::peer::participant::Response;
+    use crate::storage::{self, BlobEntry, PAGE_SIZE};
+    use crate::{db, op, Key};
+
+    /// Type used to send the length of the blob over the write in big endian.
+    pub type BlobLength = u64;
+
+    /// The length (in bytes) that make up the length of the blob.
+    pub const BLOB_LENGTH_LEN: usize = size_of::<BlobLength>();
+
+    /// Length send if the blob is not found.
+    pub const NO_BLOB: [u8; BLOB_LENGTH_LEN] = 0u64.to_be_bytes();
+
+    /// Timeout used for I/O.
+    const IO_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Timeout used to keep the connection alive.
+    const ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
+
+    /// Blob type used by [`server`].
+    #[derive(Debug)]
+    enum Blob {
+        Committed(storage::Blob),
+        Uncommitted(storage::UncommittedBlob),
+    }
+
+    impl Blob {
+        fn bytes(&self) -> &[u8] {
+            use Blob::*;
+            match self {
+                Committed(blob) => blob.bytes(),
+                Uncommitted(blob) => blob.bytes(),
+            }
+        }
+
+        fn len(&self) -> usize {
+            use Blob::*;
+            match self {
+                Committed(blob) => blob.len(),
+                Uncommitted(blob) => blob.len(),
+            }
+        }
+
+        fn prefetch(&self) -> io::Result<()> {
+            use Blob::*;
+            match self {
+                Committed(blob) => blob.prefetch(),
+                Uncommitted(blob) => blob.prefetch(),
+            }
         }
     }
 
-    fn len(&self) -> usize {
-        use Blob::*;
-        match self {
-            Committed(blob) => blob.len(),
-            Uncommitted(blob) => blob.len(),
-        }
-    }
+    /// Actor that serves the [`participant::consensus`] actor in retrieving
+    /// uncommitted blobs.
+    ///
+    /// Expects to read [`Key`]s (as bytes) on the `stream`, responding with
+    /// [`Blob`]s (length as `u64`, following by the bytes). If the returned
+    /// length is 0 the blob is not found (either never stored or removed).
+    ///
+    /// This can also return uncommitted blobs, the response does not indicate
+    /// whether or not the blob is commit.
+    ///
+    /// [`participant::consensus`]: crate::peer::participant::consensus
+    /// [`Blob`]: crate::storage::Blob
+    pub async fn actor(
+        // Having `Response` here as message type makes no sense, but its required
+        // because `participant::dispatcher` has it as message type. It should be
+        // `!`.
+        mut ctx: actor::Context<Response, ThreadSafe>,
+        mut stream: TcpStream,
+        mut buf: Buffer,
+        mut db_ref: ActorRef<db::Message>,
+    ) -> crate::Result<()> {
+        debug!("starting coordinator server");
 
-    fn prefetch(&self) -> io::Result<()> {
-        use Blob::*;
-        match self {
-            Committed(blob) => blob.prefetch(),
-            Uncommitted(blob) => blob.prefetch(),
-        }
-    }
-}
+        loop {
+            // NOTE: this we don't `buf` ourselves it could be that it already
+            // contains a request, so check it first and only after read some
+            // more bytes.
+            while buf.len() >= Key::LENGTH {
+                let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]).to_owned();
+                buf.processed(Key::LENGTH);
+                debug!("got peer request for blob: key={}", key);
 
-/// Length send if the blob is not found.
-const NO_BLOB: [u8; 8] = 0u64.to_be_bytes();
-
-/// Actor that serves the [`participant::consensus`] actor in retrieving
-/// uncommitted blobs.
-///
-/// Expects to read [`Key`]s (as bytes) on the `stream`, responding with
-/// [`Blob`]s (length as `u64`, following by the bytes). If the returned length
-/// is 0 the blob is not found (either never stored or removed).
-///
-/// [`participant::consensus`]: crate::peer::participant::consensus
-/// [`Blob`]: crate::storage::Blob
-pub async fn server(
-    // Having `Response` here as message type makes no sense, but its required
-    // because `participant::dispatcher` has it as message type. It should be
-    // `!`.
-    mut ctx: actor::Context<Response, ThreadSafe>,
-    mut stream: TcpStream,
-    mut buf: Buffer,
-    db_ref: ActorRef<db::Message>,
-) -> crate::Result<()> {
-    debug!("starting coordinator server");
-
-    loop {
-        while buf.len() >= Key::LENGTH {
-            let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
-            debug!("got peer request for blob: key={}", key);
-
-            let blob = match db_ref.rpc(&mut ctx, key.clone()) {
-                Ok(rpc) => match rpc.await {
+                let f = op::retrieve_uncommitted_blob(&mut ctx, &mut db_ref, key);
+                let blob = match f.await {
                     Ok(Ok(blob)) => Blob::Uncommitted(blob),
                     Ok(Err(Some(BlobEntry::Stored(blob)))) => Blob::Committed(blob),
                     Ok(Err(Some(BlobEntry::Removed(_)))) | Ok(Err(None)) => {
                         // By writing a length of 0 we indicate the blob is not
                         // found.
-                        stream
-                            .write_all(&NO_BLOB)
-                            .await
-                            .map_err(|err| err.describe("writing no blob length"))?;
-                        continue;
+                        let f = Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(&NO_BLOB));
+                        match f.await {
+                            Ok(Ok(())) => continue,
+                            Ok(Err(err)) => return Err(err.describe("writing no blob length")),
+                            Err(err) => {
+                                return Err(
+                                    io::Error::from(err).describe("timeout writing no blob length")
+                                )
+                            }
+                        }
                     }
-                    Err(err) => {
-                        error!("error making RPC call to database: {}", err);
-                        // Forcefully close the connection to force the client to
-                        // recognise the error.
+                    Err(()) => {
+                        // Forcefully close the connection to force the client
+                        // to recognise the error.
                         return Ok(());
                     }
-                },
-                Err(err) => {
-                    // See error handling above for rationale.
-                    error!("error making RPC call to database: {}", err);
-                    return Ok(());
-                }
-            };
+                };
 
-            if blob.len() > PAGE_SIZE {
-                // If the blob is large(-ish) we'll prefetch it from
-                // disk to improve performance.
-                // TODO: benchmark this with large(-ish) blobs.
-                if let Err(err) = blob.prefetch() {
-                    warn!("error prefetching blob, continuing: {}", err);
+                if blob.len() > PAGE_SIZE {
+                    // If the blob is large(-ish) we'll prefetch it from
+                    // disk to improve performance.
+                    // TODO: benchmark this with large(-ish) blobs.
+                    if let Err(err) = blob.prefetch() {
+                        warn!("error prefetching blob, continuing: {}", err);
+                    }
+                }
+
+                // TODO: use vectored I/O here. See
+                // https://github.com/rust-lang/futures-rs/pull/2181.
+                let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
+                match Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(&length)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(err.describe("writing blob length")),
+                    Err(err) => {
+                        return Err(io::Error::from(err).describe("timeout writing blob length"))
+                    }
+                }
+                let f = Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(blob.bytes()));
+                match f.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) => return Err(err.describe("writing blob bytes")),
+                    Err(err) => {
+                        return Err(io::Error::from(err).describe("timeout writing blob bytes"))
+                    }
                 }
             }
 
-            // TODO: use vectored I/O here.
-            let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
-            stream
-                .write_all(&length)
-                .await
-                .map_err(|err| err.describe("writing blob length"))?;
-            stream
-                .write_all(blob.bytes())
-                .await
-                .map_err(|err| err.describe("writing blob bytes"))?;
-
-            buf.processed(Key::LENGTH);
-        }
-
-        match buf.read_from(&mut stream).await {
-            Ok(0) => return Ok(()),
-            Ok(_) => {}
-            Err(err) => return Err(err.describe("reading from socket")),
+            // Read some more bytes.
+            match Deadline::timeout(&mut ctx, ALIVE_TIMEOUT, buf.read_from(&mut stream)).await {
+                Ok(Ok(..)) => {}
+                Ok(Err(err)) => return Err(err.describe("reading from socket")),
+                Err(err) => {
+                    return Err(io::Error::from(err).describe("timeout reading from socket"))
+                }
+            }
         }
     }
 }

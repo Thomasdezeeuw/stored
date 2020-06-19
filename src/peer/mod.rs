@@ -397,7 +397,7 @@ impl<Res> Future for PeerRpc<Res> {
         if has_pending && !self.timer.has_passed() {
             return Poll::Pending;
         } else if has_pending {
-            // TODO: provide more context.
+            // TODO: provide more context, the message as is useless.
             warn!("peer RPC timed out");
         }
 
@@ -490,7 +490,7 @@ pub mod switcher {
             COORDINATOR_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
                 // Don't log the error as a problem in the switch actor.
-                if let Err(err) = coordinator::server(ctx, stream, buf, db_ref).await {
+                if let Err(err) = coordinator::server::actor(ctx, stream, buf, db_ref).await {
                     warn!("coordinator server failed: {}", err);
                 }
                 Ok(())

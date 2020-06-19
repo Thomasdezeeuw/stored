@@ -453,7 +453,6 @@ pub mod consensus {
 
     use std::convert::TryInto;
     use std::io;
-    use std::mem::size_of;
     use std::time::Duration;
 
     use futures_util::io::AsyncWriteExt;
@@ -466,6 +465,7 @@ pub mod consensus {
 
     use crate::error::Describe;
     use crate::op::store::Success;
+    use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::COORDINATOR_MAGIC;
     use crate::{db, op, Buffer, Key};
 
@@ -478,9 +478,6 @@ pub mod consensus {
     const IO_TIMEOUT: Duration = Duration::from_secs(2);
     /// Timeout used for waiting for the result of the census (in each phase).
     const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// The length (in bytes) that make up the length of the blob.
-    const BLOB_LENGTH_LEN: usize = size_of::<u64>();
 
     /// Actor that runs a single consensus algorithm run.
     pub async fn actor(
@@ -654,7 +651,7 @@ pub mod consensus {
             blob_length
         );
 
-        if blob_length == 0 {
+        if blob_length == u64::from_be_bytes(NO_BLOB) {
             return Ok(None);
         }
 
