@@ -103,9 +103,16 @@ impl Key {
     /// # }
     /// ```
     pub fn calculator<IO>(io: IO) -> KeyCalculator<IO> {
+        Key::calculator_skip(io, 0)
+    }
+
+    /// Same as [`calculator`] but skips `skip` bytes before using them in the
+    /// `Key` calculation.
+    pub fn calculator_skip<IO>(io: IO, skip: usize) -> KeyCalculator<IO> {
         KeyCalculator {
             digest: digest::Context::new(&digest::SHA512),
             io,
+            skip_left: skip,
         }
     }
 }
@@ -273,7 +280,11 @@ impl Hash for Key {
 
 /// The key calculator, see [`Key::calculator`].
 pub struct KeyCalculator<IO> {
+    /// NOTE: don't use this directly, use `update_digest` and `update_digestv`,
+    /// which take `skip_left` into account.
     digest: digest::Context,
+    /// Number of bytes left to ignore in the [`Key`] calculation.
+    skip_left: usize,
     io: IO,
 }
 
@@ -283,6 +294,42 @@ impl<IO> KeyCalculator<IO> {
         let result = self.digest.finish();
         Key::from_bytes(result.as_ref()).to_owned()
     }
+
+    fn update_digest(&mut self, bytes: &[u8]) {
+        if self.skip_left == 0 {
+            // No more bytes to skip.
+            self.digest.update(&bytes[self.skip_left..]);
+        } else if bytes.len() <= self.skip_left {
+            // Need to skip all bytes.
+            self.skip_left -= bytes.len();
+        } else {
+            // Need to skip some of the bytes.
+            self.digest.update(&bytes[self.skip_left..]);
+            if bytes.len() > self.skip_left {
+                self.skip_left = 0;
+            } else {
+                self.skip_left -= bytes.len();
+            }
+        }
+    }
+
+    fn update_digestv<B>(&mut self, bufs: &[B], processed: usize)
+    where
+        B: Deref<Target = [u8]>,
+    {
+        let mut left = processed;
+        for buf in bufs {
+            let length = buf.len();
+            if length >= left {
+                self.update_digest(&buf[..left]);
+                return;
+            } else {
+                // Entire buffer was filled.
+                self.update_digest(&buf);
+                left -= length;
+            }
+        }
+    }
 }
 
 impl<R> Read for KeyCalculator<R>
@@ -291,34 +338,34 @@ where
 {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.io.read(buf).map(|n| {
-            self.digest.update(&buf[..n]);
+            self.update_digest(&buf[..n]);
             n
         })
     }
 
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut]) -> io::Result<usize> {
         self.io.read_vectored(bufs).map(|n| {
-            update_digest(&mut self.digest, bufs, n);
+            self.update_digestv(bufs, n);
             n
         })
     }
 
     fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
         self.io.read_to_end(buf).map(|n| {
-            self.digest.update(&buf);
+            self.update_digest(&buf[..n]);
             n
         })
     }
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         self.io.read_to_string(buf).map(|n| {
-            self.digest.update(buf.as_bytes());
+            self.update_digest(&buf.as_bytes());
             n
         })
     }
 
     fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.io.read_exact(buf).map(|()| self.digest.update(&buf))
+        self.io.read_exact(buf).map(|()| self.update_digest(buf))
     }
 }
 
@@ -328,7 +375,7 @@ where
 {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         self.io.write(buf).map(|n| {
-            self.digest.update(&buf[..n]);
+            self.update_digest(&buf[..n]);
             n
         })
     }
@@ -339,13 +386,13 @@ where
 
     fn write_vectored(&mut self, bufs: &[IoSlice]) -> io::Result<usize> {
         self.io.write_vectored(bufs).map(|n| {
-            update_digest(&mut self.digest, bufs, n);
+            self.update_digestv(bufs, n);
             n
         })
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.io.write_all(buf).map(|()| self.digest.update(&buf))
+        self.io.write_all(buf).map(|()| self.update_digest(buf))
     }
 }
 
@@ -361,7 +408,7 @@ where
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_read(ctx, buf).map_ok(|n| {
-            self.digest.update(&buf[..n]);
+            self.update_digest(&buf[..n]);
             n
         })
     }
@@ -374,7 +421,7 @@ where
         Pin::new(&mut self.io)
             .poll_read_vectored(ctx, bufs)
             .map_ok(|n| {
-                update_digest(&mut self.digest, bufs, n);
+                self.update_digestv(bufs, n);
                 n
             })
     }
@@ -390,7 +437,7 @@ where
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_write(ctx, buf).map_ok(|n| {
-            self.digest.update(&buf[..n]);
+            self.update_digest(&buf[..n]);
             n
         })
     }
@@ -403,7 +450,7 @@ where
         Pin::new(&mut self.io)
             .poll_write_vectored(ctx, bufs)
             .map_ok(|n| {
-                update_digest(&mut self.digest, bufs, n);
+                self.update_digestv(bufs, n);
                 n
             })
     }
@@ -417,26 +464,10 @@ where
     }
 }
 
-fn update_digest<B>(digest: &mut digest::Context, bufs: &[B], bytes_read: usize)
-where
-    B: Deref<Target = [u8]>,
-{
-    let mut left = bytes_read;
-    for buf in bufs.iter() {
-        let length = buf.len();
-        if length >= left {
-            digest.update(&buf[..left]);
-            return;
-        } else {
-            // Entire buffer was filled.
-            digest.update(&buf);
-            left -= length;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::io::{self, Read};
+
     use serde_test::{assert_tokens, Configure, Token};
 
     use crate::key::{InvalidKeyStr, Key};
@@ -532,5 +563,31 @@ mod tests {
                         5f79a942600f9725f58ce1f29c18139bf80b06c0f\
                         ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         assert_tokens(&key.readable(), &[Token::Str(expected)]);
+    }
+
+    #[test]
+    fn key_calculator() {
+        let want = Key::for_blob(b"Hello world");
+        let reader = io::Cursor::new(b"Hello world");
+        let mut calc = Key::calculator(reader);
+        let mut buf = [0; 6];
+        assert_eq!(calc.read(&mut buf).unwrap(), 6);
+        assert_eq!(&buf, b"Hello ");
+        assert_eq!(calc.read(&mut buf).unwrap(), 5);
+        assert_eq!(&buf, b"world "); // Last space from previous read.
+        assert_eq!(calc.finish(), want);
+    }
+
+    #[test]
+    fn key_calculator_skip_n() {
+        let want = Key::for_blob(b"Hello world");
+        let reader = io::Cursor::new(b"123Hello world");
+        let mut calc = Key::calculator_skip(reader, 3);
+        let mut buf = [0; 7];
+        assert_eq!(calc.read(&mut buf).unwrap(), 7);
+        assert_eq!(&buf, b"123Hell");
+        assert_eq!(calc.read(&mut buf).unwrap(), 7);
+        assert_eq!(&buf, b"o world");
+        assert_eq!(calc.finish(), want);
     }
 }
