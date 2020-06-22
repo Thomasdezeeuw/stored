@@ -90,7 +90,7 @@ pub mod relay {
     /// Actor that relays messages to a [`participant::dispatcher`] actor
     /// running on the `remote` node.
     ///
-    /// [`participant::dispatcher`]: super::participant::dispatcher
+    /// [`participant::dispatcher`]: crate::peer::participant::dispatcher
     pub async fn actor(
         mut ctx: actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,
@@ -143,7 +143,9 @@ pub mod relay {
         }
     }
 
-    /// Message relayed to the peer the [`relay`] is connected to.
+    /// Message relayed to the peer the [relay actor] is connected to.
+    ///
+    /// [relay actor]: actor()
     #[derive(Debug)]
     pub enum Message {
         /// Add the blob with [`Key`].

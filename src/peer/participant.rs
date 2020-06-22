@@ -9,8 +9,9 @@ use crate::peer::{ConsensusVote, Response};
 /// [`coordinator::relay`].
 ///
 /// If this is dropped without completing the consensus algorithm it will send
-/// [`ResponseKind::Fail`].
+/// [`ConsensusVote::Fail`].
 ///
+///[`coordinator::relay`]: crate::peer::coordinator::relay
 /// [`respond`]: RpcResponder::respond
 #[derive(Debug)]
 pub struct RpcResponder {
@@ -62,7 +63,7 @@ impl RpcResponder {
     /// # Panics
     ///
     /// This panics if its called more then once or after calling it with
-    /// [`ResponseKind::Abort`].
+    /// [`ConsensusVote::Abort`].
     pub fn respond(&mut self, vote: ConsensusVote) {
         if let ConsensusVote::Commit(..) = vote {
             self.phase.next()
@@ -136,7 +137,7 @@ pub mod dispatcher {
     /// algorithm.
     ///
     /// [`coordinator::relay`]: crate::peer::coordinator::relay
-    /// [`consensus`]: super::consensus::
+    /// [`consensus`]: super::consensus::actor
     pub async fn actor(
         mut ctx: actor::Context<Response, ThreadSafe>,
         mut stream: TcpStream,
@@ -328,22 +329,18 @@ pub mod dispatcher {
                     actor_ref: ctx.actor_ref(),
                     phase: ConsensusPhase::init(),
                 };
-                let request = consensus::Request {
-                    key: request.key,
-                    remote: *remote,
-                };
                 debug!(
                     "participant dispatcher starting store blob consensus actor: request={:?}, response={:?}",
                     request, responder
                 );
-                let consensus = consensus::store_blob_actor as fn(_, _, _, _) -> _;
+                let consensus = consensus::store_blob_actor as fn(_, _, _, _, _) -> _;
                 let actor_ref = ctx.spawn(
                     |err| {
                         warn!("store blob consensus actor failed: {}", err);
                         SupervisorStrategy::Stop
                     },
                     consensus,
-                    (request, responder, db_ref.clone()),
+                    (request.key, *remote, responder, db_ref.clone()),
                     ActorOptions::default().mark_ready(),
                 );
                 // Checked above that we don't have duplicates.
@@ -387,9 +384,7 @@ pub mod dispatcher {
 }
 
 pub mod consensus {
-    //! Module with the [consensus actor].
-    //!
-    //! [consensus actor]: actor()
+    //! Module with consensus actor.
 
     use std::convert::TryInto;
     use std::io;
@@ -417,16 +412,6 @@ pub mod consensus {
     /// Timeout used for waiting for the result of the census (in each phase).
     const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
 
-    /// Request to start a consensus algorithm.
-    #[derive(Debug)]
-    pub struct Request {
-        /// The blob to operate on.
-        pub(super) key: Key,
-        /// The address of the coordinator peer, e.g. used to retrieve the blob
-        /// to store.
-        pub(super) remote: SocketAddr,
-    }
-
     /// Result of the consensus vote.
     #[derive(Debug)]
     pub struct VoteResult {
@@ -442,13 +427,14 @@ pub mod consensus {
     /// Actor that runs the consensus algorithm for storing a blob.
     pub async fn store_blob_actor(
         mut ctx: actor::Context<VoteResult, ThreadSafe>,
-        request: Request,
+        key: Key,
+        remote: SocketAddr,
         mut responder: RpcResponder,
         mut db_ref: ActorRef<db::Message>,
     ) -> crate::Result<()> {
         debug!(
             "store blob consensus actor started: key={}, remote={}",
-            request.key, request.remote
+            key, remote
         );
 
         // TODO: reuse stream and buffer.
@@ -456,9 +442,9 @@ pub mod consensus {
         // the data file?
         debug!(
             "connecting to coordinator server: remote_address={}",
-            request.remote
+            remote
         );
-        let mut stream = TcpStream::connect(&mut ctx, request.remote)
+        let mut stream = TcpStream::connect(&mut ctx, remote)
             .map_err(|err| err.describe("creating connect to peer server"))?;
         let mut buf = Buffer::new();
 
@@ -471,13 +457,13 @@ pub mod consensus {
             }
         }
 
-        let read_blob = read_blob(&mut ctx, &mut stream, &mut buf, &request.key);
+        let read_blob = read_blob(&mut ctx, &mut stream, &mut buf, &key);
         let blob_len = match read_blob.await {
-            Ok(Some((blob_key, blob))) if request.key == blob_key => blob.len(),
+            Ok(Some((blob_key, blob))) if key == blob_key => blob.len(),
             Ok(Some((blob_key, ..))) => {
                 error!(
                     "coordinator server responded with incorrect blob, voting to abort consensus: want_key={}, got_blob_key={}",
-                    request.key, blob_key
+                    key, blob_key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
@@ -485,7 +471,7 @@ pub mod consensus {
             Ok(None) => {
                 error!(
                     "couldn't get blob from coordinator server, voting to abort consensus: key={}",
-                    request.key
+                    key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
@@ -502,7 +488,7 @@ pub mod consensus {
             Ok(Success::Done(..)) => {
                 info!(
                     "blob already stored, voting to abort consensus: key={}",
-                    request.key
+                    key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
@@ -510,7 +496,7 @@ pub mod consensus {
             Err(()) => {
                 warn!(
                     "failed to add blob to storage, voting to abort consensus: key={}",
-                    request.key
+                    key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
@@ -531,10 +517,10 @@ pub mod consensus {
             }
         };
 
-        let response = if request.key.ne(query.key()) {
+        let response = if key.ne(query.key()) {
             error!(
                 "received an incorrect key in consensus run: want_key={}, consensus_key={}",
-                request.key,
+                key,
                 query.key()
             );
             Err(())
@@ -628,7 +614,8 @@ pub mod consensus {
     /// Not implemented.
     pub async fn remove_blob_actor(
         _ctx: actor::Context<VoteResult, ThreadSafe>,
-        _request: Request,
+        _key: Key,
+        _remote: SocketAddr,
         _responder: RpcResponder,
         _db_ref: ActorRef<db::Message>,
     ) -> crate::Result<()> {

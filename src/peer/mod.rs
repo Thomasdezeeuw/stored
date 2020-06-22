@@ -532,6 +532,8 @@ pub mod switcher {
     const TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Supervisor for [`actor`].
+    ///
+    /// [`actor`]: actor()
     pub fn supervisor<Args>(err: crate::Error) -> SupervisorStrategy<Args> {
         warn!("switcher actor failed: {}", err);
         SupervisorStrategy::Stop
