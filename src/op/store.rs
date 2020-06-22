@@ -142,7 +142,7 @@ async fn consensus<M>(
         query.key()
     );
     let timestamp = select_timestamp(&results);
-    let rpc = peers.commit_to_add_blob(ctx, consensus_id, key.clone(), timestamp);
+    let rpc = peers.commit_to_store_blob(ctx, consensus_id, key.clone(), timestamp);
     let results = rpc.await;
     let (committed, aborted, failed) = count_consensus_votes(&results);
     if aborted > 0 || failed > 0 {

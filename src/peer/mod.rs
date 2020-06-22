@@ -239,8 +239,8 @@ impl Peers {
         (id, rpc)
     }
 
-    /// Commit to add blob.
-    pub fn commit_to_add_blob<M>(
+    /// Commit to storing a blob.
+    pub fn commit_to_store_blob<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
@@ -401,6 +401,8 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
 
 const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// [`Future`] implementation that makes RPCs with one or more peers, see
+/// [`Peers`].
 pub struct PeerRpc<Res> {
     rpcs: Box<[SinglePeerRpc<Res>]>,
     timer: Timer,
