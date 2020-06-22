@@ -168,8 +168,10 @@ pub mod dispatcher {
                         // Write any response left in our inbox.
                         // TODO: ignore errors here since the other side is
                         // already disconnected?
-                        debug!("participant dispatcher received a message: {:?}", msg);
-                        write_response(&mut ctx, &mut stream, &mut buf, msg).await?;
+                        debug!(
+                            "participant dispatcher dropping message (connection closed): {:?}",
+                            msg
+                        );
                     }
                     return Ok(());
                 }
@@ -512,8 +514,10 @@ pub mod consensus {
                 responder.id = vote_result.request_id;
                 vote_result
             }
-            Err(err) => {
-                return Err(io::Error::from(err).describe("timeout waiting for consensus result"))
+            Err(..) => {
+                warn!("failed to get consensus result in time, considering it failed");
+                let _ = op::store::abort(&mut ctx, &mut db_ref, query).await;
+                return Ok(());
             }
         };
 
@@ -523,6 +527,8 @@ pub mod consensus {
                 key,
                 query.key()
             );
+            let _ = op::store::abort(&mut ctx, &mut db_ref, query).await;
+            // Let the peer know the operation failed.
             Err(())
         } else {
             match vote_result.result {
