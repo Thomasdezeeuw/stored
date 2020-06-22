@@ -53,6 +53,7 @@ pub async fn store_blob<M>(
 
 /// Operation succeeded, but can return early. E.g. when the blob is already
 /// stored.
+// TODO: rename to `Outcome`, also merge with `http::Status`.
 pub(crate) enum Success<T, U> {
     /// Continue like normal.
     Continue(T),
@@ -124,7 +125,8 @@ async fn consensus<M>(
             "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
             consensus_id, key, committed, aborted, failed
         );
-        return abort(ctx, db_ref, query).await;
+        // Always return an error as we failed to store the blob.
+        return abort(ctx, db_ref, query).await.and(Err(()));
     }
 
     debug!(
@@ -168,7 +170,7 @@ async fn consensus<M>(
     commit(ctx, db_ref, query, timestamp).await
 }
 
-/// Returns the `(commit, abort, failed)` votes.
+/// Returns the `(committed, aborted, failed)` votes.
 fn count_consensus_votes<T>(results: &[Result<T, relay::Error>]) -> (usize, usize, usize) {
     let mut commit = 1; // Coordinator always votes to commit.
     let mut abort = 0;
