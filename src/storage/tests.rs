@@ -919,7 +919,7 @@ mod storage {
             storage.total_size(),
             data_metadata.len() + index_metadata.len()
         );
-        assert_eq!(storage.total_size(), want_index_size + want_data_size,);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
     }
 
     #[test]

@@ -62,9 +62,11 @@ tests! {
         let _p = start_stored();
 
         let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+        let blob = b"Hello world";
+        let blob_len = "11";
         request!(
-            POST DB_PORTS[0], "/blob", b"Hello world",
-            CONTENT_LENGTH => "11";
+            POST DB_PORTS[0], "/blob", blob,
+            CONTENT_LENGTH => blob_len;
             expected: StatusCode::CREATED, body::EMPTY,
             CONTENT_LENGTH => body::EMPTY_LEN,
             LOCATION => url,
@@ -76,8 +78,8 @@ tests! {
         for port in DB_PORTS.iter().copied() {
             request!(
                 GET port, url, body::EMPTY,
-                expected: StatusCode::OK, b"Hello world",
-                CONTENT_LENGTH => "11",
+                expected: StatusCode::OK, blob,
+                CONTENT_LENGTH => blob_len,
                 LAST_MODIFIED => &last_modified,
                 CONNECTION => header::KEEP_ALIVE,
             );
@@ -105,8 +107,8 @@ tests! {
         for port in DB_PORTS.iter().copied() {
             request!(
                 GET port, url, body::EMPTY,
-                expected: StatusCode::OK, b"Hello world",
-                CONTENT_LENGTH => "11",
+                expected: StatusCode::OK, blob,
+                CONTENT_LENGTH => blob_len,
                 LAST_MODIFIED => &last_modified,
                 CONNECTION => header::KEEP_ALIVE,
             );
@@ -125,8 +127,8 @@ tests! {
         for port in DB_PORTS.iter().copied() {
             request!(
                 GET port, url, body::EMPTY,
-                expected: StatusCode::OK, b"Hello world",
-                CONTENT_LENGTH => "11",
+                expected: StatusCode::OK, blob,
+                CONTENT_LENGTH => blob_len,
                 LAST_MODIFIED => &last_modified,
                 CONNECTION => header::KEEP_ALIVE,
             );
@@ -137,7 +139,7 @@ tests! {
     fn store_hello_moon_multiple_times_different_nodes() {
         let _p = start_stored();
 
-        let url = "/blob/03ae65afb6e91c5668faf2c829de80160b79c812555f52c90693df7d9489114adfb85191084e3a816ec4e36870ddf4fbe84c03cd4006bcd705a983f755f4a6f7";
+        let url = "/blob/f9024e47777547c1e80da15d5b8edcf3cbc592ae889bb4d86b059dd5947977eb94bac26024d9d9dcd5a57a758efd30ed0011290b15ea09bfe07ff53bfdbaeac3";
         let blob = b"Hello moon";
         let blob_len = "10";
         request!(
@@ -153,8 +155,8 @@ tests! {
         for port in DB_PORTS.iter().copied() {
             request!(
                 GET port, url, body::EMPTY,
-                expected: StatusCode::OK, b"Hello world",
-                CONTENT_LENGTH => "11",
+                expected: StatusCode::OK, blob,
+                CONTENT_LENGTH => blob_len,
                 LAST_MODIFIED => &last_modified,
                 CONNECTION => header::KEEP_ALIVE,
             );
@@ -174,8 +176,8 @@ tests! {
             for get_port in DB_PORTS.iter().copied() {
                 request!(
                     GET get_port, url, body::EMPTY,
-                    expected: StatusCode::OK, b"Hello world",
-                    CONTENT_LENGTH => "11",
+                    expected: StatusCode::OK, blob,
+                    CONTENT_LENGTH => blob_len,
                     LAST_MODIFIED => &last_modified,
                     CONNECTION => header::KEEP_ALIVE,
                 );

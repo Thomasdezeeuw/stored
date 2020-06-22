@@ -488,7 +488,7 @@ pub mod http {
         for (name, value) in response.headers() {
             match name {
                 &SERVER => assert_eq!(value, "stored"),
-                &DATE => assert_eq!(value, &*want_date_header),
+                &DATE => cmp_date_header(&http::header::DATE, value, &*want_date_header),
                 name => {
                     let want = want_headers.iter().find(|want| name == want.0);
                     if let Some(want) = want {
@@ -496,9 +496,12 @@ pub mod http {
                             cmp_date_header(name, value, want.1);
                         } else {
                             assert_eq!(
-                                value, want.1,
-                                "Different '{}' header: response={:?}",
-                                name, response
+                                value,
+                                want.1,
+                                "Different '{}' header: response={:?}, body={:?}",
+                                name,
+                                response,
+                                str::from_utf8(response.body())
                             );
                         }
                     } else {
