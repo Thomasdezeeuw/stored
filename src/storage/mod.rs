@@ -1289,7 +1289,15 @@ impl Index {
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)
-            .append(true)
+            // NOTE: we should use `O_APPEND` here, but Linux has a bug with
+            // `pwrite` where it will just ignore the offset provided and
+            // instead just append the bytes at the end of the file. This breaks
+            // `Index::overwrite_date` forcing us to use `O_RDWR` instead. This
+            // puts more importance on `lock`ing the file, but that is broken in
+            // various scenarios as well (e.g. see
+            // https://www.sqlite.org/lockingv3.html#how_to_corrupt), so great
+            // stuff all-round!
+            .write(true)
             .open(path)?;
         lock(&mut file)?;
 
@@ -1390,6 +1398,8 @@ impl Index {
                     ((self.length - (INDEX_MAGIC.len() as u64)) / (bytes.len() as u64)) as usize,
                 );
                 self.length += bytes.len() as u64;
+                // Ensure we the file size is correct.
+                debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
                 entry_index
             })
     }
@@ -1431,9 +1441,11 @@ impl Index {
         // NOTE: this is only correct because `Entry` and `DateTime` have the
         // `#[repr(C)]` attribute and thus the layout is fixed.
         let offset = at.offset() + ((size_of::<Entry>() - size_of::<DateTime>()) as u64);
-        self.file
-            .write_all_at(&bytes, offset)
-            .and_then(|()| self.file.sync_all())
+        self.file.write_all_at(&bytes, offset).and_then(|_| {
+            // Ensure we didn't change the file size.
+            debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
+            self.file.sync_all()
+        })
     }
 }
 
