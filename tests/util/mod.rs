@@ -116,8 +116,11 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
         }
 
         // Give the processes some time to start and sync up.
-        // TODO: see if this can be lowered.
-        sleep(Duration::from_millis(processes.len() as u64 * 200));
+        if conf_paths.len() == 1 {
+            sleep(Duration::from_millis(200));
+        } else {
+            sleep(Duration::from_millis(processes.len() as u64 * 300));
+        }
 
         let processes = Arc::new(processes.into_boxed_slice());
         proc.replace(processes.clone());

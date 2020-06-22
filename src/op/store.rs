@@ -125,7 +125,7 @@ async fn consensus<M>(
             "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
             consensus_id, key, committed, aborted, failed
         );
-        // Always return an error as we failed to store the blob.
+        // Always return an error if we failed to store the blob.
         return abort(ctx, db_ref, query).await.and(Err(()));
     }
 
@@ -145,19 +145,20 @@ async fn consensus<M>(
     let rpc = peers.commit_to_add_blob(ctx, consensus_id, key.clone(), timestamp);
     let results = rpc.await;
     let (committed, aborted, failed) = count_consensus_votes(&results);
-    debug!(
-        "consensus algorithm commitment: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
-        consensus_id, key, committed, aborted, failed
-    );
-
     if aborted > 0 || failed > 0 {
-        // FIXME: support partial success.
+        // FIXME: ensure the remaining peers still commit.
         error!(
-            "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+            "consensus algorithm commitment failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
             consensus_id, key, committed, aborted, failed
         );
-        return Err(());
+        // Always return an error if we failed to store the blob.
+        return abort(ctx, db_ref, query).await.and(Err(()));
     }
+
+    debug!(
+        "consensus algorithm commitment success: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+        consensus_id, key, committed, aborted, failed
+    );
 
     // NOTE: Its crucial here that at least a single peer received the message
     // to commit before the coordinator (this) commit to adding the blob
