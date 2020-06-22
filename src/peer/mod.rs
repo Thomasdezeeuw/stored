@@ -15,7 +15,7 @@ use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
-use heph::supervisor::{RestartSupervisor, SupervisorStrategy};
+use heph::supervisor::RestartSupervisor;
 use heph::timer::Timer;
 use heph::Runtime;
 use log::{debug, warn};
@@ -76,10 +76,7 @@ fn start_listener(
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
     let server_actor = tcp::Server::setup(
         address,
-        |err| {
-            warn!("switcher actor failed: {}", err);
-            SupervisorStrategy::Stop
-        },
+        switcher::supervisor,
         switcher,
         ActorOptions::default(),
     )
@@ -282,8 +279,8 @@ impl Peers {
             .read()
             .unwrap()
             .iter()
-            .map(
-                |peer| match peer.actor_ref.rpc(ctx, (id, request.clone())) {
+            .map(|peer| {
+                let status = match peer.actor_ref.rpc(ctx, (id, request.clone())) {
                     Ok(rpc) => RpcStatus::InProgress(rpc),
                     Err(SendError) => {
                         warn!(
@@ -292,8 +289,12 @@ impl Peers {
                         );
                         RpcStatus::Done(Err(relay::Error::Failed))
                     }
-                },
-            )
+                };
+                SinglePeerRpc {
+                    status,
+                    address: peer.address,
+                }
+            })
             .collect();
         let timer = Timer::timeout(ctx, PEER_TIMEOUT);
         PeerRpc { rpcs, timer }
@@ -398,13 +399,29 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
     peers.iter().any(|peer| peer.address == *address)
 }
 
-// TODO: increase this. Also base this on something... maybe a configuration
-// thing?
-const PEER_TIMEOUT: Duration = Duration::from_secs(2);
+const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub struct PeerRpc<Res> {
-    rpcs: Box<[RpcStatus<Res>]>,
+    rpcs: Box<[SinglePeerRpc<Res>]>,
     timer: Timer,
+}
+impl<Res> PeerRpc<Res> {
+    fn timeout_peers(&self) -> DisplayTimedoutPeers<Res> {
+        DisplayTimedoutPeers { peers: self }
+    }
+}
+
+/// `PeerRpc` data for a single peer.
+// TODO: better name.
+struct SinglePeerRpc<Res> {
+    status: RpcStatus<Res>,
+    address: SocketAddr,
+}
+
+impl<Res> SinglePeerRpc<Res> {
+    fn is_done(&self) -> bool {
+        matches!(self.status, RpcStatus::Done(..))
+    }
 }
 
 /// Status of a [`Rpc`] future in [`PeerRpc`].
@@ -423,8 +440,8 @@ impl<Res> Future for PeerRpc<Res> {
     fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
         // Check all the statuses.
         let mut has_pending = false;
-        for status in self.rpcs.iter_mut() {
-            if let RpcStatus::InProgress(rpc) = status {
+        for peer_rpc in self.rpcs.iter_mut() {
+            if let RpcStatus::InProgress(rpc) = &mut peer_rpc.status {
                 match Pin::new(rpc).poll(ctx) {
                     Poll::Ready(result) => {
                         // Map no response to a failed response.
@@ -432,7 +449,7 @@ impl<Res> Future for PeerRpc<Res> {
                             Ok(result) => result,
                             Err(NoResponse) => Err(relay::Error::Failed),
                         };
-                        drop(replace(status, RpcStatus::Done(result)));
+                        drop(replace(&mut peer_rpc.status, RpcStatus::Done(result)));
                     }
                     Poll::Pending => has_pending = true,
                 }
@@ -444,22 +461,41 @@ impl<Res> Future for PeerRpc<Res> {
         if has_pending && !self.timer.has_passed() {
             return Poll::Pending;
         } else if has_pending {
-            // TODO: provide more context, the message as is useless.
-            warn!("peer RPC timed out");
+            warn!(
+                "peer RPC timed out: timed_out_peers={}",
+                self.timeout_peers()
+            );
         }
 
         // If we reached this point all statuses should be `Done`.
         let results = self
             .rpcs
             .iter_mut()
-            .map(|status| match replace(status, RpcStatus::Completed) {
-                RpcStatus::Done(result) => result,
-                // If the peer hasn't responded yet and we're here it means the
-                // timeout has passed, we'll consider there vote as failed.
-                _ => Err(relay::Error::Failed),
+            .map(|peer_rpc| {
+                match replace(&mut peer_rpc.status, RpcStatus::Completed) {
+                    RpcStatus::Done(result) => result,
+                    // If the peer hasn't responded yet and we're here it means the
+                    // timeout has passed, we'll consider there vote as failed.
+                    _ => Err(relay::Error::Failed),
+                }
             })
             .collect();
         Poll::Ready(results)
+    }
+}
+
+struct DisplayTimedoutPeers<'a, Res> {
+    peers: &'a PeerRpc<Res>,
+}
+
+impl<'a, Res> fmt::Display for DisplayTimedoutPeers<'a, Res> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let iter = self
+            .peers
+            .rpcs
+            .iter()
+            .filter_map(|peer| peer.is_done().then_some(peer.address));
+        f.debug_list().entries(iter).finish()
     }
 }
 
@@ -481,7 +517,7 @@ pub mod switcher {
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::timer::Deadline;
-    use heph::{actor, ActorRef};
+    use heph::{actor, ActorRef, SupervisorStrategy};
     use log::{debug, warn};
 
     use crate::error::Describe;
@@ -494,6 +530,12 @@ pub mod switcher {
     const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
 
     const TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Supervisor for [`actor`].
+    pub fn supervisor<Args>(err: crate::Error) -> SupervisorStrategy<Args> {
+        warn!("switcher actor failed: {}", err);
+        SupervisorStrategy::Stop
+    }
 
     /// Actor that acts as switcher between acting as a coordinator server or
     /// participant.

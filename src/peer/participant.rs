@@ -531,7 +531,7 @@ pub mod consensus {
             }
         };
 
-        let response = if request.key.eq(query.key()) {
+        let response = if request.key.ne(query.key()) {
             error!(
                 "received an incorrect key in consensus run: want_key={}, consensus_key={}",
                 request.key,

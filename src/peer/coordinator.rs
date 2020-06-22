@@ -12,11 +12,11 @@ pub mod relay {
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
-    use heph::actor;
     use heph::actor::context::ThreadSafe;
     use heph::actor_ref::{RpcMessage, RpcResponse, SendError};
     use heph::net::TcpStream;
     use heph::timer::{Deadline, Timer};
+    use heph::{actor, Actor, NewActor, SupervisorStrategy};
     use log::{debug, trace, warn};
 
     use crate::buffer::{Buffer, WriteBuffer};
@@ -39,6 +39,53 @@ pub mod relay {
 
     /// An estimate of the largest size of an [`Request`] in bytes.
     const MAX_REQ_SIZE: usize = 300;
+
+    pub struct Supervisor<Arg> {
+        arg: Arg,
+        restarts_left: usize,
+    }
+
+    /// Maximum number of times the [`actor`] will be restarted.
+    const MAX_RESTARTS: usize = 5;
+
+    impl<Arg> Supervisor<Arg> {
+        /// Create a new `Supervisor`.
+        pub fn new(arg: Arg) -> Supervisor<Arg> {
+            Supervisor {
+                arg,
+                restarts_left: MAX_RESTARTS,
+            }
+        }
+    }
+
+    impl<Arg, NA, A> heph::Supervisor<NA> for Supervisor<Arg>
+    where
+        NA: NewActor<Argument = Arg, Error = !, Actor = A>,
+        A: Actor<Error = crate::Error>,
+        Arg: Clone,
+    {
+        fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
+            if self.restarts_left == 0 {
+                warn!("peer coordinator relay failed, stopping it: {}", err);
+                SupervisorStrategy::Stop
+            } else {
+                self.restarts_left -= 1;
+                warn!(
+                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}",
+                    err, self.restarts_left, MAX_RESTARTS
+                );
+                SupervisorStrategy::Restart(self.arg.clone())
+            }
+        }
+
+        fn decide_on_restart_error(&mut self, err: NA::Error) -> SupervisorStrategy<NA::Argument> {
+            err
+        }
+
+        fn second_restart_error(&mut self, err: NA::Error) {
+            err
+        }
+    }
 
     /// Actor that relays messages to a [`participant::dispatcher`] actor
     /// running on the `remote` node.
