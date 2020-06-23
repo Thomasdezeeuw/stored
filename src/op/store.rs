@@ -112,6 +112,17 @@ async fn consensus<M>(
     let mut prev_consensus_id = None;
 
     for _ in 0..MAX_CONSENSUS_TRIES {
+        if let Some(consensus_id) = prev_consensus_id {
+            // It could be that one of the peers aborted because the blob is
+            // already stored, which means its also store here. Check for that
+            // before proceeding.
+            if db_rpc(ctx, db_ref, key.clone())?.await? {
+                let abort_rpc = peers.abort_store_blob(ctx, consensus_id, key.clone());
+                abort_consensus(abort_rpc, consensus_id, &key).await;
+                return Ok(());
+            }
+        }
+
         // Phase one of 2PC: start the algorithm, letting the participants
         // (`peers`) know we want to store a blob.
         let (consensus_id, rpc) = peers.add_blob(ctx, key.clone());

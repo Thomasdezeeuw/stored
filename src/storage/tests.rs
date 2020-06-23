@@ -854,6 +854,7 @@ mod storage {
         );
 
         for (i, entry) in test_entries().iter().enumerate() {
+            assert!(storage.contains(entry.key()));
             let got = storage.lookup(entry.key()).unwrap().unwrap();
             let want = DATA[i];
             assert_eq!(got.bytes(), want);

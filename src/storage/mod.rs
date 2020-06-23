@@ -350,11 +350,17 @@ impl Storage {
         self.data_size() + self.index_size()
     }
 
-    /// Returns a reference to the `Blob` corresponding to the key, if stored.
+    /// Returns a reference to the `Blob` corresponding to `key`, if stored.
     pub fn lookup(&self, key: &Key) -> Option<BlobEntry> {
         self.blobs
             .get(key)
             .map(|(_, blob_entry)| blob_entry.clone())
+    }
+
+    /// Returns `true` if the storage contains a blob corresponding to `key`,
+    /// `false` otherwise.
+    pub fn contains(&self, key: &Key) -> bool {
+        self.blobs.contains_key(key)
     }
 
     /// Lookup an uncommitted blob.
