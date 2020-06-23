@@ -420,18 +420,21 @@ impl<Res> PeerRpc<Res> {
 
 /// `PeerRpc` data for a single peer.
 // TODO: better name.
+#[derive(Debug)]
 struct SinglePeerRpc<Res> {
     status: RpcStatus<Res>,
     address: SocketAddr,
 }
 
 impl<Res> SinglePeerRpc<Res> {
-    fn is_done(&self) -> bool {
-        matches!(self.status, RpcStatus::Done(..))
+    /// Returns `true` if the status is `InProgress`.
+    fn in_progress(&self) -> bool {
+        matches!(self.status, RpcStatus::InProgress(..))
     }
 }
 
 /// Status of a [`Rpc`] future in [`PeerRpc`].
+#[derive(Debug)]
 enum RpcStatus<Res> {
     /// Future is in progress.
     InProgress(Rpc<Result<Res, relay::Error>>),
@@ -468,10 +471,7 @@ impl<Res> Future for PeerRpc<Res> {
         if has_pending && !self.timer.has_passed() {
             return Poll::Pending;
         } else if has_pending {
-            warn!(
-                "peer RPC timed out: timed_out_peers={}",
-                self.timeout_peers()
-            );
+            warn!("peer RPC timed out: failed_peers={}", self.timeout_peers());
         }
 
         // If we reached this point all statuses should be `Done`.
@@ -497,12 +497,20 @@ struct DisplayTimedoutPeers<'a, Res> {
 
 impl<'a, Res> fmt::Display for DisplayTimedoutPeers<'a, Res> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let iter = self
+        let mut iter = self
             .peers
             .rpcs
             .iter()
-            .filter_map(|peer| peer.is_done().then_some(peer.address));
-        f.debug_list().entries(iter).finish()
+            .filter_map(|peer| peer.in_progress().then_some(peer.address));
+        f.write_str("[")?;
+        if let Some(address) = iter.next() {
+            address.fmt(f)?;
+        }
+        for address in iter {
+            f.write_str(", ")?;
+            address.fmt(f)?;
+        }
+        f.write_str("]")
     }
 }
 
