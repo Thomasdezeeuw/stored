@@ -111,6 +111,8 @@ async fn consensus<M>(
     // run previously.
     let mut prev_consensus_id = None;
 
+    // TODO: on a retry only let aborted/failed peers retry.
+
     for _ in 0..MAX_CONSENSUS_TRIES {
         if let Some(consensus_id) = prev_consensus_id {
             // It could be that one of the peers aborted because the blob is

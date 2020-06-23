@@ -1,16 +1,18 @@
 #![allow(dead_code, unused_macros)] // Note: not all tests use all functions/types.
 
 use std::future::Future;
-use std::io;
+use std::io::{self, Read};
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, Once};
-use std::task::{self, Poll};
-use std::thread::sleep;
+use std::task;
+use std::thread::{self, sleep};
 use std::time::Duration;
 
 use futures_util::task::noop_waker;
 use log::LevelFilter;
+use mio::{Events, Interest, Poll, Registry, Token, Waker};
+use mio_pipe::Receiver;
 
 /// Macro to create `start_stored` function to start a stored process.
 macro_rules! start_stored_fn {
@@ -24,6 +26,7 @@ macro_rules! start_stored_fn {
     ) => {
         /// Start the stored server.
         fn start_stored() -> $crate::util::Proc<'static> {
+            // Ensure the processes are shared between all tests in a module.
             lazy_static::lazy_static! {
                 static ref PROC: $crate::util::ProcLock = $crate::util::ProcLock::new(None);
             }
@@ -48,8 +51,8 @@ where
     let mut ctx = task::Context::from_waker(&waker);
     loop {
         match future.as_mut().poll(&mut ctx) {
-            Poll::Ready(result) => return result,
-            Poll::Pending => continue,
+            task::Poll::Ready(result) => return result,
+            task::Poll::Pending => continue,
         }
     }
 }
@@ -61,10 +64,10 @@ pub struct Proc<'a> {
 
 impl<'a> Drop for Proc<'a> {
     fn drop(&mut self) {
-        // We `lock` first to create a queue of tests that is done. After we got
-        // the lock we'll check if we're the last test. If we did this without
-        // holding the lock two tests currently ending could both determine
-        // there not the last test and never stop the process.
+        // We `lock` first to create a queue of tests that are done. After we
+        // got the lock we'll check if we're the last test. If we did this
+        // without holding the lock two tests currently ending could both
+        // determine there not the last test and never stop the process.
         let mut processes = self.lock.lock().unwrap();
         if Arc::strong_count(&self.processes) == 2 {
             // Take the (second to) last arc pointer to the process. Which means
@@ -99,18 +102,40 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
                 child.stderr(Stdio::null()).stdout(Stdio::null());
             } else {
                 child
-                    .stderr(Stdio::inherit())
-                    .stdout(Stdio::inherit())
+                    .stderr(Stdio::piped())
+                    .stdout(Stdio::piped())
                     .env("LOG_LEVEL", filter.to_string())
                     .env("LOG_TARGET", "stored");
             }
 
-            let child = child
+            let mut child = child
                 .stdin(Stdio::null())
                 .arg(conf_path)
                 .spawn()
                 .map(|inner| ChildCommand { inner })
                 .expect("unable to start server");
+
+            if filter != LevelFilter::Off {
+                let stdout = Receiver::from(child.inner.stdout.take().unwrap());
+                stdout.set_nonblocking(true).unwrap();
+                STDOUT.lock().unwrap().push(Some(stdout));
+
+                let stderr = Receiver::from(child.inner.stderr.take().unwrap());
+                stderr.set_nonblocking(true).unwrap();
+                STDERR.lock().unwrap().push(Some(stderr));
+
+                match &mut *WAKER.lock().unwrap() {
+                    waker @ None => {
+                        let poll = Poll::new().unwrap();
+                        let new_waker = Waker::new(poll.registry(), NEW_PROCESS).unwrap();
+                        thread::spawn(move || relay_process_output(poll));
+                        // Ensure it will add the new output.
+                        new_waker.wake().unwrap();
+                        *waker = Some(new_waker);
+                    }
+                    Some(waker) => waker.wake().unwrap(),
+                }
+            }
 
             processes.push(child);
         }
@@ -127,6 +152,91 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
         processes
     };
     Proc { lock, processes }
+}
+
+lazy_static::lazy_static! {
+    static ref STDOUT: ProcOutputs = Mutex::new(Vec::new());
+    static ref STDERR: ProcOutputs = Mutex::new(Vec::new());
+
+    static ref WAKER: Mutex<Option<Waker>> = Mutex::new(None);
+}
+
+// Use `Option` to keep index consistent.
+type ProcOutputs = Mutex<Vec<Option<Receiver>>>;
+
+const NEW_PROCESS: Token = Token(usize::max_value());
+const STDERR_START: usize = 100000;
+
+/// Using multiple processes with `Stdio::inherit` doesn't work properly as
+/// output will overwrite each other. So we start a new thread to serialise all
+/// the output for us.
+fn relay_process_output(mut poll: Poll) {
+    let mut events = Events::with_capacity(16);
+    let mut stdout_registered = 0;
+    let mut stderr_registered = 0;
+    let mut buf = [0; 4096];
+
+    while !STDOUT.lock().unwrap().is_empty() || !STDERR.lock().unwrap().is_empty() {
+        poll.poll(&mut events, None).unwrap();
+
+        for event in &events {
+            match event.token() {
+                NEW_PROCESS => {
+                    let registry = poll.registry();
+                    register_outputs(registry, &STDOUT, &mut stdout_registered, 0);
+                    register_outputs(registry, &STDERR, &mut stderr_registered, STDERR_START);
+                }
+                token if token.0 > STDERR_START => {
+                    let idx = token.0 - STDERR_START;
+                    handle_event(&STDERR, idx, &mut buf, io::stderr());
+                }
+                token => {
+                    handle_event(&STDERR, token.0, &mut buf, io::stdout());
+                }
+            }
+        }
+    }
+}
+
+fn register_outputs(
+    registry: &Registry,
+    outputs: &ProcOutputs,
+    registered: &mut usize,
+    start: usize,
+) {
+    for output in outputs.lock().unwrap().iter_mut().skip(*registered) {
+        let token = Token(start + *registered);
+        registry
+            .register(output.as_mut().unwrap(), token, Interest::READABLE)
+            .unwrap();
+        *registered += 1;
+    }
+}
+
+fn handle_event<W>(outputs: &ProcOutputs, idx: usize, buf: &mut [u8], mut w: W)
+where
+    W: io::Write,
+{
+    if let Some(output) = outputs.lock().unwrap().get_mut(idx) {
+        if let Some(out) = output {
+            loop {
+                match out.read(buf) {
+                    Ok(0) => {
+                        drop(output.take());
+                        return;
+                    }
+                    Ok(n) => {
+                        w.write_all(&buf[..n]).unwrap();
+                    }
+                    Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(err) => {
+                        eprintln!("error reading from process pipe: {}", err);
+                        return;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn build_stored() {
@@ -156,18 +266,6 @@ fn build_stored() {
 /// trying to bind to the same port again.
 pub struct ChildCommand {
     inner: Child,
-}
-
-impl ChildCommand {
-    /// Ensure the server process is still alive.
-    pub fn assert_ok(&self) {
-        const CHECK: libc::c_int = 0;
-        let id = self.inner.id();
-        if unsafe { libc::kill(id as libc::pid_t, CHECK) != 0 } {
-            let err = io::Error::last_os_error();
-            panic!("process failed: {}", err);
-        }
-    }
 }
 
 impl Drop for ChildCommand {
@@ -405,6 +503,9 @@ pub mod http {
         stream
             .read_to_end(&mut bytes)
             .expect("failed to read response (WouldBlock means time out/no response)");
+        if bytes.is_empty() {
+            eprintln!("Error: didn't read any response bytes");
+        }
 
         let mut responses = Vec::new();
         while !bytes.is_empty() {

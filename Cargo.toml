@@ -26,6 +26,8 @@ toml       = { version = "0.5.6", default-features = false }
 [dev-dependencies]
 http        = { version = "0.2.0", default-features = false }
 lazy_static = { version = "1.4.0", default-features = false }
+mio         = { version = "0.7.0", default-features = false, features = ["os-poll"] }
+mio-pipe    = { version = "0.1.1", default-features = false }
 serde_test  = { version = "1.0.110", default-features = false }
 
 [[bin]]
