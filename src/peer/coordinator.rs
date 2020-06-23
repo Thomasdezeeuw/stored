@@ -22,8 +22,8 @@ pub mod relay {
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
     use crate::peer::{
-        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_PARTICIPANT,
-        PARTICIPANT_MAGIC,
+        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
+        EXIT_PARTICIPANT, PARTICIPANT_MAGIC,
     };
     use crate::Key;
 
@@ -140,7 +140,10 @@ pub mod relay {
                     // Read one or more requests from the stream.
                     if relay_responses(&mut responses, &mut buf)? {
                         // Participant closed connection.
-                        return Ok(());
+                        return stream
+                            .write_all(EXIT_COORDINATOR)
+                            .await
+                            .map_err(|err| err.describe("writing exit message"));
                     }
                 }
                 // Read error.

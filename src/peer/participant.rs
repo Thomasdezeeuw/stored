@@ -125,6 +125,7 @@ pub mod dispatcher {
     use crate::peer::participant::{ConsensusPhase, RpcResponder};
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
+        EXIT_PARTICIPANT,
     };
     use crate::{db, Buffer};
 
@@ -174,7 +175,15 @@ pub mod dispatcher {
                     // Read one or more requests from the stream.
                     let close = read_requests(&mut ctx, &remote, &mut buf, &db_ref, &mut running)?;
                     if close {
-                        return Ok(());
+                        debug!("coordinator relay closing connection");
+                        while let Some(msg) = ctx.try_receive_next() {
+                            debug!("participant dispatcher received a message: {:?}", msg);
+                            write_response(&mut ctx, &mut stream, &mut buf, msg).await?;
+                        }
+                        return stream
+                            .write_all(EXIT_PARTICIPANT)
+                            .await
+                            .map_err(|err| err.describe("writing exit message"));
                     }
                 }
                 // Read error.
