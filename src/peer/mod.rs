@@ -167,6 +167,8 @@ pub enum Operation {
     AddBlob,
     /// Commit to storing the blob.
     CommitStoreBlob(SystemTime),
+    /// Abort storing the blob.
+    AbortStoreBlob,
     /// Remove the blob.
     RemoveBlob,
 }
@@ -253,6 +255,16 @@ impl Peers {
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
         self.rpc(ctx, id, coordinator::relay::CommitStoreBlob(key, timestamp))
+    }
+
+    /// Abort storing a blob.
+    pub fn abort_store_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        id: ConsensusId,
+        key: Key,
+    ) -> PeerRpc<()> {
+        self.rpc(ctx, id, coordinator::relay::AbortStoreBlob(key))
     }
 
     /*

@@ -165,6 +165,8 @@ pub mod relay {
         AddBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, Error>>),
         /// Commit to storing blob with [`Key`] at the provided timestamp.
         CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
+        /// Abort storing blob with [`Key`].
+        AbortStoreBlob(RpcMessage<(ConsensusId, Key), Result<(), Error>>),
         /// Remove the blob with [`Key`].
         ///
         /// Returns the peer's time at which the blob was added.
@@ -190,6 +192,12 @@ pub mod relay {
                     request.1,
                     Operation::CommitStoreBlob(request.2),
                     RpcResponder::CommitStoreBlob(response),
+                ),
+                Message::AbortStoreBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::AbortStoreBlob,
+                    RpcResponder::AbortStoreBlob(response),
                 ),
                 Message::RemoveBlob(RpcMessage { request, response }) => (
                     request.0,
@@ -266,6 +274,7 @@ pub mod relay {
 
     msg_types!(AddBlob(Key) -> SystemTime);
     msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
+    msg_types!(AbortStoreBlob(Key) -> ());
     msg_types!(RemoveBlob(Key) -> SystemTime);
 
     /// Start a participant connection to `remote` address.
@@ -382,6 +391,8 @@ pub mod relay {
         AddBlob(RpcResponse<Result<SystemTime, Error>>),
         /// Response for [`Message::CommitStoreBlob`].
         CommitStoreBlob(RpcResponse<Result<(), Error>>),
+        /// Response for [`Message::AbortStoreBlob`].
+        AbortStoreBlob(RpcResponse<Result<(), Error>>),
         /// Response for [`Message::RemoveBlob`].
         RemoveBlob(RpcResponse<Result<SystemTime, Error>>),
     }
@@ -399,7 +410,8 @@ pub mod relay {
                     };
                     rpc_response.respond(response)
                 }
-                RpcResponder::CommitStoreBlob(rpc_response) => {
+                RpcResponder::CommitStoreBlob(rpc_response)
+                | RpcResponder::AbortStoreBlob(rpc_response) => {
                     let response = match vote {
                         ConsensusVote::Commit(..) => Ok(()),
                         ConsensusVote::Abort => Err(Error::Abort),

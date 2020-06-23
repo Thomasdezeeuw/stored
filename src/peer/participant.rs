@@ -326,6 +326,7 @@ pub mod dispatcher {
     ) {
         debug!("received a request: {:?}", request);
 
+        // TODO: DRY this.
         match request.op {
             Operation::AddBlob => {
                 let consensus_id = request.consensus_id;
@@ -387,6 +388,35 @@ pub mod dispatcher {
                     }
                 } else {
                     warn!("can't find consensus actor for commit request: request_id={}, consensus_id={}",
+                        request.id, request.consensus_id);
+                    let response = Response {
+                        request_id: request.id,
+                        vote: ConsensusVote::Fail,
+                    };
+                    // We can always send ourselves a message.
+                    ctx.actor_ref().send(response).unwrap();
+                }
+            }
+            Operation::AbortStoreBlob => {
+                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                    // Relay the message to the correct actor.
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key,
+                        result: ConsensusVote::Abort,
+                    };
+                    if let Err(..) = actor_ref.send(msg) {
+                        // In case we fail we send ourself a message to relay to
+                        // the coordinator that the actor failed.
+                        let response = Response {
+                            request_id: request.id,
+                            vote: ConsensusVote::Fail,
+                        };
+                        // We can always send ourselves a message.
+                        ctx.actor_ref().send(response).unwrap();
+                    }
+                } else {
+                    warn!("can't find consensus actor for abort request: request_id={}, consensus_id={}",
                         request.id, request.consensus_id);
                     let response = Response {
                         request_id: request.id,
