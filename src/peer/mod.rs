@@ -113,7 +113,7 @@ fn start_relays(
             peer_address
         );
         let args = (peer_address, peers.clone(), server);
-        let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
+        let supervisor = coordinator::relay::Supervisor::new(args.clone());
         let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
@@ -359,7 +359,7 @@ impl Peers {
             peer_address
         );
         let args = (peer_address, self.clone(), server);
-        let supervisor = RestartSupervisor::new("coordinator::relay", args.clone());
+        let supervisor = coordinator::relay::Supervisor::new(args.clone());
         let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)

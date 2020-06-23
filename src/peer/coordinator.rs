@@ -6,8 +6,11 @@ pub mod relay {
     //! [coordinator relay actor]: actor()
 
     use std::collections::HashMap;
-    use std::io::{self, Write};
+    use std::future::Future;
+    use std::io;
     use std::net::SocketAddr;
+    use std::pin::Pin;
+    use std::task::{self, Poll};
     use std::time::{Duration, SystemTime};
 
     use futures_util::future::{select, Either};
@@ -33,7 +36,7 @@ pub mod relay {
 
     /// Time to wait between connection tries in [`connect_to_participant`], get
     /// doubled after each try.
-    const START_WAIT: Duration = Duration::from_millis(200);
+    const START_WAIT: Duration = Duration::from_millis(500);
 
     /// Timeout used for I/O.
     const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -66,16 +69,16 @@ pub mod relay {
         Arg: Clone,
     {
         fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
-            if self.restarts_left == 0 {
-                warn!("peer coordinator relay failed, stopping it: {}", err);
-                SupervisorStrategy::Stop
-            } else {
+            if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
                     "peer coordinator relay failed, restarting it ({}/{} restarts left): {}",
-                    err, self.restarts_left, MAX_RESTARTS
+                    self.restarts_left, MAX_RESTARTS, err
                 );
                 SupervisorStrategy::Restart(self.arg.clone())
+            } else {
+                warn!("peer coordinator relay failed, stopping it: {}", err);
+                SupervisorStrategy::Stop
             }
         }
 
@@ -292,12 +295,32 @@ pub mod relay {
         let mut i = 0;
         let mut stream = loop {
             match TcpStream::connect(ctx, remote) {
-                Ok(stream) => break stream,
+                Ok(mut stream) => {
+                    // Work around https://github.com/Thomasdezeeuw/heph/issues/287.
+                    //
+                    // We've got a connection, but it might not be connected
+                    // yet. So first we'll de-schedule ourselves, waiting for an
+                    // event from the OS.
+                    yield_once().await;
+                    // After that we try to write the connection magic to test
+                    // the connection.
+                    match stream.write_all(PARTICIPANT_MAGIC).await {
+                        Ok(()) => break stream,
+                        //Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => continue,
+                        // Not yet connected, try again.
+                        Err(err) => {
+                            warn!(
+                                "failed to connect to peer, but trying again ({}/{} tries): {}",
+                                i, CONNECT_TRIES, err
+                            );
+                        }
+                    }
+                }
                 Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
                 Err(err) => {
                     warn!(
                         "failed to connect to peer, but trying again ({}/{} tries): {}",
-                        err, i, CONNECT_TRIES
+                        i, CONNECT_TRIES, err
                     );
                 }
             }
@@ -311,8 +334,6 @@ pub mod relay {
 
         // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
         let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
-        // The connection magic to request the node to act as participant.
-        wbuf.write_all(PARTICIPANT_MAGIC).unwrap();
         // The address of the `coordinator::server`.
         serde_json::to_writer(&mut wbuf, server)
             .map_err(|err| io::Error::from(err).describe("serializing server address"))?;
@@ -327,6 +348,28 @@ pub mod relay {
             Ok(Err(err)) => return Err(err.describe("writing peer connection setup")),
             Err(err) => {
                 return Err(io::Error::from(err).describe("timeout writing peer connection setup"))
+            }
+        }
+    }
+
+    const fn yield_once() -> YieldOnce {
+        YieldOnce(false)
+    }
+
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+            if self.0 {
+                // Yielded already
+                Poll::Ready(())
+            } else {
+                // Not yet yielded.
+                self.0 = true;
+                ctx.waker().wake_by_ref();
+                Poll::Pending
             }
         }
     }
