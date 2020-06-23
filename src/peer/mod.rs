@@ -127,6 +127,11 @@ fn start_relays(
     }
 }
 
+/// Exit message send by coordinator for a clean shutdown.
+const EXIT_COORDINATOR: &[u8] = b"EXIT COORDINATOR";
+/// Exit message send by participant for a clean shutdown.
+const EXIT_PARTICIPANT: &[u8] = b"EXIT PARTICIPANT";
+
 /// Id of a consensus algorithm run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[repr(transparent)]

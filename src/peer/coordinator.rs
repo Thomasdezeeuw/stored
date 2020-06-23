@@ -22,7 +22,8 @@ pub mod relay {
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
     use crate::peer::{
-        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, PARTICIPANT_MAGIC,
+        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_PARTICIPANT,
+        PARTICIPANT_MAGIC,
     };
     use crate::Key;
 
@@ -109,6 +110,19 @@ pub mod relay {
         let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
         read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
 
+        // In case the participant send an exit message along with the known
+        // peers already.
+        if !buf.is_empty() {
+            if relay_responses(&mut responses, &mut buf)? {
+                // Participant closed connection.
+                return Ok(());
+            }
+        }
+
+        // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
+
+        // FIXME: rather then restarting this actor on connection errors, try to
+        // reconnect ourselves this way we can keep `responses` `HashMap` alive.
         loop {
             match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
                 Either::Left((msg, _)) => {
@@ -118,26 +132,20 @@ pub mod relay {
                     write_message(&mut ctx, &mut stream, wbuf, &mut responses, req_id, msg).await?;
                 }
                 Either::Right((Ok(0), _)) => {
-                    debug!("peer participant closed connection");
-                    while let Some(msg) = ctx.try_receive_next() {
-                        // Write any response left in our inbox.
-                        // TODO: ignore errors here since the other side is
-                        // already disconnected?
-                        debug!("coordinator relay received a message: {:?}", msg);
-                        let req_id = next_id(&mut req_id);
-                        let wbuf = buf.split_write(MAX_REQ_SIZE).1;
-                        write_message(&mut ctx, &mut stream, wbuf, &mut responses, req_id, msg)
-                            .await?;
-                    }
-                    return Ok(());
+                    // Return an error to restart this actor.
+                    return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
+                        .describe("participant dispatcher closed connection unexpectedly"));
                 }
                 Either::Right((Ok(_), _)) => {
                     // Read one or more requests from the stream.
-                    relay_responses(&mut responses, &mut buf)?;
+                    if relay_responses(&mut responses, &mut buf)? {
+                        // Participant closed connection.
+                        return Ok(());
+                    }
                 }
                 // Read error.
                 Either::Right((Err(err), _)) => {
-                    return Err(err.describe("reading from peer connection"))
+                    return Err(err.describe("reading from peer connection"));
                 }
             }
         }
@@ -428,10 +436,13 @@ pub mod relay {
 
     /// Read one or more requests in the `buf`fer and relay the responses to the
     /// correct actor in `responses`.
+    ///
+    /// Return `Ok(true)` if the participant wants to close the connection.
+    /// Returns `Ok(false)` if more responses are to be expected.
     fn relay_responses(
         responses: &mut HashMap<usize, RpcResponder>,
         buf: &mut Buffer,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<bool> {
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
 
         loop {
@@ -457,7 +468,16 @@ pub mod relay {
                 // Read a partial response, we'll get it next time.
                 Some(Err(ref err)) if err.is_eof() => break,
                 Some(Err(err)) => {
-                    return Err(io::Error::from(err).describe("deserializing peer response"))
+                    let bytes_processed = de.byte_offset();
+                    buf.processed(bytes_processed);
+
+                    if buf.as_bytes() == EXIT_PARTICIPANT {
+                        // Participant wants to close the connection.
+                        buf.processed(EXIT_PARTICIPANT.len());
+                        return Ok(true);
+                    } else {
+                        return Err(io::Error::from(err).describe("deserialising peer response"));
+                    }
                 }
                 // No more responses.
                 None => break,
@@ -466,7 +486,7 @@ pub mod relay {
 
         let bytes_processed = de.byte_offset();
         buf.processed(bytes_processed);
-        Ok(())
+        Ok(false)
     }
 }
 

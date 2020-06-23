@@ -123,7 +123,9 @@ pub mod dispatcher {
     use crate::error::Describe;
     use crate::peer::participant::consensus::{self, VoteResult};
     use crate::peer::participant::{ConsensusPhase, RpcResponder};
-    use crate::peer::{ConsensusId, ConsensusVote, Operation, Peers, Request, Response};
+    use crate::peer::{
+        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
+    };
     use crate::{db, Buffer};
 
     /// Timeout used for I/O between peers.
@@ -156,6 +158,8 @@ pub mod dispatcher {
         write_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
         let mut running = HashMap::new();
 
+        // TODO: close connection cleanly, sending `EXIT_PARTICIPANT`.
+
         loop {
             match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
                 Either::Left((msg, _)) => {
@@ -163,21 +167,15 @@ pub mod dispatcher {
                     write_response(&mut ctx, &mut stream, &mut buf, msg).await?;
                 }
                 Either::Right((Ok(0), _)) => {
-                    debug!("peer coordinator closed connection");
-                    while let Some(msg) = ctx.try_receive_next() {
-                        // Write any response left in our inbox.
-                        // TODO: ignore errors here since the other side is
-                        // already disconnected?
-                        debug!(
-                            "participant dispatcher dropping message (connection closed): {:?}",
-                            msg
-                        );
-                    }
-                    return Ok(());
+                    return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
+                        .describe("coordinator relay closed connection unexpectedly"));
                 }
                 Either::Right((Ok(_), _)) => {
                     // Read one or more requests from the stream.
-                    read_requests(&mut ctx, &remote, &mut buf, &db_ref, &mut running)?;
+                    let close = read_requests(&mut ctx, &remote, &mut buf, &db_ref, &mut running)?;
+                    if close {
+                        return Ok(());
+                    }
                 }
                 // Read error.
                 Either::Right((Err(err), _)) => return Err(err.describe("reading from connection")),
@@ -270,13 +268,16 @@ pub mod dispatcher {
 
     /// Read one or more requests in the `buf`fer and start a [`consensus`] actor
     /// for each.
+    ///
+    /// Return `Ok(true)` if the coordinator wants to close the connection.
+    /// Returns `Ok(false)` if more requests are to be expected.
     fn read_requests(
         ctx: &mut actor::Context<Response, ThreadSafe>,
         remote: &SocketAddr,
         buf: &mut Buffer,
         db_ref: &ActorRef<db::Message>,
         running: &mut HashMap<ConsensusId, ActorRef<VoteResult>>,
-    ) -> crate::Result<()> {
+    ) -> crate::Result<bool> {
         // TODO: reuse the `Deserializer`, it allocates scratch memory.
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Request>();
 
@@ -285,16 +286,25 @@ pub mod dispatcher {
                 Ok(request) => handle_request(ctx, remote, db_ref, running, request),
                 Err(err) if err.is_eof() => break,
                 Err(err) => {
-                    // TODO: return an error here to the coordinator in case of
-                    // an syntax error.
-                    return Err(io::Error::from(err).describe("deserializing peer request"));
+                    let bytes_processed = de.byte_offset();
+                    buf.processed(bytes_processed);
+
+                    if buf.as_bytes() == EXIT_COORDINATOR {
+                        // Participant wants to close the connection.
+                        buf.processed(EXIT_COORDINATOR.len());
+                        return Ok(true);
+                    } else {
+                        // TODO: return an error here to the coordinator in case of
+                        // an syntax error.
+                        return Err(io::Error::from(err).describe("deserialising peer request"));
+                    }
                 }
             }
         }
 
         let bytes_processed = de.byte_offset();
         buf.processed(bytes_processed);
-        Ok(())
+        Ok(false)
     }
 
     /// Handle a single request.
