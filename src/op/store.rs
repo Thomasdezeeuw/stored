@@ -116,26 +116,30 @@ async fn consensus<M>(
     for _ in 0..MAX_CONSENSUS_TRIES {
         if let Some(consensus_id) = prev_consensus_id {
             // It could be that one of the peers aborted because the blob is
-            // already stored, which means its also store here. Check for that
-            // before proceeding.
+            // already stored, which means its also store on this node. Check
+            // for that before proceeding.
             if db_rpc(ctx, db_ref, key.clone())?.await? {
+                // Blob already stored. Abort the old 2PC query (from the
+                // previous iteration).
                 let abort_rpc = peers.abort_store_blob(ctx, consensus_id, key.clone());
                 abort_consensus(abort_rpc, consensus_id, &key).await;
+                // Blob is stored so we can return Ok.
                 return Ok(());
             }
         }
 
-        // Phase one of 2PC: start the algorithm, letting the participants
-        // (`peers`) know we want to store a blob.
+        // Phase one of 2PC: start the algorithm, asking the participants
+        // (`peers`) to add the blob to there storage.
         let (consensus_id, rpc) = peers.add_blob(ctx, key.clone());
         debug!(
-            "requesting peers to store blob: consensus_id={}, key={}",
+            "requesting peers to add blob: consensus_id={}, key={}",
             consensus_id,
             query.key()
         );
+        // Wait for the results.
         let results = rpc.await;
 
-        // If we failed a previous run we want to abort it now.
+        // If we failed a previous run we want to start aborting it now.
         // NOTE: this  must happen after the adding of the blob above to ensure
         // the add blob store query can be reused.
         let abort_rpc = prev_consensus_id
@@ -165,13 +169,14 @@ async fn consensus<M>(
             consensus_id, key, committed, aborted, failed
         );
 
-        // Phase two of 2PC: let the participants know to commit to storing the
-        // blob.
+        // Phase two of 2PC: ask the participants to commit to storing the blob.
         debug!(
             "requesting peers to commit to storing blob: consensus_id={}, key={}",
             consensus_id,
             query.key()
         );
+        // Select a single timestamp to use for all nodes, when the blob is
+        // officially stored.
         let timestamp = select_timestamp(&results);
         let rpc = peers.commit_to_store_blob(ctx, consensus_id, key.clone(), timestamp);
 
@@ -180,6 +185,7 @@ async fn consensus<M>(
             abort_consensus(abort_rpc, prev_consensus_id.take().unwrap(), &key).await;
         }
 
+        // Await the commit results.
         let results = rpc.await;
         let (committed, aborted, failed) = count_consensus_votes(&results);
         if aborted > 0 || failed > 0 {
@@ -201,10 +207,11 @@ async fn consensus<M>(
         );
 
         // NOTE: Its crucial here that at least a single peer received the
-        // message to commit before the coordinator (this) commits to adding the
-        // blob. If we would commit before sending a message to at least a
-        // single peer we could crash before doing so and after a restart be the
-        // only peer that has the blob stored, i.e. be in an invalid state.
+        // message to commit before the coordinator (this node) commits to
+        // storing the blob. If we would commit before sending a message to at
+        // least a single peer we could crash before doing so and after a
+        // restart be the only peer that has the blob stored, i.e. be in an
+        // inconsistent state.
         //
         // TODO: optimisation: check `rpc` to see if we got a single `Ok`
         // response and then start the commit process ourselves, then we can
@@ -219,14 +226,14 @@ async fn consensus<M>(
     abort_consensus(abort_rpc, consensus_id, &key).await;
 
     error!(
-        "failed {} consensus algorithm runs: key={}",
+        "failed {} storing consensus algorithm runs: key={}",
         MAX_CONSENSUS_TRIES, key
     );
     // Always return an error if we failed to store the blob.
     return abort(ctx, db_ref, query).await.and(Err(()));
 }
 
-/// Await the results in `abort_rpc`.
+/// Await the results in `abort_rpc`, logging the results.
 async fn abort_consensus(abort_rpc: PeerRpc<()>, consensus_id: ConsensusId, key: &Key) {
     let results = abort_rpc.await;
     let (committed, aborted, failed) = count_consensus_votes(&results);
