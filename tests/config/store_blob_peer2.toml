@@ -1,4 +1,4 @@
-path = "/tmp/stored_add_blob_tests2.db"
+path = "/tmp/stored_store_blob_tests2.db"
 
 [http]
 address = "127.0.0.1:10002"

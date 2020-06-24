@@ -49,10 +49,10 @@ macro_rules! tests {
     };
 
     (_db_paths: $( $n: tt ),*) => {
-        &[ $( concat!("/tmp/stored_add_blob_tests", $n, ".db") ),* ];
+        &[ $( concat!("/tmp/stored_store_blob_tests", $n, ".db") ),* ];
     };
     (_conf_paths: $( $n: tt ),*) => {
-        &[ $( concat!("tests/config/add_blob_peer", $n, ".toml") ),* ];
+        &[ $( concat!("tests/config/store_blob_peer", $n, ".toml") ),* ];
     };
 }
 
