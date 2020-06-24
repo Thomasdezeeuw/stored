@@ -504,7 +504,7 @@ pub mod http {
             .read_to_end(&mut bytes)
             .expect("failed to read response (WouldBlock means time out/no response)");
         if bytes.is_empty() {
-            eprintln!("Error: didn't read any response bytes");
+            panic!("failed to read any response bytes");
         }
 
         let mut responses = Vec::new();

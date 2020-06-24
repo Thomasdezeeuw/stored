@@ -72,7 +72,7 @@ pub mod relay {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}",
+                    "coordinator relay failed, restarting it ({}/{} restarts left): {}",
                     self.restarts_left, MAX_RESTARTS, err
                 );
                 SupervisorStrategy::Restart(self.arg.clone())
@@ -292,7 +292,7 @@ pub mod relay {
             remote
         );
         let mut wait = START_WAIT;
-        let mut i = 0;
+        let mut i = 1;
         let mut stream = loop {
             match TcpStream::connect(ctx, remote) {
                 Ok(mut stream) => {
@@ -301,12 +301,11 @@ pub mod relay {
                     // We've got a connection, but it might not be connected
                     // yet. So first we'll de-schedule ourselves, waiting for an
                     // event from the OS.
-                    yield_once().await;
+                    wait_for_wakeup().await;
                     // After that we try to write the connection magic to test
                     // the connection.
                     match stream.write_all(PARTICIPANT_MAGIC).await {
                         Ok(()) => break stream,
-                        //Err(ref err) if err.kind() == io::ErrorKind::BrokenPipe => continue,
                         // Not yet connected, try again.
                         Err(err) => {
                             warn!(
@@ -352,23 +351,25 @@ pub mod relay {
         }
     }
 
-    const fn yield_once() -> YieldOnce {
+    /// Returns a [`Future`] that yields once, waiting for another event to wake
+    /// up the future.
+    const fn wait_for_wakeup() -> YieldOnce {
         YieldOnce(false)
     }
 
+    /// [`Future`] that return `Poll::Pending` when polled the first time.
     struct YieldOnce(bool);
 
     impl Future for YieldOnce {
         type Output = ();
 
-        fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        fn poll(mut self: Pin<&mut Self>, _: &mut task::Context) -> Poll<Self::Output> {
             if self.0 {
-                // Yielded already
+                // Yielded already.
                 Poll::Ready(())
             } else {
                 // Not yet yielded.
                 self.0 = true;
-                ctx.waker().wake_by_ref();
                 Poll::Pending
             }
         }
