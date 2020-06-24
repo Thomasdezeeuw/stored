@@ -56,8 +56,10 @@ doc!(
 impl Config {
     /// Read `Config` from the file at `path`.
     pub fn from_file(path: &str) -> io::Result<Config> {
-        let mut file = File::open(path)
-            .map_err(|err| io::Error::new(err.kind(), "unable to open configuration file"))?;
+        let mut file = File::open(path).map_err(|err| {
+            let msg = format!("unable to open configuration file `{}`: {}", path, err);
+            io::Error::new(err.kind(), msg)
+        })?;
         let mut buf = Vec::new();
         file.read_to_end(&mut buf)?;
         toml::from_slice(&buf).map_err(|err| {

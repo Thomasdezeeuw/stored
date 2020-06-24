@@ -55,7 +55,7 @@ macro_rules! map_err {
 fn try_main() -> Result<(), ExitCode> {
     let config_path = parse_args()?;
     let config = Config::from_file(&config_path)
-        .map_err(map_err!("error opening configuration file: {}"))?;
+        .map_err(map_err!("error reading configuration file: {}"))?;
 
     let mut runtime = Runtime::new().map_err(map_err!("error creating Heph runtime: {}"))?;
 
