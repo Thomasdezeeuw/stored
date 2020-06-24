@@ -343,11 +343,8 @@ pub mod relay {
             server,
         );
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
-            Ok(Ok(())) => Ok(stream),
-            Ok(Err(err)) => return Err(err.describe("writing peer connection setup")),
-            Err(err) => {
-                return Err(io::Error::from(err).describe("timeout writing peer connection setup"))
-            }
+            Ok(()) => Ok(stream),
+            Err(err) => return Err(err.describe("writing peer connection setup")),
         }
     }
 
@@ -387,15 +384,12 @@ pub mod relay {
         trace!("coordinator relay reading known peers from connection");
         loop {
             match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
-                Ok(Ok(0)) => {
+                Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading known peers"))
                 }
-                Ok(Ok(..)) => {}
-                Ok(Err(err)) => return Err(err.describe("reading known peers")),
-                Err(err) => {
-                    return Err(io::Error::from(err).describe("timeout reading known peers"))
-                }
+                Ok(..) => {}
+                Err(err) => return Err(err.describe("reading known peers")),
             }
 
             // TODO: reuse `Deserializer` in relay actor, would require us to
@@ -484,12 +478,11 @@ pub mod relay {
         serde_json::to_writer(&mut wbuf, &request)
             .map_err(|err| io::Error::from(err).describe("serializing request"))?;
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&wbuf.as_bytes())).await {
-            Ok(Ok(())) => {
+            Ok(()) => {
                 responses.insert(id, response);
                 Ok(())
             }
-            Ok(Err(err)) => Err(err.describe("reading known peers")),
-            Err(err) => Err(io::Error::from(err).describe("timeout reading known peers")),
+            Err(err) => Err(err.describe("reading known peers")),
         }
     }
 
@@ -664,13 +657,8 @@ pub mod server {
                         // found.
                         let f = Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(&NO_BLOB));
                         match f.await {
-                            Ok(Ok(())) => continue,
-                            Ok(Err(err)) => return Err(err.describe("writing no blob length")),
-                            Err(err) => {
-                                return Err(
-                                    io::Error::from(err).describe("timeout writing no blob length")
-                                )
-                            }
+                            Ok(()) => continue,
+                            Err(err) => return Err(err.describe("writing no blob length")),
                         }
                     }
                     Err(()) => {
@@ -693,30 +681,21 @@ pub mod server {
                 // https://github.com/rust-lang/futures-rs/pull/2181.
                 let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
                 match Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(&length)).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => return Err(err.describe("writing blob length")),
-                    Err(err) => {
-                        return Err(io::Error::from(err).describe("timeout writing blob length"))
-                    }
+                    Ok(()) => {}
+                    Err(err) => return Err(err.describe("writing blob length")),
                 }
                 let f = Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(blob.bytes()));
                 match f.await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) => return Err(err.describe("writing blob bytes")),
-                    Err(err) => {
-                        return Err(io::Error::from(err).describe("timeout writing blob bytes"))
-                    }
+                    Ok(()) => {}
+                    Err(err) => return Err(err.describe("writing blob bytes")),
                 }
             }
 
             // Read some more bytes.
             match Deadline::timeout(&mut ctx, ALIVE_TIMEOUT, buf.read_from(&mut stream)).await {
-                Ok(Ok(0)) => return Ok(()),
-                Ok(Ok(..)) => {}
-                Ok(Err(err)) => return Err(err.describe("reading from socket")),
-                Err(err) => {
-                    return Err(io::Error::from(err).describe("timeout reading from socket"))
-                }
+                Ok(0) => return Ok(()),
+                Ok(..) => {}
+                Err(err) => return Err(err.describe("reading from socket")),
             }
         }
     }

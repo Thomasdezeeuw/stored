@@ -132,23 +132,17 @@ pub async fn actor(
         let start = Instant::now();
         let response = match result {
             // Parsed a request, now route and process it.
-            Ok(Ok(true)) => {
-                route_request(&mut ctx, &mut db_ref, &peers, &mut conn, &request).await?
-            }
+            Ok(true) => route_request(&mut ctx, &mut db_ref, &peers, &mut conn, &request).await?,
             // Read all requests on the stream, so this actor's work is done.
-            Ok(Ok(false)) => break,
+            Ok(false) => break,
             // Try operator returns the I/O errors.
-            Ok(Err(err)) => {
-                Response::for_error(err).map_err(|err| err.describe("reading request"))?
-            }
-            Err(err) => return Err(io::Error::from(err).describe("timeout reading request")),
+            Err(err) => Response::for_error(err).map_err(|err| err.describe("reading request"))?,
         };
 
         let result = Deadline::timeout(&mut ctx, TIMEOUT, conn.write_response(&response)).await;
         match result {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err.describe("writing HTTP response")),
-            Err(err) => return Err(io::Error::from(err).describe("timeout writing HTTP response")),
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("writing HTTP response")),
         }
 
         // TODO: don't log invalid/partial requests.
@@ -627,17 +621,14 @@ async fn read_blob(
         let want_n = body_length - conn.buf.len();
         let read_n = conn.buf.read_n_from(&mut conn.stream, want_n);
         match Deadline::timeout(ctx, TIMEOUT, read_n).await {
-            Ok(Ok(())) => {}
-            Ok(Err(ref err)) if err.kind() == io::ErrorKind::UnexpectedEof => {
+            Ok(()) => {}
+            Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 return Ok(Status::Return(
                     ResponseKind::BadRequest("Incomplete blob"),
                     true,
                 ))
             }
-            Ok(Err(err)) => return Err(err.describe("reading blob from HTTP body")),
-            Err(err) => {
-                return Err(io::Error::from(err).describe("timeout reading blob from HTTP body"))
-            }
+            Err(err) => return Err(err.describe("reading blob from HTTP body")),
         }
     }
 

@@ -221,17 +221,12 @@ pub mod dispatcher {
             }
 
             match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
-                Ok(Ok(0)) => {
+                Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading peer's server address"));
                 }
-                Ok(Ok(..)) => {}
-                Ok(Err(err)) => return Err(err.describe("reading peer's server address")),
-                Err(err) => {
-                    return Err(
-                        io::Error::from(err).describe("timeout reading peer's server address")
-                    );
-                }
+                Ok(..) => {}
+                Err(err) => return Err(err.describe("reading peer's server address")),
             }
         }
     }
@@ -251,9 +246,8 @@ pub mod dispatcher {
         serde_json::to_writer(&mut wbuf, &addresses)
             .map_err(|err| io::Error::from(err).describe("serializing peers addresses"))?;
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err.describe("writing known peers")),
-            Err(err) => Err(io::Error::from(err).describe("timeout writing known peers")),
+            Ok(()) => Ok(()),
+            Err(err) => Err(err.describe("writing known peers")),
         }
     }
 
@@ -269,9 +263,8 @@ pub mod dispatcher {
         serde_json::to_writer(&mut wbuf, &response)
             .map_err(|err| io::Error::from(err).describe("serializing response"))?;
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(err)) => Err(err.describe("writing response")),
-            Err(err) => Err(io::Error::from(err).describe("timeout writing response")),
+            Ok(()) => Ok(()),
+            Err(err) => Err(err.describe("writing response")),
         }
     }
 
@@ -438,10 +431,10 @@ pub mod consensus {
     //! Module with consensus actor.
 
     use std::convert::TryInto;
-    use std::io;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime};
 
+    use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
@@ -501,11 +494,8 @@ pub mod consensus {
 
         trace!("writing connection magic");
         match Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(COORDINATOR_MAGIC)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err.describe("writing connection magic")),
-            Err(err) => {
-                return Err(io::Error::from(err).describe("timeout writing connection magic"))
-            }
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("writing connection magic")),
         }
 
         let read_blob = read_blob(&mut ctx, &mut stream, &mut buf, &key);
@@ -555,15 +545,16 @@ pub mod consensus {
         };
 
         // Phase two: commit or abort the query.
-        let recv_msg = Timer::timeout(&mut ctx, RESULT_TIMEOUT).wrap(ctx.receive_next());
-        let vote_result = match recv_msg.await {
-            Ok(vote_result) => {
+        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let f = select(ctx.receive_next(), timer);
+        let vote_result = match f.await {
+            Either::Left((vote_result, ..)) => {
                 // Update the `RpcResponder.id` to ensure we're responding to
                 // the correct request.
                 responder.id = vote_result.request_id;
                 vote_result
             }
-            Err(..) => {
+            Either::Right(..) => {
                 warn!("failed to get consensus result in time, considering it failed");
                 let _ = op::store::abort(&mut ctx, &mut db_ref, query).await;
                 return Ok(());
@@ -615,9 +606,8 @@ pub mod consensus {
 
         // Write the request for the key.
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(request_key.as_bytes())).await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err.describe("writing request key")),
-            Err(err) => return Err(io::Error::from(err).describe("timeout writing request key")),
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("writing request key")),
         }
 
         // Don't want to include the length of the blob in the key calculation.
@@ -626,9 +616,8 @@ pub mod consensus {
         // Read at least the length of the blob.
         let f = Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut calc, BLOB_LENGTH_LEN));
         match f.await {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => return Err(err.describe("reading blob length")),
-            Err(err) => return Err(io::Error::from(err).describe("timeout reading blob length")),
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("reading blob length")),
         }
 
         // Safety: we just read at least `BLOB_LENGTH_LEN` bytes, so this won't
@@ -650,9 +639,8 @@ pub mod consensus {
             let want_n = blob_length - buf.len() as u64;
             let read_n = buf.read_n_from(&mut calc, want_n as usize);
             match Deadline::timeout(ctx, IO_TIMEOUT, read_n).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => return Err(err.describe("reading blob")),
-                Err(err) => return Err(io::Error::from(err).describe("timeout reading blob")),
+                Ok(()) => {}
+                Err(err) => return Err(err.describe("reading blob")),
             }
         }
 
