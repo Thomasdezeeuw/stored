@@ -9,6 +9,7 @@ struct TestPeer {
 }
 
 mod distributed {
+    mod remove_blob;
     mod startup;
     mod store_blob;
 }

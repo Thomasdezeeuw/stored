@@ -37,11 +37,10 @@ use httparse::EMPTY_HEADER;
 use log::{debug, error, trace, warn};
 
 use crate::buffer::{Buffer, WriteBuffer};
-use crate::db::{self, RemoveBlobResponse};
 use crate::error::Describe;
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
-use crate::{op, Key};
+use crate::{db, op, Key};
 
 /// Setup the HTTP listener.
 ///
@@ -527,7 +526,7 @@ async fn route_request(
                 Ok(key) => Ok(Response {
                     is_head: false,
                     should_close: false,
-                    kind: remove_blob(ctx, db_ref, key).await,
+                    kind: remove_blob(ctx, db_ref, peers, key).await,
                 }),
                 Err(err) => Ok(Response {
                     is_head: false,
@@ -668,42 +667,13 @@ async fn retrieve_blob(
 async fn remove_blob(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
+    peers: &Peers,
     key: Key,
 ) -> ResponseKind {
-    debug!("handling remove blob request");
-    match db_ref.rpc(ctx, key) {
-        Ok(rpc) => match rpc.await {
-            Ok(result) => match result {
-                RemoveBlobResponse::Query(query) => {
-                    match db_ref.rpc(ctx, (query, SystemTime::now())) {
-                        Ok(rpc) => match rpc.await {
-                            Ok(removed_at) => ResponseKind::Removed(removed_at),
-                            Err(err) => {
-                                error!("error waiting for RPC response from database: {}", err);
-                                ResponseKind::ServerError
-                            }
-                        },
-                        Err(err) => {
-                            error!("error making RPC call to database: {}", err);
-                            ResponseKind::ServerError
-                        }
-                    }
-                }
-                RemoveBlobResponse::NotStored(Some(removed_at)) => {
-                    ResponseKind::Removed(removed_at)
-                }
-                // Blob was never stored.
-                RemoveBlobResponse::NotStored(None) => ResponseKind::NotFound,
-            },
-            Err(err) => {
-                error!("error waiting for RPC response from database: {}", err);
-                ResponseKind::ServerError
-            }
-        },
-        Err(err) => {
-            error!("error making RPC call to database: {}", err);
-            ResponseKind::ServerError
-        }
+    match op::remove_blob(ctx, db_ref, peers, key).await {
+        Ok(Some(removed_at)) => ResponseKind::Removed(removed_at),
+        Ok(None) => ResponseKind::NotFound,
+        Err(()) => ResponseKind::ServerError,
     }
 }
 

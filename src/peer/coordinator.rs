@@ -170,14 +170,15 @@ pub mod relay {
         CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
         /// Abort storing blob with [`Key`].
         AbortStoreBlob(RpcMessage<(ConsensusId, Key), Result<(), Error>>),
+
         /// Remove the blob with [`Key`].
         ///
-        /// Returns the peer's time at which the blob was added.
+        /// Returns the peer's time at which the blob was remove.
         RemoveBlob(RpcMessage<(ConsensusId, Key), Result<SystemTime, Error>>),
-        /*
-        /// Commit to removing blob with [`Key`].
+        /// Commit to removing blob with [`Key`] at the provided timestamp.
         CommitRemoveBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
-        */
+        /// Abort removing blob with [`Key`].
+        AbortRemoveBlob(RpcMessage<(ConsensusId, Key), Result<(), Error>>),
     }
 
     impl Message {
@@ -207,6 +208,18 @@ pub mod relay {
                     request.1,
                     Operation::RemoveBlob,
                     RpcResponder::RemoveBlob(response),
+                ),
+                Message::CommitRemoveBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::CommitRemoveBlob(request.2),
+                    RpcResponder::CommitRemoveBlob(response),
+                ),
+                Message::AbortRemoveBlob(RpcMessage { request, response }) => (
+                    request.0,
+                    request.1,
+                    Operation::AbortRemoveBlob,
+                    RpcResponder::AbortRemoveBlob(response),
                 ),
             };
             let request = Request {
@@ -279,6 +292,8 @@ pub mod relay {
     msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
     msg_types!(AbortStoreBlob(Key) -> ());
     msg_types!(RemoveBlob(Key) -> SystemTime);
+    msg_types!(CommitRemoveBlob(Key, SystemTime) -> ());
+    msg_types!(AbortRemoveBlob(Key) -> ());
 
     /// Start a participant connection to `remote` address.
     async fn connect_to_participant(
@@ -431,15 +446,19 @@ pub mod relay {
         CommitStoreBlob(RpcResponse<Result<(), Error>>),
         /// Response for [`Message::AbortStoreBlob`].
         AbortStoreBlob(RpcResponse<Result<(), Error>>),
+
         /// Response for [`Message::RemoveBlob`].
         RemoveBlob(RpcResponse<Result<SystemTime, Error>>),
+        /// Response for [`Message::CommitRemoveBlob`].
+        CommitRemoveBlob(RpcResponse<Result<(), Error>>),
+        /// Response for [`Message::AbortRemoveBlob`].
+        AbortRemoveBlob(RpcResponse<Result<(), Error>>),
     }
 
     impl RpcResponder {
         /// Relay the `vote` to the RPC callee.
         fn respond(self, vote: ConsensusVote) -> Result<(), SendError> {
             match self {
-                // Both have the same `RpcResponse` type.
                 RpcResponder::AddBlob(rpc_response) | RpcResponder::RemoveBlob(rpc_response) => {
                     let response = match vote {
                         ConsensusVote::Commit(timestamp) => Ok(timestamp),
@@ -449,7 +468,9 @@ pub mod relay {
                     rpc_response.respond(response)
                 }
                 RpcResponder::CommitStoreBlob(rpc_response)
-                | RpcResponder::AbortStoreBlob(rpc_response) => {
+                | RpcResponder::AbortStoreBlob(rpc_response)
+                | RpcResponder::CommitRemoveBlob(rpc_response)
+                | RpcResponder::AbortRemoveBlob(rpc_response) => {
                     let response = match vote {
                         ConsensusVote::Commit(..) => Ok(()),
                         ConsensusVote::Abort => Err(Error::Abort),

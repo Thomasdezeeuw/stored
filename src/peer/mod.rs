@@ -169,8 +169,13 @@ pub enum Operation {
     CommitStoreBlob(SystemTime),
     /// Abort storing the blob.
     AbortStoreBlob,
-    /// Remove the blob.
+
+    /// Remove the blob (phase one in removing it).
     RemoveBlob,
+    /// Commit to removing the blob.
+    CommitRemoveBlob(SystemTime),
+    /// Abort removing the blob.
+    AbortRemoveBlob,
 }
 
 /// Response message send from [`participant::dispatcher`] to
@@ -235,7 +240,7 @@ impl Peers {
         self.inner.peers.read().unwrap().is_empty()
     }
 
-    /// Start a consensus algorithm to add blob with `key`.
+    /// Start a consensus algorithm to store blob with `key`.
     pub fn add_blob<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
@@ -267,17 +272,41 @@ impl Peers {
         self.rpc(ctx, id, coordinator::relay::AbortStoreBlob(key))
     }
 
-    /*
+    /// Start a consensus algorithm to remove blob with `key`.
     pub fn remove_blob<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         key: Key,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
         let id = self.new_consensus_id();
-        let self.rpc(coordinator::RemoveBlob(key));
+        let rpc = self.rpc(ctx, id, coordinator::relay::RemoveBlob(key));
         (id, rpc)
     }
-    */
+
+    /// Commit to removing a blob.
+    pub fn commit_to_remove_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        id: ConsensusId,
+        key: Key,
+        timestamp: SystemTime,
+    ) -> PeerRpc<()> {
+        self.rpc(
+            ctx,
+            id,
+            coordinator::relay::CommitRemoveBlob(key, timestamp),
+        )
+    }
+
+    /// Abort removing a blob.
+    pub fn abort_remove_blob<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadLocal>,
+        id: ConsensusId,
+        key: Key,
+    ) -> PeerRpc<()> {
+        self.rpc(ctx, id, coordinator::relay::AbortRemoveBlob(key))
+    }
 
     /// Rpc with all peers in the collection.
     fn rpc<M, Req, Res>(

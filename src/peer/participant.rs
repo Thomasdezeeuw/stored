@@ -420,8 +420,102 @@ pub mod dispatcher {
                 }
             }
             Operation::RemoveBlob => {
-                // FIXME: Implement this.
-                todo!("Implement remove blob");
+                let consensus_id = request.consensus_id;
+                if let Some(actor_ref) = running.remove(&consensus_id) {
+                    warn!(
+                        "received conflicting consensus ids, stopping both: consensus_id={}",
+                        consensus_id
+                    );
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key, // NOTE: this is the wrong key.
+                        result: ConsensusVote::Abort,
+                    };
+                    // If we fail to send the actor already stopped, so that's
+                    // fine.
+                    let _ = actor_ref.send(msg);
+                    return;
+                }
+
+                let responder = RpcResponder {
+                    id: request.id,
+                    actor_ref: ctx.actor_ref(),
+                    phase: ConsensusPhase::init(),
+                };
+                debug!(
+                    "participant dispatcher starting remove blob consensus actor: request={:?}, response={:?}",
+                    request, responder
+                );
+                let consensus = consensus::remove_blob_actor as fn(_, _, _, _, _) -> _;
+                let actor_ref = ctx.spawn(
+                    |err| {
+                        warn!("remove blob consensus actor failed: {}", err);
+                        SupervisorStrategy::Stop
+                    },
+                    consensus,
+                    (request.key, *remote, responder, db_ref.clone()),
+                    ActorOptions::default().mark_ready(),
+                );
+                // Checked above that we don't have duplicates.
+                let _ = running.insert(consensus_id, actor_ref);
+            }
+            Operation::CommitRemoveBlob(timestamp) => {
+                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                    // Relay the message to the correct actor.
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key,
+                        result: ConsensusVote::Commit(timestamp),
+                    };
+                    if let Err(..) = actor_ref.send(msg) {
+                        // In case we fail we send ourself a message to relay to
+                        // the coordinator that the actor failed.
+                        let response = Response {
+                            request_id: request.id,
+                            vote: ConsensusVote::Fail,
+                        };
+                        // We can always send ourselves a message.
+                        ctx.actor_ref().send(response).unwrap();
+                    }
+                } else {
+                    warn!("can't find consensus actor for commit request: request_id={}, consensus_id={}",
+                        request.id, request.consensus_id);
+                    let response = Response {
+                        request_id: request.id,
+                        vote: ConsensusVote::Fail,
+                    };
+                    // We can always send ourselves a message.
+                    ctx.actor_ref().send(response).unwrap();
+                }
+            }
+            Operation::AbortRemoveBlob => {
+                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                    // Relay the message to the correct actor.
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key,
+                        result: ConsensusVote::Abort,
+                    };
+                    if let Err(..) = actor_ref.send(msg) {
+                        // In case we fail we send ourself a message to relay to
+                        // the coordinator that the actor failed.
+                        let response = Response {
+                            request_id: request.id,
+                            vote: ConsensusVote::Fail,
+                        };
+                        // We can always send ourselves a message.
+                        ctx.actor_ref().send(response).unwrap();
+                    }
+                } else {
+                    warn!("can't find consensus actor for abort request: request_id={}, consensus_id={}",
+                        request.id, request.consensus_id);
+                    let response = Response {
+                        request_id: request.id,
+                        vote: ConsensusVote::Fail,
+                    };
+                    // We can always send ourselves a message.
+                    ctx.actor_ref().send(response).unwrap();
+                }
             }
         }
     }
@@ -444,6 +538,7 @@ pub mod consensus {
     use log::{debug, error, info, trace, warn};
 
     use crate::error::Describe;
+    use crate::op::remove::Outcome;
     use crate::op::store::Success;
     use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::participant::RpcResponder;
@@ -654,15 +749,89 @@ pub mod consensus {
         Ok(Some((key, &buf.as_bytes()[..blob_length as usize])))
     }
 
-    /// Not implemented.
+    /// Actor that runs the consensus algorithm for removing a blob.
+    // TODO: DRY with store_blob_actor.
+    // FIXME: use consensus id in logging.
     pub async fn remove_blob_actor(
-        _ctx: actor::Context<VoteResult, ThreadSafe>,
-        _key: Key,
-        _remote: SocketAddr,
-        _responder: RpcResponder,
-        _db_ref: ActorRef<db::Message>,
+        mut ctx: actor::Context<VoteResult, ThreadSafe>,
+        key: Key,
+        remote: SocketAddr,
+        mut responder: RpcResponder,
+        mut db_ref: ActorRef<db::Message>,
     ) -> crate::Result<()> {
-        // FIXME: implement this.
-        todo!("remove blob")
+        debug!(
+            "remove blob consensus actor started: key={}, remote={}",
+            key, remote
+        );
+
+        // Phase one: removing the blob, readying it to be removed from the database.
+        let query = match op::remove::prep_remove_blob(&mut ctx, &mut db_ref, key.clone()).await {
+            Ok(Outcome::Continue(query)) => {
+                responder.respond(ConsensusVote::Commit(SystemTime::now()));
+                query
+            }
+            Ok(Outcome::Done(..)) => {
+                info!(
+                    "blob already removed/not stored, voting to abort consensus: key={}",
+                    key
+                );
+                responder.respond(ConsensusVote::Abort);
+                return Ok(());
+            }
+            Err(()) => {
+                warn!(
+                    "failed to prepare storage to remove blob, voting to abort consensus: key={}",
+                    key
+                );
+                responder.respond(ConsensusVote::Abort);
+                return Ok(());
+            }
+        };
+
+        // Phase two: commit or abort the query.
+        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let f = select(ctx.receive_next(), timer);
+        let vote_result = match f.await {
+            Either::Left((vote_result, ..)) => {
+                // Update the `RpcResponder.id` to ensure we're responding to
+                // the correct request.
+                responder.id = vote_result.request_id;
+                vote_result
+            }
+            Either::Right(..) => {
+                warn!("failed to get consensus result in time, considering it failed");
+                let _ = op::remove::abort(&mut ctx, &mut db_ref, query).await;
+                return Ok(());
+            }
+        };
+
+        let response = if key.ne(query.key()) {
+            error!(
+                "received an incorrect key in consensus run: want_key={}, consensus_key={}",
+                key,
+                query.key()
+            );
+            let _ = op::remove::abort(&mut ctx, &mut db_ref, query).await;
+            // Let the peer know the operation failed.
+            Err(())
+        } else {
+            match vote_result.result {
+                ConsensusVote::Commit(timestamp) => {
+                    op::remove::commit(&mut ctx, &mut db_ref, query, timestamp)
+                        .await
+                        .map(|_| ())
+                }
+                ConsensusVote::Abort | ConsensusVote::Fail => {
+                    op::remove::abort(&mut ctx, &mut db_ref, query).await
+                }
+            }
+        };
+
+        let response = match response {
+            Ok(()) => ConsensusVote::Commit(SystemTime::now()),
+            Err(()) => ConsensusVote::Abort,
+        };
+        responder.respond(response);
+        Ok(())
     }
 }
