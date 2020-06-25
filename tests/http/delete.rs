@@ -1,7 +1,5 @@
 //! Tests for DELETE requests.
 
-use std::{fs, str};
-
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use log::LevelFilter;
@@ -81,21 +79,15 @@ fn remove_hello_mars_twice() {
     );
 
     let last_modified = date_header();
-    request!(
-        DELETE DB_PORT, url, body::EMPTY,
-        expected: StatusCode::GONE, body::EMPTY,
-        CONTENT_LENGTH => body::EMPTY_LEN,
-        LAST_MODIFIED => &last_modified,
-        CONNECTION => header::KEEP_ALIVE,
-    );
-
-    request!(
-        DELETE DB_PORT, url, body::EMPTY,
-        expected: StatusCode::GONE, body::EMPTY,
-        CONTENT_LENGTH => body::EMPTY_LEN,
-        LAST_MODIFIED => &last_modified, // Mustn't overwrite the time.
-        CONNECTION => header::KEEP_ALIVE,
-    );
+    for _ in 0..2 {
+        request!(
+            DELETE DB_PORT, url, body::EMPTY,
+            expected: StatusCode::GONE, body::EMPTY,
+            CONTENT_LENGTH => body::EMPTY_LEN,
+            LAST_MODIFIED => &last_modified, // Second call mustn't overwrite the time.
+            CONNECTION => header::KEEP_ALIVE,
+        );
+    }
 }
 
 #[test]

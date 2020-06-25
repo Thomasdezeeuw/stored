@@ -3,7 +3,6 @@
 // TODO: expand testing.
 
 use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
-use std::{fs, str};
 
 use http::header::{HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::method::Method;

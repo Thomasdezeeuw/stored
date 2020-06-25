@@ -1,7 +1,5 @@
 //! Tests for POST requests.
 
-use std::{fs, str};
-
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use log::LevelFilter;

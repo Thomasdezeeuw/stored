@@ -1,7 +1,5 @@
 //! Tests for GET and HEAD requests.
 
-use std::str;
-
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
 use http::status::StatusCode;
 use log::LevelFilter;
