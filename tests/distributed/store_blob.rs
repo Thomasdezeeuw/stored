@@ -1,5 +1,3 @@
-use std::{fs, str};
-
 use http::header::{CONNECTION, CONTENT_LENGTH, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use log::LevelFilter;
@@ -29,9 +27,9 @@ macro_rules! tests {
         mod with_2_peers {
             use super::*;
 
-            const DB_PORTS: &[u16] = &[10001, 10002];
-            const DB_PATHS: &[&str] = tests!(_db_paths: 1, 2);
-            const CONF_PATHS: &[&str] = tests!(_conf_paths: 1, 2);
+            const DB_PORTS: &[u16] = &[10021, 10022];
+            const DB_PATHS: &[&str] = tests!(_db_paths: "2_1", "2_2");
+            const CONF_PATHS: &[&str] = tests!(_conf_paths: "2_1", "2_2");
 
             start_stored_fn!(
                 &[CONF_PATHS[0], CONF_PATHS[1]],
@@ -45,7 +43,24 @@ macro_rules! tests {
             )+
         }
 
-        // TODO: add modules for 3 and more peers.
+        mod with_3_peers {
+            use super::*;
+
+            const DB_PORTS: &[u16] = &[10031, 10032, 10033];
+            const DB_PATHS: &[&str] = tests!(_db_paths: "3_1", "3_2", "3_3");
+            const CONF_PATHS: &[&str] = tests!(_conf_paths: "3_1", "3_2", "3_3");
+
+            start_stored_fn!(
+                &[CONF_PATHS[0], CONF_PATHS[1], CONF_PATHS[2]],
+                &[DB_PATHS[0], DB_PATHS[1], DB_PATHS[2]],
+                FILTER
+            );
+
+            $(
+                $( #[$meta] )*
+                fn $name() $body
+            )+
+        }
     };
 
     (_db_paths: $( $n: tt ),*) => {

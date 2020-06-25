@@ -34,7 +34,7 @@ macro_rules! start_stored_fn {
             static REMOVE: std::sync::Once = std::sync::Once::new();
             REMOVE.call_once(|| {
                 // Remove the old databases from previous tests.
-                $( let _ = fs::remove_dir_all($remove_db_path); )*
+                $( let _ = std::fs::remove_dir_all($remove_db_path); )*
             });
 
             $crate::util::start_stored(&[$( $conf_path ),*], &PROC, $filter)
