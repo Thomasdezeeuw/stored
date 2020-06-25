@@ -28,6 +28,15 @@ pub use store::store_blob;
 /// Maximum number of tries we will attempt to run the consensus algorithm.
 const MAX_CONSENSUS_TRIES: usize = 3;
 
+/// Outcome of a successful operation. E.g. when trying to add a blob, but the
+/// blob is already stored.
+pub(crate) enum Outcome<T, U> {
+    /// Continue like normal.
+    Continue(T),
+    /// We're done early.
+    Done(U),
+}
+
 /// Retrieve the blob with `key`.
 ///
 /// Returns an error if the database actor can't be accessed.

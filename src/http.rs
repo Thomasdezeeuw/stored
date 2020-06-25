@@ -38,9 +38,10 @@ use log::{debug, error, trace, warn};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
+use crate::op::{self, Outcome};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
-use crate::{db, op, Key};
+use crate::{db, Key};
 
 /// Setup the HTTP listener.
 ///
@@ -576,8 +577,8 @@ async fn store_blob(
     body_length: usize,
 ) -> crate::Result<(ResponseKind, bool)> {
     match read_blob(ctx, conn, body_length).await {
-        Ok(Status::Continue(())) => {}
-        Ok(Status::Return(response, should_close)) => return Ok((response, should_close)),
+        Ok(Outcome::Continue(())) => {}
+        Ok(Outcome::Done((response, should_close))) => return Ok((response, should_close)),
         Err(err) => return Err(err),
     }
 
@@ -587,32 +588,23 @@ async fn store_blob(
     }
 }
 
-/// Status of processing the request.
-enum Status<T> {
-    /// Continue processing the request.
-    Continue(T),
-    /// Early return in case a condition is not method, e.g. a blob is too large
-    /// to store.
-    Return(ResponseKind, bool),
-}
-
 /// Read a blob of length `body_length` from the `conn`ection.
 async fn read_blob(
     ctx: &mut actor::Context<!>,
     conn: &mut Connection,
     body_length: usize,
-) -> crate::Result<Status<()>> {
+) -> crate::Result<Outcome<(), (ResponseKind, bool)>> {
     trace!("reading blob from HTTP request body");
     // TODO: get this from a configuration.
     const MAX_SIZE: usize = 1024 * 1024; // 1MB.
 
     if body_length == 0 {
-        return Ok(Status::Return(
+        return Ok(Outcome::Done((
             ResponseKind::BadRequest("Can't store empty blob"),
             false,
-        ));
+        )));
     } else if body_length > MAX_SIZE {
-        return Ok(Status::Return(ResponseKind::TooLargePayload, true));
+        return Ok(Outcome::Done((ResponseKind::TooLargePayload, true)));
     }
 
     if conn.buf.len() < body_length {
@@ -622,10 +614,10 @@ async fn read_blob(
         match Deadline::timeout(ctx, TIMEOUT, read_n).await {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
-                return Ok(Status::Return(
+                return Ok(Outcome::Done((
                     ResponseKind::BadRequest("Incomplete blob"),
                     true,
-                ))
+                )))
             }
             Err(err) => return Err(err.describe("reading blob from HTTP body")),
         }
@@ -635,7 +627,7 @@ async fn read_blob(
         "read blob from HTTP request body: length={}",
         conn.buf.len()
     );
-    Ok(Status::Continue(()))
+    Ok(Outcome::Continue(()))
 }
 
 /// Retrieve the blob associated with `key` from the actor behind the `db_ref`.

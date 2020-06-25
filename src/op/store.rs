@@ -9,7 +9,7 @@ use log::{debug, error};
 
 use crate::db::{self, AddBlobResponse};
 use crate::op::{
-    abort_consensus, contains_blob, count_consensus_votes, db_rpc, select_timestamp,
+    abort_consensus, contains_blob, count_consensus_votes, db_rpc, select_timestamp, Outcome,
     MAX_CONSENSUS_TRIES,
 };
 use crate::peer::Peers;
@@ -29,8 +29,8 @@ pub async fn store_blob<M>(
     debug!("running store operation");
 
     let query = match add_blob(ctx, db_ref, blob, blob_length).await {
-        Ok(Success::Continue(query)) => query,
-        Ok(Success::Done(key)) => return Ok(key),
+        Ok(Outcome::Continue(query)) => query,
+        Ok(Outcome::Done(key)) => return Ok(key),
         Err(err) => return Err(err),
     };
 
@@ -53,24 +53,13 @@ pub async fn store_blob<M>(
     }
 }
 
-/// Operation succeeded, but can return early. E.g. when the blob is already
-/// stored.
-// TODO: rename to `Outcome`, also merge with `http::Status`.
-pub(crate) enum Success<T, U> {
-    /// Continue like normal.
-    Continue(T),
-    /// We're done early, most like because the blob is already stored by
-    /// another user.
-    Done(U),
-}
-
 /// Phase one of storing a blob: adding the bytes to the data file.
 pub(crate) async fn add_blob<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     buf: &mut Buffer,
     blob_length: usize,
-) -> Result<Success<StoreBlob, Key>, ()>
+) -> Result<Outcome<StoreBlob, Key>, ()>
 where
     K: RuntimeAccess,
 {
@@ -87,8 +76,8 @@ where
                 *buf = buffer;
 
                 match result {
-                    AddBlobResponse::Query(query) => Ok(Success::Continue(query)),
-                    AddBlobResponse::AlreadyStored(key) => Ok(Success::Done(key)),
+                    AddBlobResponse::Query(query) => Ok(Outcome::Continue(query)),
+                    AddBlobResponse::AlreadyStored(key) => Ok(Outcome::Done(key)),
                 }
             }
             Err(err) => Err(err),

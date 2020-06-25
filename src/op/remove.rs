@@ -8,7 +8,7 @@ use log::{debug, error};
 
 use crate::db::{self, RemoveBlobResponse};
 use crate::op::{
-    abort_consensus, count_consensus_votes, db_rpc, retrieve_blob, select_timestamp,
+    abort_consensus, count_consensus_votes, db_rpc, retrieve_blob, select_timestamp, Outcome,
     MAX_CONSENSUS_TRIES,
 };
 use crate::peer::Peers;
@@ -52,15 +52,6 @@ pub async fn remove_blob<M>(
         );
         consensus(ctx, db_ref, peers, query).await.map(Some)
     }
-}
-
-/// Outcome of a successful operation. E.g. when the blob is already
-/// removed.
-pub(crate) enum Outcome<T, U> {
-    /// Continue like normal.
-    Continue(T),
-    /// We're done early.
-    Done(U),
 }
 
 /// Phase one of removing a blob: preparing the storage layer.

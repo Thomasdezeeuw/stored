@@ -538,12 +538,11 @@ pub mod consensus {
     use log::{debug, error, info, trace, warn};
 
     use crate::error::Describe;
-    use crate::op::remove::Outcome;
-    use crate::op::store::Success;
+    use crate::op::{self, Outcome};
     use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::participant::RpcResponder;
     use crate::peer::{ConsensusVote, COORDINATOR_MAGIC};
-    use crate::{db, op, Buffer, Key};
+    use crate::{db, Buffer, Key};
 
     /// Timeout used for I/O between peers.
     const IO_TIMEOUT: Duration = Duration::from_secs(2);
@@ -617,11 +616,11 @@ pub mod consensus {
 
         // Phase one: storing the blob, readying it to be added to the database.
         let query = match op::store::add_blob(&mut ctx, &mut db_ref, &mut buf, blob_len).await {
-            Ok(Success::Continue(query)) => {
+            Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 query
             }
-            Ok(Success::Done(..)) => {
+            Ok(Outcome::Done(..)) => {
                 info!(
                     "blob already stored, voting to abort consensus: key={}",
                     key
