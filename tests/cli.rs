@@ -3,8 +3,8 @@
 #![feature(bool_to_option)]
 
 use std::process::{Command, Output};
+use std::str;
 use std::sync::Once;
-use std::{fs, str};
 
 use log::LevelFilter;
 
