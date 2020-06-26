@@ -494,6 +494,9 @@ pub trait Query {
     /// [committed]: Storage::commit
     type Return;
 
+    /// Returns the query for this query.
+    fn key(&self) -> &Key;
+
     /// Commit to the query.
     fn commit(self, storage: &mut Storage, arg: Self::Arg) -> io::Result<Self::Return>;
 
@@ -510,11 +513,6 @@ pub struct StoreBlob {
 }
 
 impl StoreBlob {
-    /// Returns the key for the to be store blob.
-    pub fn key(&self) -> &Key {
-        &self.key
-    }
-
     /// Create an `Entry` in `storage.index`.
     ///
     /// This ensures that the blob for which the entry is created is synced to
@@ -566,6 +564,10 @@ impl StoreBlob {
 impl Query for StoreBlob {
     type Arg = SystemTime;
     type Return = ();
+
+    fn key(&self) -> &Key {
+        &self.key
+    }
 
     fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
         trace!(
@@ -661,13 +663,6 @@ pub struct RemoveBlob {
     key: Key,
 }
 
-impl RemoveBlob {
-    /// Returns the key for the to be removed blob.
-    pub fn key(&self) -> &Key {
-        &self.key
-    }
-}
-
 impl Query for RemoveBlob {
     type Arg = SystemTime;
     /// Returns the time at which the blob is actually removed. This is the same
@@ -676,6 +671,10 @@ impl Query for RemoveBlob {
     ///
     /// [`Arg`]: Query::Arg
     type Return = SystemTime;
+
+    fn key(&self) -> &Key {
+        &self.key
+    }
 
     fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<Self::Return> {
         trace!(

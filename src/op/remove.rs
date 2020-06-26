@@ -12,7 +12,7 @@ use crate::op::{
     MAX_CONSENSUS_TRIES,
 };
 use crate::peer::Peers;
-use crate::storage::{BlobEntry, RemoveBlob};
+use crate::storage::{BlobEntry, Query, RemoveBlob};
 use crate::Key;
 
 /// Removes a blob from the database.

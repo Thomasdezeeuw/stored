@@ -13,7 +13,7 @@ use crate::op::{
     MAX_CONSENSUS_TRIES,
 };
 use crate::peer::Peers;
-use crate::storage::StoreBlob;
+use crate::storage::{Query, StoreBlob};
 use crate::{Buffer, Key};
 
 /// Stores a blob in the database.
@@ -87,6 +87,7 @@ where
 }
 
 /// Runs the consensus algorithm for storing a blob.
+// TODO: DRY with `op::remove::consensus`.
 async fn consensus<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,

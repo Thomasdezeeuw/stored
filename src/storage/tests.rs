@@ -826,7 +826,7 @@ mod storage {
 
     use super::{
         temp_dir, test_data_path, test_entries, AddResult, Blob, BlobEntry, Entry, EntryIndex,
-        ModifiedTime, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
+        ModifiedTime, Query, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
     };
     use crate::Key;
 

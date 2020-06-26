@@ -542,6 +542,7 @@ pub mod consensus {
     use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::participant::RpcResponder;
     use crate::peer::{ConsensusVote, COORDINATOR_MAGIC};
+    use crate::storage::Query;
     use crate::{db, Buffer, Key};
 
     /// Timeout used for I/O between peers.
