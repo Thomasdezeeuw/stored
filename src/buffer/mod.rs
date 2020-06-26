@@ -167,6 +167,7 @@ impl Buffer {
     where
         R: AsyncRead,
     {
+        debug_assert!(n != 0, "want to read 0 bytes");
         self.reserve_atleast(n);
         ReadN {
             read: Read {

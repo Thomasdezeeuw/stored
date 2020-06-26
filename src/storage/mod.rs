@@ -439,11 +439,11 @@ impl Storage {
     }
 
     /// Commit to `query`.
-    pub fn commit<Q>(&mut self, query: Q, arg: Q::Arg) -> io::Result<Q::Return>
+    pub fn commit<Q>(&mut self, query: Q, timestamp: SystemTime) -> io::Result<SystemTime>
     where
         Q: Query,
     {
-        query.commit(self, arg)
+        query.commit(self, timestamp)
     }
 
     /// Abort `query`.
@@ -484,21 +484,17 @@ pub enum RemoveResult {
 ///
 /// [committing]: Query::commit
 pub trait Query {
-    /// Argument provided when [committing] to a `Query`.
-    ///
-    /// [committing]: Storage::commit
-    type Arg;
-
-    /// Type returned after a `Query` is [committed].
-    ///
-    /// [committed]: Storage::commit
-    type Return;
-
     /// Returns the query for this query.
     fn key(&self) -> &Key;
 
     /// Commit to the query.
-    fn commit(self, storage: &mut Storage, arg: Self::Arg) -> io::Result<Self::Return>;
+    ///
+    /// Returns the time at which the operation was completed. This is the same
+    /// time as the provided `timestamp`, unless the operation was previously
+    /// already completed. For example if while removing a blob, the blob was
+    /// already removed, this returns the time at which the blob was removed
+    /// first.
+    fn commit(self, storage: &mut Storage, timestamp: SystemTime) -> io::Result<SystemTime>;
 
     /// Abort the query.
     fn abort(self, storage: &mut Storage) -> io::Result<()>;
@@ -562,14 +558,11 @@ impl StoreBlob {
 }
 
 impl Query for StoreBlob {
-    type Arg = SystemTime;
-    type Return = ();
-
     fn key(&self) -> &Key {
         &self.key
     }
 
-    fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<Self::Return> {
+    fn commit(self, storage: &mut Storage, created_at: SystemTime) -> io::Result<SystemTime> {
         trace!(
             "committing to storing blob: key={}, created_at={:?}",
             self.key,
@@ -577,10 +570,10 @@ impl Query for StoreBlob {
         );
         let uncommitted_blob = match storage.uncommitted.remove(&self.key) {
             Some((_, uncommitted_blob)) => uncommitted_blob,
-            None => {
-                debug_assert!(storage.blobs.contains_key(&self.key));
-                return Ok(());
-            }
+            None => match storage.lookup(&self.key) {
+                Some(BlobEntry::Stored(blob)) => return Ok(blob.created_at()),
+                _ => unreachable!("committing StoreBlob without preparing it"),
+            },
         };
 
         debug_assert_eq!(
@@ -595,11 +588,12 @@ impl Query for StoreBlob {
         use hash_map::Entry::*;
         match storage.blobs.entry(self.key.clone()) {
             Occupied(mut entry) => match entry.get_mut() {
-                (_, BlobEntry::Stored(_)) => {
+                (_, BlobEntry::Stored(blob)) => {
                     trace!("blob already committed: key={}", self.key);
+                    let created_at = blob.created_at();
                     // This should never happen, but just in case it does we
                     // don't want to modify the existing entry.
-                    self.remove_blob_bytes(storage)
+                    self.remove_blob_bytes(storage).map(|()| created_at)
                 }
                 entry @ (_, BlobEntry::Removed(_)) => {
                     // First add our new index entry.
@@ -614,7 +608,10 @@ impl Query for StoreBlob {
                     storage.length += 1;
 
                     // Next mark the old index entry as invalid.
-                    storage.index.mark_as_invalid(old_entry_index)
+                    storage
+                        .index
+                        .mark_as_invalid(old_entry_index)
+                        .map(|()| created_at)
                 }
             },
             Vacant(entry) => {
@@ -626,7 +623,7 @@ impl Query for StoreBlob {
                 )?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
-                Ok(())
+                Ok(created_at)
             }
         }
     }
@@ -664,19 +661,11 @@ pub struct RemoveBlob {
 }
 
 impl Query for RemoveBlob {
-    type Arg = SystemTime;
-    /// Returns the time at which the blob is actually removed. This is the same
-    /// time as the provided [`Arg`]ument, unless the blob was already removed,
-    /// in which case its the time at which the blob was originally removed.
-    ///
-    /// [`Arg`]: Query::Arg
-    type Return = SystemTime;
-
     fn key(&self) -> &Key {
         &self.key
     }
 
-    fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<Self::Return> {
+    fn commit(self, storage: &mut Storage, removed_at: SystemTime) -> io::Result<SystemTime> {
         trace!(
             "committing to removing blob: key={}, removed_at={:?}",
             self.key,

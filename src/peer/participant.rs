@@ -538,7 +538,7 @@ pub mod consensus {
     use log::{debug, error, info, trace, warn};
 
     use crate::error::Describe;
-    use crate::op::{self, Outcome};
+    use crate::op::{abort_query, add_blob, commit_query, prep_remove_blob, Outcome};
     use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::participant::RpcResponder;
     use crate::peer::{ConsensusVote, COORDINATOR_MAGIC};
@@ -616,7 +616,7 @@ pub mod consensus {
         };
 
         // Phase one: storing the blob, readying it to be added to the database.
-        let query = match op::store::add_blob(&mut ctx, &mut db_ref, &mut buf, blob_len).await {
+        let query = match add_blob(&mut ctx, &mut db_ref, &mut buf, blob_len).await {
             Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 query
@@ -651,7 +651,7 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!("failed to get consensus result in time, considering it failed");
-                let _ = op::store::abort(&mut ctx, &mut db_ref, query).await;
+                let _ = abort_query(&mut ctx, &mut db_ref, query).await;
                 return Ok(());
             }
         };
@@ -662,16 +662,18 @@ pub mod consensus {
                 key,
                 query.key()
             );
-            let _ = op::store::abort(&mut ctx, &mut db_ref, query).await;
+            let _ = abort_query(&mut ctx, &mut db_ref, query).await;
             // Let the peer know the operation failed.
             Err(())
         } else {
             match vote_result.result {
                 ConsensusVote::Commit(timestamp) => {
-                    op::store::commit(&mut ctx, &mut db_ref, query, timestamp).await
+                    commit_query(&mut ctx, &mut db_ref, query, timestamp)
+                        .await
+                        .map(|_| ())
                 }
                 ConsensusVote::Abort | ConsensusVote::Fail => {
-                    op::store::abort(&mut ctx, &mut db_ref, query).await
+                    abort_query(&mut ctx, &mut db_ref, query).await
                 }
             }
         };
@@ -772,7 +774,7 @@ pub mod consensus {
         );
 
         // Phase one: removing the blob, readying it to be removed from the database.
-        let query = match op::remove::prep_remove_blob(&mut ctx, &mut db_ref, key.clone()).await {
+        let query = match prep_remove_blob(&mut ctx, &mut db_ref, key.clone()).await {
             Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 query
@@ -807,7 +809,7 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!("failed to get consensus result in time, considering it failed");
-                let _ = op::remove::abort(&mut ctx, &mut db_ref, query).await;
+                let _ = abort_query(&mut ctx, &mut db_ref, query).await;
                 return Ok(());
             }
         };
@@ -818,18 +820,18 @@ pub mod consensus {
                 key,
                 query.key()
             );
-            let _ = op::remove::abort(&mut ctx, &mut db_ref, query).await;
+            let _ = abort_query(&mut ctx, &mut db_ref, query).await;
             // Let the peer know the operation failed.
             Err(())
         } else {
             match vote_result.result {
                 ConsensusVote::Commit(timestamp) => {
-                    op::remove::commit(&mut ctx, &mut db_ref, query, timestamp)
+                    commit_query(&mut ctx, &mut db_ref, query, timestamp)
                         .await
                         .map(|_| ())
                 }
                 ConsensusVote::Abort | ConsensusVote::Fail => {
-                    op::remove::abort(&mut ctx, &mut db_ref, query).await
+                    abort_query(&mut ctx, &mut db_ref, query).await
                 }
             }
         };

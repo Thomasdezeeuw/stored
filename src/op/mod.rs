@@ -13,15 +13,19 @@ use log::{debug, error};
 
 use crate::db::{self, HealthCheck, HealthOk};
 use crate::peer::coordinator::relay;
-use crate::peer::{ConsensusId, PeerRpc};
-use crate::storage::{BlobEntry, UncommittedBlob};
+use crate::peer::{ConsensusId, PeerRpc, Peers};
+use crate::storage::{self, BlobEntry, UncommittedBlob};
 use crate::Key;
 
-pub mod remove;
-pub mod store;
+mod remove;
+mod store;
 
 #[doc(inline)]
+pub(crate) use remove::prep_remove_blob;
+#[doc(inline)]
 pub use remove::remove_blob;
+#[doc(inline)]
+pub(crate) use store::add_blob;
 #[doc(inline)]
 pub use store::store_blob;
 
@@ -55,7 +59,7 @@ pub async fn retrieve_blob<M>(
 /// Retrieve a possibly uncommitted blob with `key`.
 ///
 /// Returns an error if the database actor can't be accessed.
-pub async fn retrieve_uncommitted_blob<M, K>(
+pub(crate) async fn retrieve_uncommitted_blob<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     key: Key,
@@ -79,21 +83,6 @@ pub async fn check_health<M>(
 ) -> Result<HealthOk, ()> {
     debug!("running health check");
     match db_rpc(ctx, db_ref, HealthCheck) {
-        Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
-    }
-}
-
-/// Checks if a blob with `key` is stored.
-///
-/// Returns an error if the database actor can't be accessed.
-pub async fn contains_blob<M>(
-    ctx: &mut actor::Context<M>,
-    db_ref: &mut ActorRef<db::Message>,
-    key: Key,
-) -> Result<bool, ()> {
-    debug!("checking if blob is stored: key={}", key);
-    match db_rpc(ctx, db_ref, key) {
         Ok(rpc) => rpc.await,
         Err(err) => Err(err),
     }
@@ -153,6 +142,235 @@ impl<Res> Future for DbRpc<Res> {
     }
 }
 
+pub(crate) trait Query: storage::Query {
+    type AlreadyDone: Future<Output = Result<Option<SystemTime>, ()>>;
+
+    /// Check in between consensus attempt to ensure the operation isn't already
+    /// complete by another client. For example when running the consensus
+    /// algorithm to store a blob this method should check if the blob is not
+    /// already stored.
+    ///
+    /// If this returns `Ok(None)` the consensus algorithm will proceed.
+    ///
+    /// If this return `Ok(Some(..))` it means the operation was completed by
+    /// another actor, the [`consensus`] function will return timestamp and
+    /// consider it a success, e.g. when storing a blob and the blob is already
+    /// stored `consensus` will return the result returned by this method.
+    ///
+    /// If an error is returned it will also be returned by
+    /// the `consensus` actor, this method must do the logging.
+    // TODO: change this to an async function once possible.
+    fn already_done<M>(
+        &self,
+        ctx: &mut actor::Context<M>,
+        db_ref: &mut ActorRef<db::Message>,
+    ) -> Self::AlreadyDone;
+
+    /// Start phase one of the 2PC protocol, asking the `peers` to prepare the
+    /// query.
+    fn peers_prepare<M>(
+        &self,
+        ctx: &mut actor::Context<M>,
+        peers: &Peers,
+    ) -> (ConsensusId, PeerRpc<SystemTime>);
+
+    /// Second phase of the 2PC protocol, asking the `peers` to commit to the
+    /// query.
+    fn peers_commit<M>(
+        &self,
+        ctx: &mut actor::Context<M>,
+        peers: &Peers,
+        id: ConsensusId,
+        timestamp: SystemTime,
+    ) -> PeerRpc<()>;
+
+    /// Ask the `peers` to abort the query.
+    fn peers_abort<M>(
+        &self,
+        ctx: &mut actor::Context<M>,
+        peers: &Peers,
+        id: ConsensusId,
+    ) -> PeerRpc<()>;
+}
+
+/// Runs a consensus algorithm for `query`.
+async fn consensus<M, Q>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+    peers: &Peers,
+    query: Q,
+) -> Result<SystemTime, ()>
+where
+    Q: Query,
+    db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>> + From<RpcMessage<Q, ()>>,
+{
+    // The consensus id of a previous run, only used after we failed a consensus
+    // run previously.
+    let mut prev_consensus_id = None;
+
+    // TODO: optimisation on a retry only let aborted/failed peers retry.
+
+    for _ in 0..MAX_CONSENSUS_TRIES {
+        if let Some(consensus_id) = prev_consensus_id {
+            // It could be that one of the peers aborted because the operation
+            // is already complete (i.e. the blob already stored/removed). Check
+            // for that before proceeding.
+            match query.already_done(ctx, db_ref).await {
+                Ok(Some(timestamp)) => {
+                    // Operation already completed by another actor. Abort the
+                    // old 2PC query (from the previous iteration).
+                    return abort(ctx, db_ref, peers, consensus_id, query)
+                        .await
+                        .map(|()| timestamp);
+                }
+                // Operation not yet complete, we can continue.
+                Ok(None) => {}
+                // Operation failed. This only happens if the database actor is
+                // unavailable, so we can't do much now.
+                Err(()) => return Err(()),
+            }
+        }
+
+        // Phase one of 2PC: ask the participants (`peers`) to prepare the
+        // storage layer.
+        let (consensus_id, rpc) = query.peers_prepare(ctx, peers);
+        debug!(
+            "requesting peers to prepare query: consensus_id={}, key={}",
+            consensus_id,
+            query.key()
+        );
+        // Wait for the results.
+        let results = rpc.await;
+
+        // If we failed a previous run we want to start aborting it now.
+        // NOTE: we wait for the participants to prepare it first to ensure that
+        // the storage layer query can be reused.
+        let abort_rpc =
+            prev_consensus_id.map(|consensus_id| query.peers_abort(ctx, peers, consensus_id));
+
+        let (committed, aborted, failed) = count_consensus_votes(&results);
+        if aborted > 0 || failed > 0 {
+            // TODO: allow some failure here.
+            error!(
+                "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+                consensus_id, query.key(), committed, aborted, failed
+            );
+
+            // Await aborting the previous run, if any.
+            if let Some(abort_rpc) = abort_rpc {
+                abort_consensus(abort_rpc, prev_consensus_id.take().unwrap(), query.key()).await;
+            }
+
+            // Try again, ensuring that this run is aborted in the next
+            // iteration.
+            prev_consensus_id = Some(consensus_id);
+            continue;
+        }
+
+        debug!(
+            "consensus algorithm succeeded: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+            consensus_id, query.key(), committed, aborted, failed
+        );
+
+        // Phase two of 2PC: ask the participants to commit.
+        debug!(
+            "requesting peers to commit: consensus_id={}, key={}",
+            consensus_id,
+            query.key()
+        );
+        // Select a single timestamp to for the operation, to ensure its
+        // consistent on all nodes.
+        let timestamp = select_timestamp(&results);
+        let rpc = query.peers_commit(ctx, peers, consensus_id, timestamp);
+
+        // Await aborting the previous run, if any.
+        if let Some(abort_rpc) = abort_rpc {
+            abort_consensus(abort_rpc, prev_consensus_id.take().unwrap(), query.key()).await;
+        }
+
+        // Await the commit results.
+        let results = rpc.await;
+        let (committed, aborted, failed) = count_consensus_votes(&results);
+        if aborted > 0 || failed > 0 {
+            // TODO: allow some failure here.
+            error!(
+                "consensus algorithm commitment failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+                consensus_id, query.key(), committed, aborted, failed
+            );
+
+            // Try again, ensuring that this run is aborted in the next
+            // iteration.
+            prev_consensus_id = Some(consensus_id);
+            continue;
+        }
+
+        debug!(
+            "consensus algorithm commitment success: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
+            consensus_id, query.key(), committed, aborted, failed
+        );
+
+        // NOTE: Its crucial here that at least a single peer received the
+        // message to commit before the coordinator (this node) commits to
+        // storing the blob. If the coordinator would commit before sending a
+        // message to at least a single peer the coordinator could crash before
+        // doing so and after a restart be the only peer that has the blob
+        // stored, i.e. be in an inconsistent state.
+        //
+        // TODO: optimisation: check `rpc` to see if we got a single `Ok`
+        // response and then start the commit process ourselves, then we can
+        // wait for the peers and the storing concurrently.
+        return commit_query(ctx, db_ref, query, timestamp).await;
+    }
+
+    // Failed too many times.
+    error!(
+        "failed {} consensus algorithm runs: key={}",
+        MAX_CONSENSUS_TRIES,
+        query.key()
+    );
+    // Abort the last consensus run.
+    let consensus_id = prev_consensus_id.unwrap();
+    abort(ctx, db_ref, peers, consensus_id, query)
+        .await
+        .and(Err(()))
+}
+
+/// Commit to the `query`.
+pub(crate) async fn commit_query<M, K, Q>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    query: Q,
+    timestamp: SystemTime,
+) -> Result<SystemTime, ()>
+where
+    K: RuntimeAccess,
+    Q: storage::Query,
+    db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>>,
+{
+    debug!("committing to query: key={}", query.key());
+    match db_rpc(ctx, db_ref, (query, timestamp)) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
+}
+
+/// Await the `abort_rpc` and abort the `query`.
+async fn abort<M, Q>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+    peers: &Peers,
+    consensus_id: ConsensusId,
+    query: Q,
+) -> Result<(), ()>
+where
+    Q: Query,
+    db::Message: From<RpcMessage<Q, ()>>,
+{
+    let abort_rpc = query.peers_abort(ctx, peers, consensus_id);
+    abort_consensus(abort_rpc, consensus_id, query.key()).await;
+    abort_query(ctx, db_ref, query).await
+}
+
 /// Await the results in `abort_rpc`, logging the results.
 async fn abort_consensus(abort_rpc: PeerRpc<()>, consensus_id: ConsensusId, key: &Key) {
     let results = abort_rpc.await;
@@ -164,6 +382,24 @@ async fn abort_consensus(abort_rpc: PeerRpc<()>, consensus_id: ConsensusId, key:
         committed,
         aborted + failed,
     );
+}
+
+/// Abort the `query`.
+pub(crate) async fn abort_query<M, K, Q>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    query: Q,
+) -> Result<(), ()>
+where
+    K: RuntimeAccess,
+    Q: storage::Query,
+    db::Message: From<RpcMessage<Q, ()>>,
+{
+    debug!("aborting query: key={}", query.key());
+    match db_rpc(ctx, db_ref, query) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
 }
 
 /// Returns the `(committed, aborted, failed)` votes.

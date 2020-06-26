@@ -109,10 +109,10 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
             }
             Message::CommitStoreBlob(RpcMessage { request, response }) => {
                 let (query, created_at) = request;
-                storage
+                let timestamp = storage
                     .commit(query, created_at)
                     .map_err(|err| err.describe("committing to adding blob"))?;
-                if let Err(err) = response.respond(()) {
+                if let Err(err) = response.respond(timestamp) {
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
@@ -128,14 +128,6 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                 let key = request;
                 debug!("retrieving blob: key={}", key);
                 let result = storage.lookup(&key);
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::ContainsBlob(RpcMessage { request, response }) => {
-                let key = request;
-                debug!("checking if blob exists: key={}", key);
-                let result = storage.contains(&key);
                 if let Err(err) = response.respond(result) {
                     warn!("db actor failed to send response to actor: {}", err);
                 }
@@ -212,7 +204,7 @@ pub enum Message {
     /// Commit to a blob being stored, phase two of storing the blob.
     ///
     /// Request is the query to store the blob, returned by [`Message::AddBlob`].
-    CommitStoreBlob(RpcMessage<(StoreBlob, SystemTime), ()>),
+    CommitStoreBlob(RpcMessage<(StoreBlob, SystemTime), SystemTime>),
     /// Abort storing a blob.
     ///
     /// Request is the query to abort, returned by [`Message::AddBlob`].
@@ -224,13 +216,6 @@ pub enum Message {
     ///
     /// Responds with the `Blob`, if its in the database.
     GetBlob(RpcMessage<Key, Option<BlobEntry>>),
-
-    /// Check if the storage contains a blob corresponding to key.
-    ///
-    /// Request is the key to look up.
-    ///
-    /// Responds with `true` if its in the database, `false` otherwise.
-    ContainsBlob(RpcMessage<Key, bool>),
 
     /// Get an uncommitted blob from storage.
     ///
@@ -292,10 +277,9 @@ macro_rules! from_rpc_message {
 }
 
 from_rpc_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
-from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> ());
+from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
 from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
-from_rpc_message!(Message::ContainsBlob(Key) -> bool);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
 from_rpc_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
