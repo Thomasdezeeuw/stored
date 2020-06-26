@@ -674,6 +674,13 @@ pub mod consensus {
                 }
             }
         };
+
+        // TODO: Thesis section 3.2.2.1
+        // * Step 10: detect failure of coordinator.
+        // * Step 11: share commit/abort with all other peers.
+        // * Step 12a, 13: no commits -> abort query.
+        // * Step 12b, 9a, 10b: at least one commit -> commit query.
+
         let response = match response {
             Ok(()) => ConsensusVote::Commit(SystemTime::now()),
             Err(()) => ConsensusVote::Abort,
@@ -825,6 +832,12 @@ pub mod consensus {
                 }
             }
         };
+
+        // TODO: Thesis section 3.2.4.1
+        // * Step 10: detect failure of coordinator.
+        // * Step 11: share commit/abort with all other peers.
+        // * Step 12a, 13: no commits -> abort query.
+        // * Step 12b, 9a, 10b: at least one commit -> commit query.
 
         let response = match response {
             Ok(()) => ConsensusVote::Commit(SystemTime::now()),
