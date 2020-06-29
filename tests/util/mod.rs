@@ -72,7 +72,7 @@ impl<'a> Drop for Proc<'a> {
         if Arc::strong_count(&self.processes) == 2 {
             // Take the (second to) last arc pointer to the process. Which means
             // that if we get dropped the process is stopped.
-            processes.take();
+            drop(processes.take());
         }
     }
 }
@@ -124,16 +124,19 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
                 stderr.set_nonblocking(true).unwrap();
                 STDERR.lock().unwrap().push(Some(stderr));
 
-                match &mut *WAKER.lock().unwrap() {
-                    waker @ None => {
+                match &mut *RELAY.lock().unwrap() {
+                    relay @ None => {
                         let poll = Poll::new().unwrap();
                         let new_waker = Waker::new(poll.registry(), NEW_PROCESS).unwrap();
-                        thread::spawn(move || relay_process_output(poll));
+                        let handle = thread::spawn(move || relay_process_output(poll));
                         // Ensure it will add the new output.
                         new_waker.wake().unwrap();
-                        *waker = Some(new_waker);
+                        let handle = WaitHandle {
+                            handle: Some(handle),
+                        };
+                        *relay = Some((new_waker, handle));
                     }
-                    Some(waker) => waker.wake().unwrap(),
+                    Some((waker, ..)) => waker.wake().unwrap(),
                 }
             }
 
@@ -158,14 +161,26 @@ lazy_static::lazy_static! {
     static ref STDOUT: ProcOutputs = Mutex::new(Vec::new());
     static ref STDERR: ProcOutputs = Mutex::new(Vec::new());
 
-    static ref WAKER: Mutex<Option<Waker>> = Mutex::new(None);
+    static ref RELAY: Mutex<Option<(Waker, WaitHandle)>> = Mutex::new(None);
 }
 
 // Use `Option` to keep index consistent.
 type ProcOutputs = Mutex<Vec<Option<Receiver>>>;
 
+struct WaitHandle {
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for WaitHandle {
+    fn drop(&mut self) {
+        let handle = self.handle.take().unwrap();
+        handle.join().expect("process output relay thread");
+    }
+}
+
 const NEW_PROCESS: Token = Token(usize::max_value());
-const STDERR_START: usize = 100000;
+const STDOUT_START: usize = 100000;
+const STDERR_START: usize = 200000;
 
 /// Using multiple processes with `Stdio::inherit` doesn't work properly as
 /// output will overwrite each other. So we start a new thread to serialise all
@@ -176,26 +191,39 @@ fn relay_process_output(mut poll: Poll) {
     let mut stderr_registered = 0;
     let mut buf = [0; 4096];
 
-    while !STDOUT.lock().unwrap().is_empty() || !STDERR.lock().unwrap().is_empty() {
+    while !is_empty(&STDOUT) || !is_empty(&STDERR) {
         poll.poll(&mut events, None).unwrap();
 
         for event in &events {
             match event.token() {
                 NEW_PROCESS => {
                     let registry = poll.registry();
-                    register_outputs(registry, &STDOUT, &mut stdout_registered, 0);
+                    register_outputs(registry, &STDOUT, &mut stdout_registered, STDOUT_START);
                     register_outputs(registry, &STDERR, &mut stderr_registered, STDERR_START);
                 }
-                token if token.0 > STDERR_START => {
+                token if token.0 >= STDERR_START => {
                     let idx = token.0 - STDERR_START;
                     handle_event(&STDERR, idx, &mut buf, io::stderr());
                 }
-                token => {
-                    handle_event(&STDERR, token.0, &mut buf, io::stdout());
+                token if token.0 >= STDOUT_START => {
+                    let idx = token.0 - STDOUT_START;
+                    handle_event(&STDOUT, idx, &mut buf, io::stderr());
+                }
+                _ => {
+                    eprintln!("unexpected event: {:?}", event);
                 }
             }
         }
     }
+}
+
+fn is_empty(outputs: &ProcOutputs) -> bool {
+    for output in outputs.lock().unwrap().iter() {
+        if output.is_some() {
+            return false;
+        }
+    }
+    true
 }
 
 fn register_outputs(
@@ -222,7 +250,7 @@ where
             loop {
                 match out.read(buf) {
                     Ok(0) => {
-                        drop(output.take());
+                        *output = None;
                         return;
                     }
                     Ok(n) => {
@@ -231,6 +259,7 @@ where
                     Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => break,
                     Err(err) => {
                         eprintln!("error reading from process pipe: {}", err);
+                        *output = None;
                         return;
                     }
                 }
