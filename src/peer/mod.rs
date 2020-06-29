@@ -83,11 +83,10 @@ fn start_listener(
     .map_err(|err| err.describe("creating new tcp::Server"))?;
     let supervisor = RestartSupervisor::new("consensus listener", ());
     let options = ActorOptions::default().with_priority(Priority::HIGH);
-    let _ = runtime
+    let server_ref = runtime
         .try_spawn(supervisor, server_actor, (), options)
         .map_err(|err| err.describe("spawning peer server"))?;
-    // FIXME: receive signals.
-    //runtime.receive_signals(server_ref.try_map());
+    runtime.receive_signals(server_ref.try_map());
 
     Ok(())
 }
