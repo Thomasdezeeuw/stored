@@ -582,6 +582,7 @@ async fn store_blob(
         Err(err) => return Err(err),
     }
 
+    // NOTE: `store_blob` will advance the buffer for use.
     match op::store_blob(ctx, db_ref, peers, &mut conn.buf, body_length).await {
         Ok(key) => Ok((ResponseKind::Stored(key), false)),
         Err(()) => Ok((ResponseKind::ServerError, true)),

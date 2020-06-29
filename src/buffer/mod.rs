@@ -356,7 +356,7 @@ where
         loop {
             match Pin::new(&mut self.read).poll(ctx) {
                 Poll::Ready(Ok(0)) => return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into())),
-                Poll::Ready(Ok(n)) if self.left < n => return Poll::Ready(Ok(())),
+                Poll::Ready(Ok(n)) if self.left <= n => return Poll::Ready(Ok(())),
                 Poll::Ready(Ok(n)) => {
                     self.left -= n;
                     // Try to read some more bytes.

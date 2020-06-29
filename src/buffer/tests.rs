@@ -72,6 +72,13 @@ fn buffer_read_n_from() {
     assert_eq!(buf.as_bytes(), &[1, 2, 3, 4, 5]);
     buf.processed(5);
 
+    // Read the exact amount of bytes.
+    let mut reader = Cursor::new([1, 2, 3]);
+    poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap();
+    assert_eq!(buf.len(), 3);
+    assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+    buf.processed(3);
+
     // Reading less bytes should cause an error.
     let mut reader = Cursor::new([1, 2]);
     let err = poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap_err();
