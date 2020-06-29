@@ -618,12 +618,14 @@ pub mod http {
         for (name, value) in response.headers() {
             match name {
                 &SERVER => assert_eq!(value, "stored"),
-                &DATE => cmp_date_header(&http::header::DATE, value, &*want_date_header),
+                &DATE => cmp_date_header(&http::header::DATE, value, &*want_date_header, 1),
                 name => {
                     let want = want_headers.iter().find(|want| name == want.0);
                     if let Some(want) = want {
                         if name == LAST_MODIFIED {
-                            cmp_date_header(name, value, want.1);
+                            // Give a margin of 5 (max timeout) + 1 (default
+                            // margin) seconds.
+                            cmp_date_header(name, value, want.1, 6);
                         } else {
                             assert_eq!(
                                 value,
@@ -708,16 +710,38 @@ pub mod http {
         ];
 
         for (value, want) in tests {
-            cmp_date_header(&LAST_MODIFIED, &HeaderValue::from_static(value), want);
+            cmp_date_header(&LAST_MODIFIED, &HeaderValue::from_static(value), want, 1);
         }
     }
 
-    fn cmp_date_header(name: &HeaderName, value: &HeaderValue, want: &str) {
-        // Check a second before and after.
-        let before_want = before_date_header(want);
-        if value != want && value != &*before_want {
-            assert_eq!(value, want, "Different '{}' header", name);
+    fn cmp_date_header(name: &HeaderName, value: &HeaderValue, want: &str, margin: usize) {
+        if value == &*want {
+            // Exact match.
+            return;
         }
+
+        // Date within margin after the `want`ed time.
+        let mut w = before_date_header(want);
+        for _ in 0..margin {
+            if value == &*w {
+                // Within acceptable margin.
+                return;
+            }
+            w = before_date_header(&*w);
+        }
+
+        // Date within margin befored the `want`ed time.
+        let mut v = before_date_header(value.to_str().unwrap());
+        for _ in 0..margin {
+            if v == want {
+                // Within acceptable margin.
+                return;
+            }
+            v = before_date_header(&*v);
+        }
+
+        // Outside of margin.
+        assert_eq!(value, want, "Different '{}' header", name);
     }
 
     fn before_date_header(date: &str) -> String {
@@ -725,15 +749,21 @@ pub mod http {
         // Format: `Wed, 10 Jun 2020 18:19:51 GMT`.
         const SEC1_INDEX: usize = 23;
         const SEC2_INDEX: usize = 24;
+        const MIN1_INDEX: usize = 20;
         const MIN2_INDEX: usize = 21;
 
         let mut date = date.to_owned();
         let bytes = unsafe { date.as_bytes_mut() };
         if bytes[SEC2_INDEX] == b'0' {
             if bytes[SEC1_INDEX] == b'0' {
-                // TODO: properly support changing the minute.
-                bytes[MIN2_INDEX] -= 1;
-                bytes[SEC1_INDEX] = b'5';
+                if bytes[MIN2_INDEX] == b'0' {
+                    // TODO: change the hour.
+                    bytes[MIN1_INDEX] -= 1;
+                    bytes[MIN2_INDEX] = b'9';
+                } else {
+                    bytes[MIN2_INDEX] -= 1;
+                    bytes[SEC1_INDEX] = b'5';
+                }
             } else {
                 bytes[SEC1_INDEX] -= 1;
             }
