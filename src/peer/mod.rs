@@ -112,7 +112,7 @@ fn start_relays(
             peer_address
         );
         let args = (peer_address, peers.clone(), server);
-        let supervisor = coordinator::relay::Supervisor::new(args.clone());
+        let supervisor = coordinator::relay::Supervisor::new(peer_address, peers.clone(), server);
         let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
@@ -387,7 +387,7 @@ impl Peers {
             peer_address
         );
         let args = (peer_address, self.clone(), server);
-        let supervisor = coordinator::relay::Supervisor::new(args.clone());
+        let supervisor = coordinator::relay::Supervisor::new(peer_address, self.clone(), server);
         let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
@@ -635,7 +635,10 @@ pub mod switcher {
                 buf.processed(MAGIC_LENGTH);
                 // Don't log the error as a problem in the switch actor.
                 if let Err(err) = coordinator::server::actor(ctx, stream, buf, db_ref).await {
-                    warn!("coordinator server failed: {}", err);
+                    warn!(
+                        "coordinator server failed: {}: remote={}, server={}",
+                        err, remote, server
+                    );
                 }
                 Ok(())
             }
@@ -645,14 +648,17 @@ pub mod switcher {
                 let res =
                     participant::dispatcher::actor(ctx, stream, buf, peers, db_ref, server).await;
                 if let Err(err) = res {
-                    warn!("participant dispatcher failed: {}", err);
+                    warn!(
+                        "participant dispatcher failed: {}: remote={}, server={}",
+                        err, remote, server
+                    );
                 }
                 Ok(())
             }
             _ => {
                 warn!(
-                    "closing connection: incorrect connection magic: remote_address={}",
-                    remote
+                    "closing connection: incorrect connection magic: remote={}, server={}",
+                    remote, server,
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.

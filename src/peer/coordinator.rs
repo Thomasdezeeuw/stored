@@ -44,40 +44,46 @@ pub mod relay {
     /// An estimate of the largest size of an [`Request`] in bytes.
     const MAX_REQ_SIZE: usize = 300;
 
-    pub struct Supervisor<Arg> {
-        arg: Arg,
+    pub struct Supervisor {
+        remote: SocketAddr,
+        peers: Peers,
+        server: SocketAddr,
         restarts_left: usize,
     }
 
     /// Maximum number of times the [`actor`] will be restarted.
     const MAX_RESTARTS: usize = 5;
 
-    impl<Arg> Supervisor<Arg> {
+    impl Supervisor {
         /// Create a new `Supervisor`.
-        pub fn new(arg: Arg) -> Supervisor<Arg> {
+        pub fn new(remote: SocketAddr, peers: Peers, server: SocketAddr) -> Supervisor {
             Supervisor {
-                arg,
+                remote,
+                peers,
+                server,
                 restarts_left: MAX_RESTARTS,
             }
         }
     }
 
-    impl<Arg, NA, A> heph::Supervisor<NA> for Supervisor<Arg>
+    impl<NA, A> heph::Supervisor<NA> for Supervisor
     where
-        NA: NewActor<Argument = Arg, Error = !, Actor = A>,
+        NA: NewActor<Argument = (SocketAddr, Peers, SocketAddr), Error = !, Actor = A>,
         A: Actor<Error = crate::Error>,
-        Arg: Clone,
     {
         fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "coordinator relay failed, restarting it ({}/{} restarts left): {}",
-                    self.restarts_left, MAX_RESTARTS, err
+                    "coordinator relay failed, restarting it ({}/{} restarts left): {}: remote={}, server={}",
+                    self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
                 );
-                SupervisorStrategy::Restart(self.arg.clone())
+                SupervisorStrategy::Restart((self.remote, self.peers.clone(), self.server))
             } else {
-                warn!("peer coordinator relay failed, stopping it: {}", err);
+                warn!(
+                    "peer coordinator relay failed, stopping it: {}: remote={}, server={}",
+                    err, self.remote, self.server,
+                );
                 SupervisorStrategy::Stop
             }
         }
@@ -323,7 +329,7 @@ pub mod relay {
                         Ok(()) => break stream,
                         // Not yet connected, try again.
                         Err(err) => {
-                            warn!(
+                            debug!(
                                 "failed to connect to peer, but trying again ({}/{} tries): {}",
                                 i, CONNECT_TRIES, err
                             );
@@ -332,7 +338,7 @@ pub mod relay {
                 }
                 Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
                 Err(err) => {
-                    warn!(
+                    debug!(
                         "failed to connect to peer, but trying again ({}/{} tries): {}",
                         i, CONNECT_TRIES, err
                     );

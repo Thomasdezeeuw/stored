@@ -9,7 +9,7 @@ use heph::actor_ref::rpc::{Rpc, RpcMessage};
 use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
 use heph::{actor, ActorRef};
-use log::{debug, error};
+use log::{debug, error, warn};
 
 use crate::db::{self, HealthCheck, HealthOk};
 use crate::peer::coordinator::relay;
@@ -251,7 +251,7 @@ where
         let (committed, aborted, failed) = count_consensus_votes(&results);
         if aborted > 0 || failed > 0 {
             // TODO: allow some failure here.
-            error!(
+            warn!(
                 "consensus algorithm failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
                 consensus_id, query.key(), committed, aborted, failed
             );
@@ -293,7 +293,7 @@ where
         let (committed, aborted, failed) = count_consensus_votes(&results);
         if aborted > 0 || failed > 0 {
             // TODO: allow some failure here.
-            error!(
+            warn!(
                 "consensus algorithm commitment failed: consensus_id={}, key={}, votes_commit={}, votes_abort={}, failed_votes={}",
                 consensus_id, query.key(), committed, aborted, failed
             );
@@ -375,7 +375,7 @@ where
 async fn abort_consensus(abort_rpc: PeerRpc<()>, consensus_id: ConsensusId, key: &Key) {
     let results = abort_rpc.await;
     let (committed, aborted, failed) = count_consensus_votes(&results);
-    error!(
+    warn!(
         "aborted consensus algorithm: consensus_id={}, key={}, success={}, failed={}",
         consensus_id,
         key,
