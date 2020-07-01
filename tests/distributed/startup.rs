@@ -17,9 +17,9 @@ fn syncing_peers() {
 
     const DB_PORTS: &[u16] = &[10001, 10002, 10003];
     const DB_PATHS: &[&str] = &[
-        "/tmp/sync_peers_tests_1.db",
-        "/tmp/sync_peers_tests_2.db",
-        "/tmp/sync_peers_tests_3.db",
+        "/tmp/stored_sync_peers_tests_1.db",
+        "/tmp/stored_sync_peers_tests_2.db",
+        "/tmp/stored_sync_peers_tests_3.db",
     ];
     const CONF_PATHS: &[&str] = &[
         "tests/config/sync_peers_1.toml",
