@@ -135,6 +135,25 @@ pub mod dispatcher {
     /// An estimate of the largest size of an [`Response`] in bytes.
     const MAX_RES_SIZE: usize = 100;
 
+    /// Function to change the log target and module for the warning message,
+    /// the [`peer::switcher`] has little to do with the error.
+    pub(crate) async fn run_actor(
+        ctx: actor::Context<Response, ThreadSafe>,
+        stream: TcpStream,
+        buf: Buffer,
+        peers: Peers,
+        db_ref: ActorRef<db::Message>,
+        server: SocketAddr,
+        remote: SocketAddr,
+    ) {
+        if let Err(err) = actor(ctx, stream, buf, peers, db_ref, server).await {
+            warn!(
+                "participant dispatcher failed: {}: remote={}, server={}",
+                err, remote, server
+            );
+        }
+    }
+
     /// Actor that accepts messages from [`coordinator::relay`] over the
     /// `stream` and starts a [`consensus`] actor for each run of the consensus
     /// algorithm.

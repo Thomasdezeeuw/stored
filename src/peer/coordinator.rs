@@ -580,6 +580,7 @@ pub mod server {
 
     use std::io;
     use std::mem::size_of;
+    use std::net::SocketAddr;
     use std::time::Duration;
 
     use futures_util::io::AsyncWriteExt;
@@ -640,6 +641,24 @@ pub mod server {
                 Committed(blob) => blob.prefetch(),
                 Uncommitted(blob) => blob.prefetch(),
             }
+        }
+    }
+
+    /// Function to change the log target and module for the warning message,
+    /// the [`peer::switcher`] has little to do with the error.
+    pub(crate) async fn run_actor(
+        ctx: actor::Context<Response, ThreadSafe>,
+        stream: TcpStream,
+        buf: Buffer,
+        db_ref: ActorRef<db::Message>,
+        server: SocketAddr,
+        remote: SocketAddr,
+    ) {
+        if let Err(err) = actor(ctx, stream, buf, db_ref).await {
+            warn!(
+                "coordinator server failed: {}: remote={}, server={}",
+                err, remote, server
+            );
         }
     }
 

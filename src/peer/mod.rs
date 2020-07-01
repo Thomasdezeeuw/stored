@@ -633,26 +633,13 @@ pub mod switcher {
         match &buf.as_bytes()[..MAGIC_LENGTH] {
             COORDINATOR_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                // Don't log the error as a problem in the switch actor.
-                if let Err(err) = coordinator::server::actor(ctx, stream, buf, db_ref).await {
-                    warn!(
-                        "coordinator server failed: {}: remote={}, server={}",
-                        err, remote, server
-                    );
-                }
+                coordinator::server::run_actor(ctx, stream, buf, db_ref, server, remote).await;
                 Ok(())
             }
             PARTICIPANT_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                // Don't log the error as a problem in the switch actor.
-                let res =
-                    participant::dispatcher::actor(ctx, stream, buf, peers, db_ref, server).await;
-                if let Err(err) = res {
-                    warn!(
-                        "participant dispatcher failed: {}: remote={}, server={}",
-                        err, remote, server
-                    );
-                }
+                participant::dispatcher::run_actor(ctx, stream, buf, peers, db_ref, server, remote)
+                    .await;
                 Ok(())
             }
             _ => {
