@@ -1,0 +1,11 @@
+path = "/tmp/sync_peers_tests_2.db"
+
+[http]
+address = "127.0.0.1:12022"
+
+[distributed]
+peer_address = "127.0.0.1:12122"
+replicas = "all"
+peers = [
+	"127.0.0.1:12123",
+]
