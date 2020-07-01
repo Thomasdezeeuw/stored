@@ -1,12 +1,12 @@
 path = "/tmp/stored_remove_blob_tests3_1.db"
 
 [http]
-address = "127.0.0.1:11031"
+address = "127.0.0.1:12031"
 
 [distributed]
-peer_address = "127.0.0.1:11131"
+peer_address = "127.0.0.1:12131"
 replicas = "all"
 peers = [
-	"127.0.0.1:11132",
-	"127.0.0.1:11133",
+	"127.0.0.1:12132",
+	"127.0.0.1:12133",
 ]

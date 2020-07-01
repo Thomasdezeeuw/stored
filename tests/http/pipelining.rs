@@ -13,7 +13,7 @@ use crate::util::http::{
     assert_response, body, date_header, header, read_responses, write_request,
 };
 
-const DB_PORT: u16 = 9003;
+const DB_PORT: u16 = 9004;
 const DB_PATH: &'static str = "/tmp/stored_pipelining_tests.db";
 const CONF_PATH: &'static str = "tests/config/pipelining.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;

@@ -1,4 +1,4 @@
 path = "/tmp/stored_pipelining_tests.db"
 
 [http]
-address = "127.0.0.1:9003"
+address = "127.0.0.1:9004"

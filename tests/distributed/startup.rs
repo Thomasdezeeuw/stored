@@ -15,7 +15,7 @@ fn syncing_peers() {
     // Node 1 --> Node 2 --> Node 3 (not connected to any peers).
     // After the startup the should all be connected to each other.
 
-    const DB_PORTS: &[u16] = &[12021, 12022, 12023];
+    const DB_PORTS: &[u16] = &[10001, 10002, 10003];
     const DB_PATHS: &[&str] = &[
         "/tmp/sync_peers_tests_1.db",
         "/tmp/sync_peers_tests_2.db",

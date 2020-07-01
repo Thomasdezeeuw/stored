@@ -41,7 +41,7 @@ macro_rules! tests {
         mod with_2_peers {
             use super::*;
 
-            const DB_PORTS: &[u16] = &[10021, 10022];
+            const DB_PORTS: &[u16] = &[11021, 11022];
             const DB_PATHS: &[&str] = tests!(_db_paths: "2_1", "2_2");
             const CONF_PATHS: &[&str] = tests!(_conf_paths: "2_1", "2_2");
 
@@ -63,7 +63,7 @@ macro_rules! tests {
         mod with_3_peers {
             use super::*;
 
-            const DB_PORTS: &[u16] = &[10031, 10032, 10033];
+            const DB_PORTS: &[u16] = &[11031, 11032, 11033];
             const DB_PATHS: &[&str] = tests!(_db_paths: "3_1", "3_2", "3_3");
             const CONF_PATHS: &[&str] = tests!(_conf_paths: "3_1", "3_2", "3_3");
 
