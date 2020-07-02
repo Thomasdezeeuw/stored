@@ -50,7 +50,7 @@ store values using a POST request.
 
 ```bash
 # Store "Hello world".
-curl -X POST -d "Hello world" http://127.0.0.1:8080/blob
+curl -X POST -d "Hello world" -v http://127.0.0.1:8080/blob
 ```
 
 
