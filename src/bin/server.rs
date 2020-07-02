@@ -27,9 +27,15 @@ client can validate the correct delivery of the blob by using the returned key
 (checksum). The blob themselves are unchanged by Stored.
 
 Usage:
-    \tstored <path_to_config>
-    \tstored -v or --version
-    \tstored -h or --help"
+    stored <path_to_config>
+    stored -v or --version
+    stored -h or --help
+
+Environment Variables
+    LOG_LEVEL
+      The severity level of messages to log. Can be one of: 'error', 'warn',
+      'info', 'debug' or 'trace'. Note that 'debug' and 'trace' might not be
+      available in release builds."
 );
 
 fn main() -> ExitCode {

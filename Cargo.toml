@@ -13,7 +13,7 @@ futures-util = { version = "0.3.5", default-features = false, features = ["io", 
 # TODO: replace with published crate.
 heph       = { path = "../heph" }
 libc       = { version = "0.2.67", default-features = false }
-log        = { version = "0.4.6", default-features = false }
+log        = { version = "0.4.6", default-features = false, features = ["release_max_level_info"] }
 num_cpus   = { version = "1.12.0", default-features = false }
 ring       = { version = "0.16.2", default-features = false }
 # Need the `std` feature as it implements `Error` for `httparse::Error`.
