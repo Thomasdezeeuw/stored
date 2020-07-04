@@ -182,7 +182,7 @@ pub struct Connection {
 }
 
 /// Maximum number of headers read from an incoming request.
-const MAX_HEADERS: usize = 16;
+const MAX_HEADERS: usize = 32;
 
 /// Maximum size of the headers of a request in bytes.
 const MAX_HEADERS_SIZE: usize = 2 * 1024;
