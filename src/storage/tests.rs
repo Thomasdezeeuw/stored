@@ -67,6 +67,7 @@ fn test_data_path(file: &str) -> PathBuf {
 lazy_static! {
     static ref DB_001: Mutex<()> = Mutex::new(());
     static ref DB_008: Mutex<()> = Mutex::new(());
+    static ref DB_009: Mutex<()> = Mutex::new(());
 }
 
 // Data stored in "001.db" test data.
@@ -826,7 +827,7 @@ mod storage {
 
     use super::{
         temp_dir, test_data_path, test_entries, AddResult, Blob, BlobEntry, Entry, EntryIndex,
-        ModifiedTime, Query, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, INDEX_MAGIC,
+        ModifiedTime, Query, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, DB_009, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -1015,6 +1016,54 @@ mod storage {
             BlobEntry::Stored(got) => assert_eq!(got.bytes(), blob),
             BlobEntry::Removed(_) => panic!("unexpected blob entry"),
         }
+    }
+
+    #[test]
+    fn keys_separate_from_index() {
+        let path = test_data_path("001.db");
+        let _guard = DB_001.lock().unwrap();
+        let mut storage = Storage::open(&path).unwrap();
+
+        let keys = storage.keys().unwrap();
+        let iter = keys.into_iter();
+        assert_eq!(iter.len(), 2);
+        for (got, want) in iter.zip(test_entries().iter()) {
+            assert_eq!(got, &want.key);
+        }
+    }
+
+    #[test]
+    fn keys_can_outlive_storage() {
+        let path = test_data_path("009.db");
+        let _guard = DB_009.lock().unwrap();
+        let mut storage = Storage::open(&path).unwrap();
+
+        let keys = storage.keys().unwrap();
+
+        // After dropping the index the entries should still be usable.
+        drop(storage);
+
+        let iter = keys.into_iter();
+        assert_eq!(iter.len(), 2);
+        let want = &[
+            Key::for_blob(b"Hello world"),
+            // Include keys for removed blobs.
+            Key::for_blob(b"Hello mars"),
+        ];
+        for (got, want) in iter.zip(want.iter()) {
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
+    fn empty_keys() {
+        let path = temp_dir("empty_keys.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let keys = storage.keys().unwrap();
+        let mut iter = keys.into_iter();
+        assert_eq!(iter.len(), 0);
+        assert_eq!(iter.next(), None);
     }
 
     #[test]

@@ -4,7 +4,8 @@
     maybe_uninit_slice,
     maybe_uninit_slice_assume_init,
     never_type,
-    result_flattening
+    result_flattening,
+    type_alias_impl_trait
 )]
 
 pub mod buffer;

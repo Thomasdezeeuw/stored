@@ -368,6 +368,11 @@ impl Storage {
         self.uncommitted.get(key).map(|(_, blob)| blob.clone())
     }
 
+    /// Returns an iterator over the `Entry`'s `Key`s.
+    pub fn keys(&mut self) -> io::Result<Keys> {
+        self.index.entries().map(|slice| Keys { slice })
+    }
+
     /// Add `blob` to the database.
     ///
     /// Only after the returned [query] is [committed] is the blob stored in the
@@ -1325,7 +1330,7 @@ impl Index {
     /// Returns an iterator for all entries remaining in the `Index`. If the
     /// `Index` was just `open`ed this means all entries in the entire index
     /// file.
-    fn entries<'i>(&'i mut self) -> io::Result<MmapSlice<'i, Entry>> {
+    fn entries(&mut self) -> io::Result<MmapSlice<Entry>> {
         let mmap_length = self.length as libc::size_t;
         let indices_length = mmap_length - INDEX_MAGIC.len();
         if indices_length == 0 {
@@ -1444,7 +1449,7 @@ impl Index {
 }
 
 /// A slice backed by `mmap(2)`.
-struct MmapSlice<'a, T> {
+struct MmapSlice<T> {
     /// Mmap address. Safety: must be the `mmap` returned address, may be null
     /// in which case the address is not unmapped. If null `length` must be 0.
     address: *mut libc::c_void,
@@ -1452,10 +1457,10 @@ struct MmapSlice<'a, T> {
     length: libc::size_t,
     /// Offset from `address` to start the slice returned by `Deref`.
     offset: usize,
-    slice: PhantomData<&'a [T]>,
+    slice: PhantomData<[T]>,
 }
 
-impl<'a, T> Deref for MmapSlice<'a, T> {
+impl<T> Deref for MmapSlice<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -1468,7 +1473,7 @@ impl<'a, T> Deref for MmapSlice<'a, T> {
     }
 }
 
-impl<'a> MmapSlice<'a, Entry> {
+impl MmapSlice<Entry> {
     /// Returns an iterator over the `Entry`s and its index into the [`Index`]
     /// file.
     fn iter(
@@ -1481,7 +1486,7 @@ impl<'a> MmapSlice<'a, Entry> {
     }
 }
 
-impl<'a, T> Drop for MmapSlice<'a, T> {
+impl<T> Drop for MmapSlice<T> {
     fn drop(&mut self) {
         // If the index file was empty `address` will be null as we can't create
         // a mmap with length 0.
@@ -1500,6 +1505,31 @@ impl<'a, T> Drop for MmapSlice<'a, T> {
         } else {
             debug_assert!(self.length == 0);
         }
+    }
+}
+
+/// Iterator of the [`Key`]s in the [`Storage`].
+pub struct Keys {
+    slice: MmapSlice<Entry>,
+}
+
+impl fmt::Debug for Keys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.slice.deref().fmt(f)
+    }
+}
+
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl Send for Keys {}
+unsafe impl Sync for Keys {}
+
+impl<'a> IntoIterator for &'a Keys {
+    type Item = &'a Key;
+    type IntoIter = impl Iterator<Item = Self::Item> + ExactSizeIterator + FusedIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slice.deref().iter().map(|entry| &entry.key)
     }
 }
 
