@@ -22,7 +22,7 @@ use log::{debug, error, info, trace, warn};
 use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
-    AddResult, BlobEntry, RemoveBlob, RemoveResult, Storage, StoreBlob, UncommittedBlob,
+    AddResult, BlobEntry, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, UncommittedBlob,
 };
 use crate::Key;
 
@@ -142,6 +142,33 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
+            Message::GetKeys(RpcMessage { response, .. }) => {
+                debug!("retrieving storage keys");
+                let result = storage
+                    .keys()
+                    .map_err(|err| err.describe("retrieving stored keys"))?;
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::SyncStoredBlob(RpcMessage { request, response }) => {
+                let (view, created_at) = request;
+                storage
+                    .store_blob(view.as_bytes(), created_at)
+                    .map_err(|err| err.describe("syncing stored blob"))?;
+                if let Err(err) = response.respond(view) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::SyncRemovedBlob(RpcMessage { request, response }) => {
+                let (key, removed_at) = request;
+                storage
+                    .store_removed_blob(key, removed_at)
+                    .map_err(|err| err.describe("syncing removed blob"))?;
+                if let Err(err) = response.respond(()) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
             Message::RemoveBlob(RpcMessage { request, response }) => {
                 let key = request;
                 use RemoveResult::*;
@@ -194,12 +221,7 @@ pub enum Message {
     ///
     /// Responds with a query to commit to storing the blob, or the key of the
     /// blob if the blob is already in the database. Also returns the original,
-    /// unchanged `Buffer` in `Message::AddBlob`.
-    ///
-    /// # Panics
-    ///
-    /// This will panic if the `length` is larger then the bytes in the
-    /// `Buffer`.
+    /// unchanged `BufView` in `Message::AddBlob`.
     AddBlob(RpcMessage<BufView, (AddBlobResponse, BufView)>),
     /// Commit to a blob being stored, phase two of storing the blob.
     ///
@@ -226,6 +248,29 @@ pub enum Message {
     ///
     /// [`GetBlob`]: Message::GetBlob
     GetUncommittedBlob(RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>),
+
+    /// Get the keys currently stored in the database. Used by the
+    /// synchronisation process.
+    ///
+    /// Responds with [`Keys`], an iterator over all [`Key`]s stored **at the
+    /// moment the request is made**.
+    ///
+    /// # Notes
+    ///
+    /// The returned keys are almost always already outdated the moment there
+    /// returned.
+    GetKeys(RpcMessage<(), Keys>),
+    /// Store and commit a blob to storage, used by the synchronisation process.
+    ///
+    /// Request is the [`Key`], the blob (must match the key) and the timestamp
+    /// at which it was committed.
+    ///
+    /// Returns the [`BufView`] unchanged.
+    SyncStoredBlob(RpcMessage<(BufView, SystemTime), BufView>),
+    /// Store and commit to a removed blob, used by the synchronisation process.
+    ///
+    /// Request is the [`Key`]  and the timestamp at which the blob was removed.
+    SyncRemovedBlob(RpcMessage<(Key, SystemTime), ()>),
 
     /// Remove a blob from the database.
     ///
@@ -281,6 +326,9 @@ from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime)
 from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
+from_rpc_message!(Message::GetKeys(()) -> Keys);
+from_rpc_message!(Message::SyncStoredBlob(BufView, SystemTime) -> BufView);
+from_rpc_message!(Message::SyncRemovedBlob(Key, SystemTime) -> ());
 from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
 from_rpc_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
 from_rpc_message!(Message::AbortRemoveBlob(RemoveBlob) -> ());
@@ -305,4 +353,9 @@ pub enum RemoveBlobResponse {
     /// This is `None` if the blob was never present, or `Some` if it was
     /// removed already.
     NotStored(Option<SystemTime>),
+}
+
+/// Return an error to use when the database has failed.
+pub fn db_error() -> crate::Error {
+    io::Error::from(io::ErrorKind::NotConnected).describe("database actor failed")
 }

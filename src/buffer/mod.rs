@@ -23,7 +23,7 @@ use futures_io::AsyncRead;
 mod tests;
 
 /// Size used as initial buffer size.
-const INITIAL_BUF_SIZE: usize = 8 * 1024;
+pub(crate) const INITIAL_BUF_SIZE: usize = 8 * 1024;
 
 /// Minimum number of processed bytes before the data is moved to the start of
 /// the buffer.
@@ -85,6 +85,11 @@ impl Buffer {
     /// Returns the unprocessed, read bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.data[self.processed..]
+    }
+
+    /// Returns the next byte.
+    pub fn next_byte(&self) -> Option<u8> {
+        self.data[self.processed..].first().copied()
     }
 
     /// Create a new `BufView` from the `Buffer`.
@@ -276,6 +281,7 @@ impl BufView {
 /// This future doesn't implement any waking mechanism, it up to the reader `R`
 /// to handle wakeups.
 #[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct Read<'b, R, B = Buffer> {
     buffer: &'b mut B,
     reader: R,
@@ -341,6 +347,7 @@ where
 /// This future doesn't implement any waking mechanism, it up to the reader `R`
 /// to handle wakeups.
 #[derive(Debug)]
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct ReadN<'b, R, B = Buffer> {
     read: Read<'b, R, B>,
     left: usize,

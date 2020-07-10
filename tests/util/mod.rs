@@ -98,15 +98,20 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
         for conf_path in conf_paths {
             let mut child = Command::new(env!("CARGO_BIN_EXE_stored"));
 
-            if filter == LevelFilter::Off {
+            let capturing_output = if filter == LevelFilter::Off {
                 child.stderr(Stdio::null()).stdout(Stdio::null());
+                false
             } else {
                 child
                     .stderr(Stdio::piped())
                     .stdout(Stdio::piped())
-                    .env("LOG_LEVEL", filter.to_string())
-                    .env("LOG_TARGET", "stored");
-            }
+                    .env("LOG_LEVEL", filter.to_string());
+                if filter <= LevelFilter::Debug {
+                    // Gets a little noisy otherwise.
+                    child.env("LOG_TARGET", "stored");
+                }
+                true
+            };
 
             let mut child = child
                 .stdin(Stdio::null())
@@ -115,7 +120,7 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
                 .map(|inner| ChildCommand { inner })
                 .expect("unable to start server");
 
-            if filter != LevelFilter::Off {
+            if capturing_output {
                 let stdout = Receiver::from(child.inner.stdout.take().unwrap());
                 stdout.set_nonblocking(true).unwrap();
                 STDOUT.lock().unwrap().push(Some(stdout));

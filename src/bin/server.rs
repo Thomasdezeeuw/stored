@@ -79,12 +79,14 @@ fn try_main() -> Result<(), ExitCode> {
         peer::start(&mut runtime, distributed_config, db_ref.clone())
             .map_err(map_err!("error setting up peer actors: {}"))?
     } else {
-        Peers::empty()
+        Peers::empty(db_ref.clone())
     };
 
     info!("listening on http://{}", config.http.address);
     let start_listener = http::setup(config.http.address, db_ref, peers)
         .map_err(map_err!("error binding HTTP server: {}"))?;
+
+    // FIXME: only start the HTTP listener once we're synchronised.
 
     runtime
         .use_all_cores()

@@ -102,8 +102,12 @@
 // TODO: use the invalid bit in `Datetime.subsec_nanos` to indicate that the
 // storing the blob was aborted? That would make it easier for the cleanup.
 
+// TODO: if an index entry is detected, or if the index file length is incorrect
+// should we validate the database?
+
 use std::cell::UnsafeCell;
 use std::collections::hash_map::{self, HashMap};
+use std::convert::TryInto;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::iter::FusedIterator;
@@ -170,11 +174,16 @@ impl Blob {
     ///
     /// If this returns an error it doesn't mean the bytes are inaccessible.
     pub fn prefetch(&self) -> io::Result<()> {
-        madvise(
-            self.bytes.as_ptr() as *mut _,
-            self.bytes.len(),
-            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-        )
+        // TODO: benchmark at what size it makes sense to use this.
+        if self.len() > PAGE_SIZE {
+            madvise(
+                self.bytes.as_ptr() as *mut _,
+                self.bytes.len(),
+                libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
+            )
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -220,11 +229,16 @@ impl UncommittedBlob {
     ///
     /// If this returns an error it doesn't mean the bytes are inaccessible.
     pub fn prefetch(&self) -> io::Result<()> {
-        madvise(
-            self.address.as_ptr() as *mut _,
-            self.length as usize,
-            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-        )
+        // TODO: benchmark at what size it makes sense to use this.
+        if self.len() > PAGE_SIZE {
+            madvise(
+                self.address.as_ptr() as *mut _,
+                self.length as usize,
+                libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
+            )
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -457,6 +471,88 @@ impl Storage {
         Q: Query,
     {
         query.abort(self)
+    }
+
+    /// This is equal to [`Storage::add_blob`] followed by [committing] to the
+    /// [`StoreBlob`] query. Used to synchronise blobs.
+    ///
+    /// [committing]: Storage::commit
+    pub fn store_blob(&mut self, blob: &[u8], created_at: SystemTime) -> io::Result<SystemTime> {
+        let key = Key::for_blob(blob);
+        trace!(
+            "storing blob: key={}, length={}, created_at={:?}",
+            key,
+            blob.len(),
+            created_at
+        );
+
+        // Can't have double entries.
+        if let Some((_, BlobEntry::Stored(blob))) = self.blobs.get(&key) {
+            return Ok(blob.created_at());
+        }
+
+        // First add the blob to the data file. If something happens the blob
+        // will be written (or not), but its not *in* the database as the index
+        // defines what is in the database.
+        let (offset, address, lifetime) = self.data.add_blob(blob)?;
+        let uncommitted_blob = UncommittedBlob {
+            offset,
+            length: blob.len() as u32,
+            address,
+            lifetime,
+        };
+        let query = StoreBlob { key: key.clone() };
+        let (entry_index, blob) = query.create_entry(
+            &mut self.data,
+            &mut self.index,
+            created_at,
+            uncommitted_blob,
+        )?;
+        self.blobs
+            .insert(key, (entry_index, BlobEntry::Stored(blob)));
+        self.length += 1;
+        Ok(created_at)
+    }
+
+    pub fn store_removed_blob(
+        &mut self,
+        key: Key,
+        removed_at: SystemTime,
+    ) -> io::Result<SystemTime> {
+        trace!(
+            "storing removed blob: key={}, removed_at={:?}",
+            key,
+            removed_at
+        );
+
+        if let Some((entry_index, blob_entry)) = self.blobs.get_mut(&key) {
+            if let BlobEntry::Removed(time) = blob_entry {
+                // TODO: should we use the minimum time?
+                Ok(*time)
+            } else {
+                let res = self
+                    .index
+                    .mark_as_removed(*entry_index, removed_at)
+                    .map(|()| {
+                        *blob_entry = BlobEntry::Removed(removed_at);
+                        removed_at
+                    });
+                self.length -= 1;
+                res
+            }
+        } else {
+            let entry = Entry {
+                key,
+                offset: 0,
+                length: 0,
+                time: ModifiedTime::Removed(removed_at).into(),
+            };
+            self.index.add_entry(&entry).map(|entry_index| {
+                self.blobs
+                    .insert(entry.key, (entry_index, BlobEntry::Removed(removed_at)));
+                removed_at
+            })
+        }
     }
 }
 
@@ -1381,7 +1477,9 @@ impl Index {
     /// Add a new `entry` to the `Index`.
     fn add_entry(&mut self, entry: &Entry) -> io::Result<EntryIndex> {
         debug_assert!(
-            entry.offset >= DATA_MAGIC.len() as u64,
+            (entry.offset >= DATA_MAGIC.len() as u64) ||
+            // Entries for removed blob are allowed an offset of 0.
+            (entry.offset == 0 && entry.length == 0),
             "offset inside magic header"
         );
         // Safety: because `u8` doesn't have any invalid bit patterns this is
@@ -1431,20 +1529,16 @@ impl Index {
             "index outside of index file"
         );
 
-        // Safety: because `u8` doesn't have any invalid bit patterns this is
-        // OK. We're also ensured at least `size_of::<DateTime>` bytes are valid.
-        let bytes: &[u8] = unsafe {
-            slice::from_raw_parts(date as *const DateTime as *const _, size_of::<DateTime>())
-        };
-
         // NOTE: this is only correct because `Entry` and `DateTime` have the
         // `#[repr(C)]` attribute and thus the layout is fixed.
         let offset = at.offset() + ((size_of::<Entry>() - size_of::<DateTime>()) as u64);
-        self.file.write_all_at(&bytes, offset).and_then(|_| {
-            // Ensure we didn't change the file size.
-            debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
-            self.file.sync_all()
-        })
+        self.file
+            .write_all_at(date.as_bytes(), offset)
+            .and_then(|_| {
+                // Ensure we didn't change the file size.
+                debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
+                self.file.sync_all()
+            })
     }
 }
 
@@ -1689,7 +1783,7 @@ impl fmt::Debug for Entry {
 /// Integers are stored in big-endian format on disk **and in memory**.
 #[repr(C, packed)] // Packed to reduce the size of `Index`.
 #[derive(Copy, Clone, Eq, PartialEq)]
-struct DateTime {
+pub struct DateTime {
     /// Number of seconds since Unix epoch.
     seconds: u64,
     /// The first 30 bit make up the number of nano sub-seconds, always less
@@ -1709,19 +1803,19 @@ impl DateTime {
     const INVALID_BIT: u32 = 1 << 30;
 
     /// `DateTime` that represents an invalid time.
-    const INVALID: DateTime = DateTime {
+    pub const INVALID: DateTime = DateTime {
         seconds: 0,
         subsec_nanos: u32::from_be_bytes(DateTime::INVALID_BIT.to_ne_bytes()),
     };
 
     /// Returns `true` if the `REMOVED_BIT` is set.
-    fn is_removed(&self) -> bool {
+    pub fn is_removed(&self) -> bool {
         let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
         subsec_nanos & DateTime::REMOVED_BIT != 0
     }
 
     /// Returns `true` if the time is invalid.
-    fn is_invalid(&self) -> bool {
+    pub fn is_invalid(&self) -> bool {
         const NANOS_PER_SEC: u32 = 1_000_000_000;
         let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
         (subsec_nanos & !DateTime::REMOVED_BIT) > NANOS_PER_SEC
@@ -1729,11 +1823,39 @@ impl DateTime {
 
     /// Returns the same `DateTime`, but as removed at
     /// (`ModifiedTime::Removed`).
-    fn mark_removed(mut self) -> Self {
+    pub fn mark_removed(mut self) -> Self {
         let mut subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
         subsec_nanos |= DateTime::REMOVED_BIT;
         self.subsec_nanos = u32::from_ne_bytes(subsec_nanos.to_be_bytes());
         self
+    }
+
+    /// Convert a slice of bytes of into `Datetime`.
+    ///
+    /// Returns `None` is not of length `size_of::<DateTime>()` or if the bytes
+    /// are invalid.
+    pub fn from_bytes<'a>(bytes: &'a [u8]) -> Option<DateTime> {
+        bytes.get(8..).and_then(|subsec_bytes| {
+            subsec_bytes
+                .try_into()
+                .ok()
+                .map(|subsec_nanos| u32::from_ne_bytes(subsec_nanos))
+                .and_then(|subsec_nanos| {
+                    // Safety: indexed [8..] above, so we know that this is safe.
+                    bytes[0..8].try_into().ok().map(|seconds| DateTime {
+                        seconds: u64::from_ne_bytes(seconds),
+                        subsec_nanos,
+                    })
+                })
+        })
+    }
+
+    /// Returns the `DateTime` as bytes.
+    pub fn as_bytes<'a>(&'a self) -> &'a [u8] {
+        // Safety: because `u8` doesn't have any invalid bit patterns this is
+        // OK. We're also ensured at least `size_of::<DateTime>` bytes are
+        // valid.
+        unsafe { slice::from_raw_parts(self as *const DateTime as *const _, size_of::<DateTime>()) }
     }
 }
 
@@ -1759,7 +1881,7 @@ impl From<SystemTime> for DateTime {
 
 /// Time at which a blob was created or removed.
 #[derive(Eq, PartialEq, Debug)]
-enum ModifiedTime {
+pub(crate) enum ModifiedTime {
     /// Blob was created at this time.
     Created(SystemTime),
     /// Blob was removed at this time.

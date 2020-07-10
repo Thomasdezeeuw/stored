@@ -40,7 +40,7 @@ use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
 use crate::op::{self, Outcome};
 use crate::peer::Peers;
-use crate::storage::{Blob, BlobEntry, PAGE_SIZE};
+use crate::storage::{Blob, BlobEntry};
 use crate::{db, Key};
 
 /// Setup the HTTP listener.
@@ -640,10 +640,7 @@ async fn retrieve_blob(
 ) -> ResponseKind {
     match op::retrieve_blob(ctx, db_ref, key).await {
         Ok(Some(BlobEntry::Stored(blob))) => {
-            if blob.len() > PAGE_SIZE && !is_head {
-                // If the blob is large(-ish) we'll prefetch it from disk to
-                // improve performance.
-                // TODO: benchmark this with large(-ish) blobs.
+            if !is_head {
                 if let Err(err) = blob.prefetch() {
                     warn!("error prefetching blob, continuing: {}", err);
                 }

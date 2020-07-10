@@ -148,7 +148,7 @@ pub mod dispatcher {
     ) {
         if let Err(err) = actor(ctx, stream, buf, peers, db_ref, server).await {
             warn!(
-                "participant dispatcher failed: {}: remote={}, server={}",
+                "participant dispatcher failed: {}: remote_address={}, server_address={}",
                 err, remote, server
             );
         }
@@ -558,8 +558,10 @@ pub mod consensus {
 
     use crate::error::Describe;
     use crate::op::{abort_query, add_blob, commit_query, prep_remove_blob, Outcome};
-    use crate::peer::coordinator::server::{BLOB_LENGTH_LEN, NO_BLOB};
     use crate::peer::participant::RpcResponder;
+    use crate::peer::server::{
+        BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
+    };
     use crate::peer::{ConsensusVote, COORDINATOR_MAGIC};
     use crate::storage::Query;
     use crate::{db, Buffer, Key};
@@ -591,7 +593,7 @@ pub mod consensus {
         mut db_ref: ActorRef<db::Message>,
     ) -> crate::Result<()> {
         debug!(
-            "store blob consensus actor started: key={}, remote={}",
+            "store blob consensus actor started: key={}, remote_address={}",
             key, remote
         );
 
@@ -727,24 +729,31 @@ pub mod consensus {
         );
         debug_assert!(buf.is_empty());
 
+        // TODO: use vectored I/O here. See
+        // https://github.com/rust-lang/futures-rs/pull/2181.
         // Write the request for the key.
+        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&[REQUEST_BLOB])).await {
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("writing request key")),
+        }
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(request_key.as_bytes())).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing request key")),
         }
 
         // Don't want to include the length of the blob in the key calculation.
-        let mut calc = Key::calculator_skip(stream, BLOB_LENGTH_LEN);
+        let mut calc = Key::calculator_skip(stream, METADATA_LEN);
 
-        // Read at least the length of the blob.
-        let f = Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut calc, BLOB_LENGTH_LEN));
+        // Read at least the metadata of the blob.
+        let f = Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut calc, METADATA_LEN));
         match f.await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("reading blob length")),
         }
 
-        // Safety: we just read at least `BLOB_LENGTH_LEN` bytes, so this won't
-        // panic.
+        // Safety: we just read enough bytes, so the marking processed and
+        // indexing won't panic.
+        buf.processed(DATE_TIME_LEN); // We don't care about the timestamp.
         let blob_length_bytes = buf.as_bytes()[..BLOB_LENGTH_LEN].try_into().unwrap();
         let blob_length = u64::from_be_bytes(blob_length_bytes);
         buf.processed(BLOB_LENGTH_LEN);
@@ -788,7 +797,7 @@ pub mod consensus {
         mut db_ref: ActorRef<db::Message>,
     ) -> crate::Result<()> {
         debug!(
-            "remove blob consensus actor started: key={}, remote={}",
+            "remove blob consensus actor started: key={}, remote_address={}",
             key, remote
         );
 
@@ -799,6 +808,8 @@ pub mod consensus {
                 query
             }
             Ok(Outcome::Done(..)) => {
+                // FIXME: if we're not synced this can happen, but we should
+                // continue.
                 info!(
                     "blob already removed/not stored, voting to abort consensus: key={}",
                     key

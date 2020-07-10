@@ -14,11 +14,12 @@ use log::{debug, error, warn};
 use crate::db::{self, HealthCheck, HealthOk};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
-use crate::storage::{self, BlobEntry, UncommittedBlob};
+use crate::storage::{self, BlobEntry, Keys, UncommittedBlob};
 use crate::Key;
 
 mod remove;
 mod store;
+mod sync;
 
 #[doc(inline)]
 pub(crate) use remove::prep_remove_blob;
@@ -28,6 +29,8 @@ pub use remove::remove_blob;
 pub(crate) use store::add_blob;
 #[doc(inline)]
 pub use store::store_blob;
+#[doc(inline)]
+pub use sync::full_sync;
 
 /// Maximum number of tries we will attempt to run the consensus algorithm.
 const MAX_CONSENSUS_TRIES: usize = 3;
@@ -69,6 +72,23 @@ where
 {
     debug!("running uncommitted retrieve operation");
     match db_rpc(ctx, db_ref, key) {
+        Ok(rpc) => rpc.await,
+        Err(err) => Err(err),
+    }
+}
+
+/// Retrieves all keys currently stored.
+///
+/// Returns an error if the database actor can't be accessed.
+pub(crate) async fn retrieve_keys<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+) -> Result<Keys, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!("running retrieve keys operation");
+    match db_rpc(ctx, db_ref, ()) {
         Ok(rpc) => rpc.await,
         Err(err) => Err(err),
     }
@@ -118,6 +138,8 @@ where
 /// errors.
 ///
 /// See [`db_rpc`].
+#[must_use = "futures do nothing unless you `.await` or poll them"]
+#[derive(Debug)]
 struct DbRpc<Res> {
     rpc: Rpc<Res>,
     timer: Timer,

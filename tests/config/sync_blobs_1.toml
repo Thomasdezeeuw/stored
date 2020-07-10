@@ -1,11 +1,13 @@
-path = "/tmp/sync_peers_tests_1.db"
+# Note: this should be read-only, don't send DELETE/POST requests.
+path = "tests/data/stored_sync_blobs.db"
 
 [http]
-address = "127.0.0.1:12011"
+address = "127.0.0.1:10011"
 
 [distributed]
-peer_address = "127.0.0.1:12111"
+peer_address = "127.0.0.1:10111"
 replicas = "all"
 peers = [
-	"127.0.0.1:12102",
+	"127.0.0.1:10112",
+	"127.0.0.1:10113",
 ]

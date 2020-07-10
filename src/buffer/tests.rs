@@ -51,6 +51,7 @@ fn buffer_simple_read() {
 
     assert_eq!(buf.len(), 0);
     assert_eq!(buf.as_bytes(), EMPTY);
+    assert_eq!(buf.next_byte(), None);
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE);
 
     let mut reader = Cursor::new([1, 2, 3]);
@@ -58,6 +59,7 @@ fn buffer_simple_read() {
     assert_eq!(bytes_read, 3);
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+    assert_eq!(buf.next_byte(), Some(1));
     assert_eq!(buf.capacity_left(), INITIAL_BUF_SIZE - bytes_read);
 }
 
@@ -70,6 +72,7 @@ fn buffer_read_n_from() {
     poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap();
     assert_eq!(buf.len(), 5);
     assert_eq!(buf.as_bytes(), &[1, 2, 3, 4, 5]);
+    assert_eq!(buf.next_byte(), Some(1));
     buf.processed(5);
 
     // Read the exact amount of bytes.
@@ -77,6 +80,7 @@ fn buffer_read_n_from() {
     poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 3))).unwrap();
     assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), &[1, 2, 3]);
+    assert_eq!(buf.next_byte(), Some(1));
     buf.processed(3);
 
     // Reading less bytes should cause an error.
@@ -85,6 +89,7 @@ fn buffer_read_n_from() {
     assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     // First two bytes are read.
     assert_eq!(buf.as_bytes(), &[1, 2]);
+    assert_eq!(buf.next_byte(), Some(1));
     buf.processed(2);
 
     let mut reader = Bytes {
@@ -92,6 +97,7 @@ fn buffer_read_n_from() {
     };
     poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 5))).unwrap();
     assert_eq!(buf.as_bytes(), &[5, 6, 7, 8, 9, 10]);
+    assert_eq!(buf.next_byte(), Some(5));
 }
 
 #[test]

@@ -128,6 +128,7 @@ impl super::Query for StoreBlob {
     }
 }
 
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub(crate) struct AlreadyDone {
     db_rpc: Result<DbRpc<Option<BlobEntry>>, ()>,
 }

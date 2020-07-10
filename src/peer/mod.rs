@@ -15,7 +15,7 @@ use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
-use heph::supervisor::RestartSupervisor;
+use heph::supervisor::{NoSupervisor, RestartSupervisor};
 use heph::timer::Timer;
 use heph::Runtime;
 use log::{debug, warn};
@@ -24,8 +24,12 @@ use serde::{Deserialize, Serialize};
 use crate::error::Describe;
 use crate::{config, db, Key};
 
+// TODO: Run syncs after we disconnected from a peer.
+
 pub mod coordinator;
 pub mod participant;
+pub mod server;
+pub mod sync;
 
 #[cfg(test)]
 mod tests;
@@ -43,7 +47,7 @@ pub fn start(
         _ => unimplemented!("currently only replicas = 'all' is supported"),
     }
 
-    let peers = Peers::empty();
+    let peers = Peers::empty(db_ref.clone());
 
     start_listener(
         runtime,
@@ -54,7 +58,10 @@ pub fn start(
     )?;
     start_relays(runtime, config.peers.0, config.peer_address, peers.clone());
 
-    // TODO: sync already stored blobs.
+    // NOTE: once we're connected to all peers, and all the peers that know, we
+    // automatically start the synchronisation process. During which we must
+    // take part of in the normal peer process, i.e. we partake in the consensus
+    // algorithms, to not missing any storing/removing blobs.
 
     Ok(peers)
 }
@@ -74,13 +81,8 @@ fn start_listener(
 
     let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
-    let server_actor = tcp::Server::setup(
-        address,
-        switcher::supervisor,
-        switcher,
-        ActorOptions::default(),
-    )
-    .map_err(|err| err.describe("creating new tcp::Server"))?;
+    let server_actor = tcp::Server::setup(address, NoSupervisor, switcher, ActorOptions::default())
+        .map_err(|err| err.describe("creating peer listener"))?;
     let supervisor = RestartSupervisor::new("consensus listener", ());
     let options = ActorOptions::default().with_priority(Priority::HIGH);
     let server_ref = runtime
@@ -122,6 +124,7 @@ fn start_relays(
         peers.add(Peer {
             actor_ref: relay_ref,
             address: peer_address,
+            is_connected: false,
         });
     }
 }
@@ -215,21 +218,26 @@ struct PeersInner {
     peers: RwLock<Vec<Peer>>,
     /// Unique id for each consensus run.
     consensus_id: AtomicUsize,
+    /// Used to start peer sync actor, but this doesn't really belong here. If
+    /// this is `None` the sync actor already started.
+    db_ref: RwLock<Option<ActorRef<db::Message>>>,
 }
 
 #[derive(Debug, Clone)]
 struct Peer {
     actor_ref: ActorRef<relay::Message>,
     address: SocketAddr,
+    is_connected: bool,
 }
 
 impl Peers {
     /// Create an empty collection of peers.
-    pub fn empty() -> Peers {
+    pub fn empty(db_ref: ActorRef<db::Message>) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
+                db_ref: RwLock::new(Some(db_ref)),
             }),
         }
     }
@@ -350,8 +358,8 @@ impl Peers {
         ConsensusId(self.inner.consensus_id.fetch_add(1, Ordering::AcqRel))
     }
 
-    /// Get a private copy of all known peer addresses.
-    fn addresses(&self) -> Vec<SocketAddr> {
+    /// Get a private copy of all currently known peer addresses.
+    pub fn addresses(&self) -> Vec<SocketAddr> {
         self.inner
             .peers
             .read()
@@ -396,6 +404,7 @@ impl Peers {
         self.add(Peer {
             actor_ref: relay_ref,
             address: peer_address,
+            is_connected: false,
         });
     }
 
@@ -425,9 +434,65 @@ impl Peers {
         }
     }
 
+    /// Remove the `address` from the known peers, e.g. when the actor failed
+    /// too many times and doesn't get restarted anymore.
+    ///
+    /// # Notes
+    ///
+    /// Silently ignores the error if no peer was known with `address`.
+    fn remove(&self, address: &SocketAddr) {
+        let mut peers = self.inner.peers.write().unwrap();
+        if let Some(pos) = peers.iter().position(|peer| peer.address == *address) {
+            peers.remove(pos);
+        }
+    }
+
     /// Returns `true` if a peer at `address` is already in the collection.
     fn known(&self, address: &SocketAddr) -> bool {
         known_peer(&*self.inner.peers.read().unwrap(), address)
+    }
+
+    /// Mark the peer with `address` as connected.
+    fn connected<M>(&self, ctx: &mut actor::Context<M, ThreadSafe>, address: &SocketAddr) {
+        let mut peers = self.inner.peers.write().unwrap();
+        let peer = peers.iter_mut().find(|peer| peer.address == *address);
+
+        // TODO: deal with `peer = None` and `peer.is_connected = true`.
+        if let Some(peer) = peer {
+            peer.is_connected = true;
+        }
+        drop(peers); // Don't dead lock.
+
+        if self.all_connected() {
+            if let Some(db_ref) = self.inner.db_ref.write().unwrap().take() {
+                self.start_sync_actor(ctx, db_ref);
+            }
+        }
+    }
+
+    /// Returns `true` if all peers connected.
+    pub(crate) fn all_connected(&self) -> bool {
+        self.inner
+            .peers
+            .read()
+            .unwrap()
+            .iter()
+            .all(|peer| peer.is_connected)
+    }
+
+    /// Spawn the peer synchronisation actor.
+    fn start_sync_actor<M>(
+        &self,
+        ctx: &mut actor::Context<M, ThreadSafe>,
+        db_ref: ActorRef<db::Message>,
+    ) {
+        debug!("spawning peer synchronisation actor");
+        let actor = sync::actor as fn(_, _, _) -> _;
+        let args = (db_ref, self.clone());
+        let options = ActorOptions::default()
+            .with_priority(Priority::HIGH)
+            .mark_ready();
+        ctx.spawn(NoSupervisor, actor, args, options);
     }
 }
 
@@ -448,6 +513,7 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// [`Future`] implementation that makes RPCs with one or more peers, see
 /// [`Peers`].
+#[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct PeerRpc<Res> {
     rpcs: Box<[SinglePeerRpc<Res>]>,
     timer: Timer,
@@ -572,27 +638,17 @@ pub mod switcher {
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::timer::Deadline;
-    use heph::{actor, ActorRef, SupervisorStrategy};
+    use heph::{actor, ActorRef};
     use log::{debug, warn};
 
-    use crate::error::Describe;
     use crate::peer::{
-        coordinator, participant, Peers, Response, COORDINATOR_MAGIC, MAGIC_LENGTH,
-        PARTICIPANT_MAGIC,
+        participant, server, Peers, Response, COORDINATOR_MAGIC, MAGIC_LENGTH, PARTICIPANT_MAGIC,
     };
     use crate::{db, Buffer};
 
     const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
 
     const TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Supervisor for [`actor`].
-    ///
-    /// [`actor`]: actor()
-    pub fn supervisor<Args>(err: crate::Error) -> SupervisorStrategy<Args> {
-        warn!("switcher actor failed: {}", err);
-        SupervisorStrategy::Stop
-    }
 
     /// Actor that acts as switcher between acting as a coordinator server or
     /// participant.
@@ -605,10 +661,8 @@ pub mod switcher {
         peers: Peers,
         db_ref: ActorRef<db::Message>,
         server: SocketAddr,
-    ) -> crate::Result<()> {
+    ) -> Result<(), !> {
         debug!("accepted peer connection: remote_address={}", remote);
-        // TODO: 8k is a bit large for `coordinator::server`, only needs to read
-        // 1 key at a time.
         let mut buf = Buffer::new();
 
         let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
@@ -616,24 +670,35 @@ pub mod switcher {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!(
-                    "closing connection: missing connection magic: remote_address={}",
-                    remote
+                    "closing connection: missing connection magic: \
+                    remote_address={}, local_address={}",
+                    remote, server
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
-                return stream
-                    .write(MAGIC_ERROR_MSG)
-                    .await
-                    .map(|_| ())
-                    .map_err(|err| err.describe("writing error response"));
+                if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
+                    warn!(
+                        "error writing error response: {}: \
+                        remote_address={}, local_address={}",
+                        err, remote, server
+                    );
+                }
+                return Ok(());
             }
-            Err(err) => return Err(err.describe("reading connection magic")),
+            Err(err) => {
+                warn!(
+                    "closing connection: error reading connection magic: {}: \
+                    remote_address={}, local_address={}",
+                    err, remote, server
+                );
+                return Ok(());
+            }
         }
 
         match &buf.as_bytes()[..MAGIC_LENGTH] {
             COORDINATOR_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                coordinator::server::run_actor(ctx, stream, buf, db_ref, server, remote).await;
+                server::run_actor(ctx, stream, buf, db_ref, server, remote).await;
                 Ok(())
             }
             PARTICIPANT_MAGIC => {
@@ -644,16 +709,20 @@ pub mod switcher {
             }
             _ => {
                 warn!(
-                    "closing connection: incorrect connection magic: remote={}, server={}",
+                    "closing connection: incorrect connection magic: \
+                    remote_address={}, local_address={}",
                     remote, server,
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
-                stream
-                    .write(MAGIC_ERROR_MSG)
-                    .await
-                    .map(|_| ())
-                    .map_err(|err| err.describe("writing error response"))
+                if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
+                    warn!(
+                        "error writing error response: {}: \
+                        remote_address={}, local_address={}",
+                        err, remote, server
+                    );
+                }
+                return Ok(());
             }
         }
     }

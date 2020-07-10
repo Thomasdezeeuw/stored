@@ -324,7 +324,13 @@ mod date_time {
 
     #[test]
     fn from_bytes() {
-        let tests = [SystemTime::now().into(), SystemTime::UNIX_EPOCH.into()];
+        let tests = &[
+            DateTime::from(SystemTime::now()),
+            DateTime::from(SystemTime::now()).mark_removed(),
+            DateTime::from(SystemTime::UNIX_EPOCH),
+            DateTime::from(SystemTime::UNIX_EPOCH).mark_removed(),
+            DateTime::INVALID,
+        ];
 
         fn copy(dst: &mut [u8], src: &DateTime) {
             assert!(dst.len() >= size_of::<DateTime>());
@@ -332,14 +338,18 @@ mod date_time {
             unsafe { ptr::copy_nonoverlapping(src, dst.as_mut_ptr(), size_of::<DateTime>()) }
         }
 
-        for time in &tests {
+        for time in tests {
             let mut buf = [0; size_of::<DateTime>()];
             copy(&mut buf, &time);
 
             // `DateTime` format should be they same when reading from disk (or
             // a in-memory buffer).
-            let got: &DateTime = unsafe { &*(&buf as *const _ as *const _) };
-            assert_eq!(got, time);
+            let got = DateTime::from_bytes(&buf).unwrap();
+            assert_eq!(*time, got);
+
+            buf.copy_from_slice(time.as_bytes());
+            let got = DateTime::from_bytes(&buf).unwrap();
+            assert_eq!(*time, got);
         }
     }
 }
@@ -472,8 +482,6 @@ mod index {
         let mut index = Index::open(&path).unwrap();
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
-
-        println!("entries: {:#?}", (&*entries));
 
         let want1 = Entry {
             key: Key::for_blob(DATA[0]),
@@ -1634,15 +1642,170 @@ mod storage {
     }
 
     #[test]
+    fn store_blob() {
+        let path = temp_dir("store_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let now = SystemTime::now();
+        let blobs = &[
+            (DATA[0], SystemTime::UNIX_EPOCH, SystemTime::UNIX_EPOCH),
+            (DATA[1], now, now),
+            // Same blob as first one, should keep original timestamp.
+            (
+                DATA[0],
+                SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+                SystemTime::UNIX_EPOCH,
+            ),
+        ];
+
+        let mut keys = Vec::with_capacity(blobs.len());
+        for (i, (blob, timestamp, want)) in blobs.iter().copied().enumerate() {
+            let got = storage.store_blob(blob, timestamp).unwrap();
+            assert_eq!(got, want);
+            if timestamp == want {
+                keys.push((i, Key::for_blob(blob)));
+            }
+        }
+
+        for (i, key) in keys.into_iter() {
+            let got = storage.lookup(&key).unwrap().unwrap();
+            assert_eq!(got.bytes(), blobs[i].0);
+
+            // Check the EntryIndex.
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(i));
+            match blob_entry {
+                BlobEntry::Stored(blob) => {
+                    assert_eq!(blob.bytes(), blobs[i].0);
+                    assert_eq!(blob.created_at(), blobs[i].2);
+                }
+                BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+            }
+        }
+
+        assert_eq!(storage.len(), 2);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        let want_data_size = (DATA_MAGIC.len() + DATA[0].len() + DATA[1].len()) as u64;
+        assert_eq!(storage.data_size(), data_metadata.len());
+        assert_eq!(storage.data_size(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        let want_index_size = (2 * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), index_metadata.len());
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(
+            storage.total_size(),
+            data_metadata.len() + index_metadata.len()
+        );
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+    }
+
+    #[test]
+    fn store_removed_blob() {
+        let path = temp_dir("store_removed_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let query = storage.add_blob(DATA[0]).unwrap();
+        storage.commit(query, SystemTime::now()).unwrap();
+
+        storage
+            .store_blob(DATA[1], SystemTime::UNIX_EPOCH + Duration::from_secs(1))
+            .unwrap();
+        let query = storage.remove_blob(Key::for_blob(DATA[1])).unwrap();
+        storage
+            .commit(query, SystemTime::UNIX_EPOCH + Duration::from_secs(100))
+            .unwrap();
+
+        let now = SystemTime::now();
+        let blobs = &[
+            (Key::for_blob(b"never stored blob"), now, now, 2),
+            // Already stored.
+            (
+                Key::for_blob(DATA[0]),
+                SystemTime::UNIX_EPOCH,
+                SystemTime::UNIX_EPOCH,
+                0,
+            ),
+            // Previously removed.
+            (
+                Key::for_blob(DATA[1]),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(2),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(100),
+                1,
+            ),
+            // Same blob as first one, should keep original timestamp.
+            (
+                Key::for_blob(DATA[0]),
+                SystemTime::UNIX_EPOCH + Duration::from_secs(10),
+                SystemTime::UNIX_EPOCH,
+                0,
+            ),
+        ];
+
+        let mut keys = Vec::with_capacity(blobs.len());
+        for (i, (key, timestamp, want, entry_index)) in blobs.iter().cloned().enumerate() {
+            let got = storage.store_removed_blob(key.clone(), timestamp).unwrap();
+            assert_eq!(got, want);
+            if timestamp == want {
+                keys.push((i, entry_index, key));
+            }
+        }
+
+        for (i, want_entry_index, key) in keys.into_iter() {
+            let got = storage.lookup(&key).unwrap().unwrap_removed();
+            assert_eq!(got, blobs[i].2);
+
+            // Check the EntryIndex.
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(want_entry_index));
+            match blob_entry {
+                BlobEntry::Stored(_) => panic!("unexpected blob entry"),
+                BlobEntry::Removed(got) => assert_eq!(*got, blobs[i].2),
+            }
+        }
+
+        assert_eq!(storage.len(), 0);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        let want_data_size = (DATA_MAGIC.len() + DATA[0].len() + DATA[1].len()) as u64;
+        assert_eq!(storage.data_size(), data_metadata.len());
+        assert_eq!(storage.data_size(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        let want_index_size = (3 * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), index_metadata.len());
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(
+            storage.total_size(),
+            data_metadata.len() + index_metadata.len()
+        );
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+    }
+
+    #[test]
     fn round_trip() {
         let path = temp_dir("round_trip.db");
         let mut storage = Storage::open(&path).unwrap();
 
         // TODO: add aborting commits.
-        const BLOBS: [&[u8]; 3] = [
+        const BLOBS: [&[u8]; 4] = [
             b"added data",
             b"added and removed data",
             b"added and removed and added again data",
+            b"stored data from sync",
         ];
 
         // 1. Add a blob.
@@ -1669,6 +1832,19 @@ mod storage {
         let time3 = SystemTime::now();
         storage.commit(query, time3).unwrap();
 
+        // 4. Stored blob added in a single step for synchronisation.
+        let time4 = storage.store_blob(BLOBS[3], SystemTime::now()).unwrap();
+        let key4 = Key::for_blob(BLOBS[3]);
+        // Blob already stored, shouldn't change anything.
+        let got = storage.store_blob(BLOBS[2], SystemTime::now()).unwrap();
+        assert_eq!(got, time3);
+
+        // 5. Store removed blob for synchronisation.
+        let key5 = Key::for_blob(b"removed data from sync");
+        let time5 = storage
+            .store_removed_blob(key5.clone(), SystemTime::now())
+            .unwrap();
+
         // Close the database and open it again.
         drop(storage);
         let storage = Storage::open(&path).unwrap();
@@ -1687,13 +1863,23 @@ mod storage {
         assert_eq!(got3.bytes(), BLOBS[2]);
         assert_eq!(got3.created_at(), time3);
 
+        // 4. Should be present.
+        let got4 = storage.lookup(&key4).unwrap().unwrap();
+        assert_eq!(got4.bytes(), BLOBS[3]);
+        assert_eq!(got4.created_at(), time4);
+
+        // 5. Should still be removed.
+        let got5 = storage.lookup(&key5).unwrap().unwrap_removed();
+        assert_eq!(got5, time5);
+
         // Check the lengths of the files.
-        assert_eq!(storage.len(), 2);
+        assert_eq!(storage.len(), 3);
         let blobs_len: u64 = BLOBS.iter().map(|b| b.len() as u64).sum::<u64>() +
             // Stored twice in step 3.
             BLOBS[2].len() as u64;
         assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64 + blobs_len);
-        let want_entries_len = 4; // Step 3 has two entries.
+        // Step 3 has two entries, step 5 has no blob.
+        let want_entries_len = BLOBS.len() + 1 + 1;
         assert_eq!(
             storage.index_size(),
             (INDEX_MAGIC.len() + want_entries_len * size_of::<Entry>()) as u64
