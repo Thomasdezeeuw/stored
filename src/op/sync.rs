@@ -274,7 +274,7 @@ impl<'c, 'k, 'b> GetKeys<'c, 'k, 'b> {
                     let mut n_keys = 0;
                     for key_bytes in buf.as_bytes().chunks(Key::LENGTH) {
                         if key_bytes.len() != Key::LENGTH {
-                            let no_more_keys = key_bytes == &[NO_MORE_KEYS];
+                            let no_more_keys = key_bytes == [NO_MORE_KEYS];
                             buf.processed(buf.len());
 
                             return if no_more_keys {
@@ -629,7 +629,7 @@ where
             match timestamp.into() {
                 ModifiedTime::Created(timestamp) => {
                     let view = replace(*buf, Buffer::empty()).view(blob_length as usize);
-                    match db_rpc(c, db_ref, (view, timestamp.into())) {
+                    match db_rpc(c, db_ref, (view, timestamp)) {
                         Ok(rpc) => {
                             conn.state = RetrieveBlobsSate::WaitingDbSyncStored(cnt, rpc);
                             return self.sync_stored(ctx);
@@ -638,7 +638,7 @@ where
                     }
                 }
                 ModifiedTime::Removed(timestamp) => {
-                    match db_rpc(c, db_ref, (keys[0].clone(), timestamp.into())) {
+                    match db_rpc(c, db_ref, (keys[0].clone(), timestamp)) {
                         Ok(rpc) => {
                             conn.state = RetrieveBlobsSate::WaitingDbSyncRemoved(cnt, rpc);
                             return self.sync_removed(ctx);

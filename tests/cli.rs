@@ -15,13 +15,13 @@ mod util;
 
 #[allow(dead_code)] // FIXME: use this along with the tests.
 const DB_PORT: u16 = 9000;
-const DB_PATH: &'static str = "/tmp/stored_cli_tests.db";
-const CONF_PATH: &'static str = "tests/config/cli.toml";
+const DB_PATH: &str = "/tmp/stored_cli_tests.db";
+const CONF_PATH: &str = "tests/config/cli.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;
 
 start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
-fn test(bin: &'static str, args: &[&str], want: &[u8]) {
+fn test(bin: &str, args: &[&str], want: &[u8]) {
     let output = run(bin, args);
     assert!(
         output.status.success(),
@@ -38,14 +38,14 @@ fn test(bin: &'static str, args: &[&str], want: &[u8]) {
 }
 
 /// Build and run `bin`.
-fn run(bin: &'static str, args: &[&str]) -> Output {
+fn run(bin: &str, args: &[&str]) -> Output {
     build(bin);
     let bin = format!("target/debug/{}", bin);
     Command::new(bin).args(args).output().unwrap()
 }
 
 /// Build `bin`ary using `cargo build --bin bin`.
-fn build(bin: &'static str) {
+fn build(bin: &str) {
     static BUILDS: [(Once, &str); 3] = [
         (Once::new(), "store"),
         (Once::new(), "retrieve"),

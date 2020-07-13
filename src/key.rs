@@ -597,7 +597,7 @@ mod tests {
         let key = Key::for_blob(b"Hello world");
         let mut expected: Vec<Token> = Vec::with_capacity(Key::LENGTH + 2);
         expected.push(Token::Tuple { len: Key::LENGTH });
-        for byte in key.as_bytes().into_iter().copied() {
+        for byte in key.as_bytes().iter().copied() {
             expected.push(Token::U8(byte));
         }
         expected.push(Token::TupleEnd);

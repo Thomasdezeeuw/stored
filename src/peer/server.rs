@@ -234,7 +234,8 @@ async fn retrieve_keys<M>(
         let mut n = 0;
         while let Some(key) = iter.next() {
             // NOTE: writing to buffer never fails.
-            wbuf.write(key.as_bytes()).unwrap();
+            let bytes_written = wbuf.write(key.as_bytes()).unwrap();
+            debug_assert_eq!(bytes_written, Key::LENGTH);
 
             // At most write `N_KEYS` keys to not overflow the buffer.
             n += 1;

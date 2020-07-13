@@ -55,7 +55,7 @@ pub async fn retrieve_blob<M>(
     debug!("running retrieve operation");
     match db_rpc(ctx, db_ref, key) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 
@@ -73,7 +73,7 @@ where
     debug!("running uncommitted retrieve operation");
     match db_rpc(ctx, db_ref, key) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 
@@ -90,7 +90,7 @@ where
     debug!("running retrieve keys operation");
     match db_rpc(ctx, db_ref, ()) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 
@@ -104,7 +104,7 @@ pub async fn check_health<M>(
     debug!("running health check");
     match db_rpc(ctx, db_ref, HealthCheck) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 
@@ -372,7 +372,7 @@ where
     debug!("committing to query: key={}", query.key());
     match db_rpc(ctx, db_ref, (query, timestamp)) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 
@@ -420,7 +420,7 @@ where
     debug!("aborting query: key={}", query.key());
     match db_rpc(ctx, db_ref, query) {
         Ok(rpc) => rpc.await,
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 

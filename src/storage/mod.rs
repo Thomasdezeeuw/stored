@@ -1170,8 +1170,7 @@ impl Data {
         let offset = self
             .areas
             .last()
-            .map(|area| area.offset + area.length as u64)
-            .unwrap_or(0);
+            .map_or(0, |area| area.offset + area.length as u64);
 
         // Offset must be page aligned. This means we can have overlapping
         // sections in the entire mmaped area, but that is ok.
@@ -1823,6 +1822,7 @@ impl DateTime {
 
     /// Returns the same `DateTime`, but as removed at
     /// (`ModifiedTime::Removed`).
+    #[must_use]
     pub fn mark_removed(mut self) -> Self {
         let mut subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
         subsec_nanos |= DateTime::REMOVED_BIT;
@@ -1839,7 +1839,7 @@ impl DateTime {
             subsec_bytes
                 .try_into()
                 .ok()
-                .map(|subsec_nanos| u32::from_ne_bytes(subsec_nanos))
+                .map(u32::from_ne_bytes)
                 .and_then(|subsec_nanos| {
                     // Safety: indexed [8..] above, so we know that this is safe.
                     bytes[0..8].try_into().ok().map(|seconds| DateTime {

@@ -537,6 +537,7 @@ mod data {
             ref_count: AtomicUsize::new(1),
         });
 
+        #[allow(clippy::type_complexity)]
         let tests: &[((u64, libc::size_t), (u64, u32), bool)] = &[
             ((0, 10), (0, 5), true),
             ((0, 5), (0, 5), true),
@@ -1675,7 +1676,7 @@ mod storage {
             }
         }
 
-        for (i, key) in keys.into_iter() {
+        for (i, key) in keys {
             let got = storage.lookup(&key).unwrap().unwrap();
             assert_eq!(got.bytes(), blobs[i].0);
 
@@ -1766,7 +1767,7 @@ mod storage {
             }
         }
 
-        for (i, want_entry_index, key) in keys.into_iter() {
+        for (i, want_entry_index, key) in keys {
             let got = storage.lookup(&key).unwrap().unwrap_removed();
             assert_eq!(got, blobs[i].2);
 

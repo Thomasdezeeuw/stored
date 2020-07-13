@@ -30,7 +30,7 @@ pub async fn remove_blob<M>(
         Ok(Outcome::Continue(query)) => query,
         // Already removed or never stored.
         Ok(Outcome::Done(timestamp)) => return Ok(timestamp),
-        Err(err) => return Err(err),
+        Err(()) => return Err(()),
     };
 
     if peers.is_empty() {
@@ -69,9 +69,9 @@ where
                 RemoveBlobResponse::Query(query) => Ok(Outcome::Continue(query)),
                 RemoveBlobResponse::NotStored(timestamp) => Ok(Outcome::Done(timestamp)),
             },
-            Err(err) => Err(err),
+            Err(()) => Err(()),
         },
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 

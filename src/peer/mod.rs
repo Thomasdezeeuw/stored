@@ -722,7 +722,7 @@ pub mod switcher {
                         err, remote, server
                     );
                 }
-                return Ok(());
+                Ok(())
             }
         }
     }

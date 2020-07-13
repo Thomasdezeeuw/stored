@@ -122,11 +122,9 @@ pub mod relay {
 
         // In case the participant send an exit message along with the known
         // peers already.
-        if !buf.is_empty() {
-            if relay_responses(&mut responses, &mut buf)? {
-                // Participant closed connection.
-                return Ok(());
-            }
+        if !buf.is_empty() && relay_responses(&mut responses, &mut buf)? {
+            // Participant closed connection.
+            return Ok(());
         }
 
         // Mark ourselves as connected.
@@ -375,7 +373,7 @@ pub mod relay {
         );
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
             Ok(()) => Ok(stream),
-            Err(err) => return Err(err.describe("writing peer connection setup")),
+            Err(err) => Err(err.describe("writing peer connection setup")),
         }
     }
 

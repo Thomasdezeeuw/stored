@@ -31,7 +31,7 @@ pub async fn store_blob<M>(
     let query = match add_blob(ctx, db_ref, blob, blob_length).await {
         Ok(Outcome::Continue(query)) => query,
         Ok(Outcome::Done(key)) => return Ok(key),
-        Err(err) => return Err(err),
+        Err(()) => return Err(()),
     };
 
     let key = query.key().clone();
@@ -80,9 +80,9 @@ where
                     AddBlobResponse::AlreadyStored(key) => Ok(Outcome::Done(key)),
                 }
             }
-            Err(err) => Err(err),
+            Err(()) => Err(()),
         },
-        Err(err) => Err(err),
+        Err(()) => Err(()),
     }
 }
 

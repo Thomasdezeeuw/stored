@@ -612,13 +612,13 @@ pub mod http {
             response.status(),
             want_status,
             "unexpected status: response={:?}",
-            response.map(|body| String::from_utf8(body))
+            response.map(String::from_utf8)
         );
         assert_eq!(
             response.version(),
             Version::HTTP_11,
             "unexpected HTTP version: response={:?}",
-            response.map(|body| String::from_utf8(body))
+            response.map(String::from_utf8)
         );
         for (name, value) in response.headers() {
             match name {
@@ -783,10 +783,10 @@ pub mod http {
     fn missing_headers<'a>(got: &HeaderMap, want: &'a [(HeaderName, &str)]) -> Vec<&'a HeaderName> {
         want.iter()
             .filter_map(|(name, _)| {
-                if !got.iter().any(|(n, _)| n == name) {
-                    Some(name)
-                } else {
+                if got.iter().any(|(n, _)| n == name) {
                     None
+                } else {
+                    Some(name)
                 }
             })
             .collect()
@@ -794,11 +794,11 @@ pub mod http {
 
     /// Current time in correct "Date" header format.
     pub fn date_header() -> String {
-        let timestamp = Utc::now();
-        let mut buf = Vec::with_capacity(30);
-        static MONTHS: [&'static str; 12] = [
+        static MONTHS: [&str; 12] = [
             "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
         ];
+        let timestamp = Utc::now();
+        let mut buf = Vec::with_capacity(30);
         write!(
             buf,
             "{}, {:02} {} {:004} {:02}:{:02}:{:02} GMT",
