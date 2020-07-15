@@ -85,7 +85,7 @@ paths:
       parameters:
         - name: key
           in: path
-          description: Key of the blob to retrieve.
+          description: Key of the blob to remove.
           required: true
           schema:
             $ref: '#/components/schemas/Key'
