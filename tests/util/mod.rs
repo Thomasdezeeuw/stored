@@ -486,7 +486,7 @@ pub mod http {
         responses.pop().unwrap()
     }
 
-    const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(15));
+    const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 
     /// Write a HTTP request to `stream`.
     pub fn write_request(
