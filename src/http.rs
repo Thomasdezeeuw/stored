@@ -23,18 +23,25 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, Write};
 use std::net::SocketAddr;
+use std::ops::DerefMut;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{fmt, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::io::AsyncWriteExt;
+use heph::actor::context::ThreadLocal;
+use heph::actor::messages::Start;
+use heph::actor_ref::ActorGroup;
 use heph::log::request;
 use heph::net::tcp::{self, ServerMessage, TcpStream};
 use heph::rt::options::{ActorOptions, Priority};
+use heph::supervisor::NoSupervisor;
 use heph::timer::{Deadline, DeadlinePassed};
 use heph::{actor, Actor, ActorRef, NewActor, RuntimeRef, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
-use log::{debug, error, trace, warn};
+use log::{debug, error, info, trace, warn};
+use parking_lot::{Once, RwLock};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
@@ -49,18 +56,75 @@ use crate::{db, Key};
 pub fn setup(
     address: SocketAddr,
     db_ref: ActorRef<db::Message>,
+    start_group: Arc<RwLock<ActorGroup<Start>>>,
     peers: Peers,
+    delay_start: bool,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
+    let peers2 = peers.clone();
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
-        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
+        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers2.clone()));
     let http_listener =
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
+    // The returned closure is copied for each worker thread started, but we
+    // only want to log that we start the HTTP listener once.
+    let log_once = Arc::new(Once::new());
     Ok(move |runtime: &mut RuntimeRef| {
-        let options = ActorOptions::default().with_priority(Priority::LOW);
-        runtime
-            .try_spawn_local(ServerSupervisor, http_listener, (), options)
-            .map(|server_ref| runtime.receive_signals(server_ref.try_map()))
+        if delay_start {
+            // Delay the start of the HTTP listener, running the peer
+            // synchronisation first, once  complete we'll start the HTTP
+            // listener (see `crate::peer::sync`).
+            let actor = delayed_start as fn(_, _) -> _;
+            let start_listener = move |runtime: &mut RuntimeRef| {
+                spawn_listener(runtime, &log_once, http_listener, address)
+            };
+            let start_http_ref =
+                runtime.spawn_local(NoSupervisor, actor, start_listener, ActorOptions::default());
+
+            start_group.write().deref_mut().add(start_http_ref);
+            Ok(())
+        } else {
+            spawn_listener(runtime, &log_once, http_listener, address)
+        }
     })
+}
+
+fn spawn_listener<S, NA>(
+    runtime: &mut RuntimeRef,
+    log_once: &Once,
+    http_listener: tcp::ServerSetup<S, NA>,
+    address: SocketAddr,
+) -> io::Result<()>
+where
+    S: Supervisor<NA> + Clone + 'static,
+    NA: NewActor<Argument = (TcpStream, SocketAddr), Context = ThreadLocal, Error = !>
+        + Clone
+        + 'static,
+{
+    log_once.call_once(|| {
+        info!("listening on http://{}", address);
+    });
+
+    let options = ActorOptions::default().with_priority(Priority::LOW);
+    runtime
+        .try_spawn_local(ServerSupervisor, http_listener, (), options)
+        .map(|server_ref| runtime.receive_signals(server_ref.try_map()))
+}
+
+/// Actor that starts the HTTP listener once we're fully synced by calling the
+/// `start_http` function.
+pub async fn delayed_start<F>(mut ctx: actor::Context<Start>, start_http: F) -> Result<(), !>
+where
+    F: FnOnce(&mut RuntimeRef) -> io::Result<()>,
+{
+    // Wait until we get the start signal.
+    let _start = ctx.receive_next().await;
+
+    // Start the HTTP listener.
+    if let Err(err) = start_http(ctx.runtime()) {
+        // TODO: stop the application?
+        error!("error binding HTTP server: {}", err);
+    }
+    Ok(())
 }
 
 /// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].

@@ -22,8 +22,7 @@ pub mod key;
 pub mod op;
 pub mod peer;
 pub mod storage;
-
-mod util;
+pub mod util;
 
 pub use buffer::Buffer;
 pub use error::{Describe, Error, Result};

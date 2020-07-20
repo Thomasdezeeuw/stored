@@ -2,12 +2,16 @@
 
 use std::env;
 use std::process::ExitCode;
+use std::sync::Arc;
 
+use heph::actor_ref::ActorGroup;
 use heph::Runtime;
 use log::{error, info};
+use parking_lot::RwLock;
 
 use stored::config::Config;
 use stored::peer::{self, Peers};
+use stored::util::CountDownLatch;
 use stored::{db, http};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -63,34 +67,47 @@ fn try_main() -> Result<(), ExitCode> {
     let config = Config::from_file(&config_path)
         .map_err(map_err!("error reading configuration file: {}"))?;
 
-    let mut runtime = Runtime::new().map_err(map_err!("error creating Heph runtime: {}"))?;
+    let mut runtime = Runtime::new()
+        .map_err(map_err!("error creating Heph runtime: {}"))?
+        .use_all_cores();
 
     info!("opening database '{}'", config.path.display());
     let db_ref =
         db::start(&mut runtime, config.path).map_err(map_err!("error opening database: {}"))?;
 
-    let peers = if let Some(distributed_config) = config.distributed {
+    let start_refs = Arc::new(RwLock::new(ActorGroup::empty()));
+    // Latch used by the synchronisation peer (see `peer::sync::actor`) to wait
+    // until all worker threads are started and all peers are connected.
+    let start_sync = Arc::new(CountDownLatch::new(runtime.get_threads()));
+    let (peers, delay_start) = if let Some(distributed_config) = config.distributed {
         info!(
             "listening on {} for peer connections",
             distributed_config.peer_address
         );
         info!("connecting to peers: {}", distributed_config.peers);
         info!("blob replication method: {}", distributed_config.replicas);
-        peer::start(&mut runtime, distributed_config, db_ref.clone())
-            .map_err(map_err!("error setting up peer actors: {}"))?
+        let peers = peer::start(
+            &mut runtime,
+            distributed_config,
+            db_ref.clone(),
+            start_refs.clone(),
+            start_sync.clone(),
+        )
+        .map_err(map_err!("error setting up peer actors: {}"))?;
+        (peers, true)
     } else {
-        Peers::empty(db_ref.clone())
+        (Peers::empty(), false)
     };
 
-    info!("listening on http://{}", config.http.address);
-    let start_listener = http::setup(config.http.address, db_ref, peers)
+    let start_listener = http::setup(config.http.address, db_ref, start_refs, peers, delay_start)
         .map_err(map_err!("error binding HTTP server: {}"))?;
 
-    // FIXME: only start the HTTP listener once we're synchronised.
-
     runtime
-        .use_all_cores()
-        .with_setup(move |mut runtime_ref| start_listener(&mut runtime_ref))
+        .with_setup(move |mut runtime_ref| {
+            let res = start_listener(&mut runtime_ref);
+            start_sync.decrease();
+            res
+        })
         .start()
         .map_err(map_err!("{}"))
 }

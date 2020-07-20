@@ -129,7 +129,7 @@ pub mod relay {
 
         // Mark ourselves as connected.
         // NOTE: this must happen after reading (and adding) the known peers.
-        peers.connected(&mut ctx, &remote);
+        peers.connected(&remote);
 
         // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
 

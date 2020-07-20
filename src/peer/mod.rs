@@ -6,22 +6,25 @@ use std::mem::replace;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::task::{self, Poll};
 use std::time::{Duration, SystemTime};
 
 use heph::actor::context::{ThreadLocal, ThreadSafe};
+use heph::actor::messages::Start;
 use heph::actor::{self, NewActor};
-use heph::actor_ref::{ActorRef, NoResponse, Rpc, RpcMessage, SendError};
+use heph::actor_ref::{ActorGroup, ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
 use heph::supervisor::{NoSupervisor, RestartSupervisor};
 use heph::timer::Timer;
 use heph::Runtime;
 use log::{debug, warn};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Describe;
+use crate::util::CountDownLatch;
 use crate::{config, db, Key};
 
 // TODO: Run syncs after we disconnected from a peer.
@@ -41,27 +44,28 @@ pub fn start(
     runtime: &mut Runtime,
     config: config::Distributed,
     db_ref: ActorRef<db::Message>,
+    start_http_ref: Arc<RwLock<ActorGroup<Start>>>,
+    start_sync: Arc<CountDownLatch>,
 ) -> crate::Result<Peers> {
     match config.replicas {
         config::Replicas::All => {}
         _ => unimplemented!("currently only replicas = 'all' is supported"),
     }
 
-    let peers = Peers::empty(db_ref.clone());
+    let peers = Peers::with_latch(start_sync.clone());
 
     start_listener(
         runtime,
-        db_ref,
+        db_ref.clone(),
         config.peer_address,
         peers.clone(),
         config.peer_address,
     )?;
     start_relays(runtime, config.peers.0, config.peer_address, peers.clone());
 
-    // NOTE: once we're connected to all peers, and all the peers that know, we
-    // automatically start the synchronisation process. During which we must
-    // take part of in the normal peer process, i.e. we partake in the consensus
-    // algorithms, to not missing any storing/removing blobs.
+    // NOTE: the synchronisation actor only starts once all peers are connected
+    // and all worker threads are started, as defined by the `start_sync` latch.
+    start_sync_actor(runtime, db_ref, start_http_ref, start_sync, peers.clone());
 
     Ok(peers)
 }
@@ -127,6 +131,23 @@ fn start_relays(
             is_connected: false,
         });
     }
+}
+
+/// Spawn the peer synchronisation actor.
+fn start_sync_actor(
+    runtime: &mut Runtime,
+    db_ref: ActorRef<db::Message>,
+    start_http_ref: Arc<RwLock<ActorGroup<Start>>>,
+    start: Arc<CountDownLatch>,
+    peers: Peers,
+) {
+    debug!("spawning peer synchronisation actor");
+    let actor = sync::actor as fn(_, _, _, _, _) -> _;
+    let args = (db_ref, start_http_ref, start, peers);
+    let options = ActorOptions::default()
+        .with_priority(Priority::HIGH)
+        .mark_ready();
+    runtime.spawn(NoSupervisor, actor, args, options);
 }
 
 /// Exit message send by coordinator for a clean shutdown.
@@ -218,9 +239,9 @@ struct PeersInner {
     peers: RwLock<Vec<Peer>>,
     /// Unique id for each consensus run.
     consensus_id: AtomicUsize,
-    /// Used to start peer sync actor, but this doesn't really belong here. If
-    /// this is `None` the sync actor already started.
-    db_ref: RwLock<Option<ActorRef<db::Message>>>,
+    /// Count down latch that gets decreased once a (previously unconnected)
+    /// peer is connected.
+    peers_connected: Option<Arc<CountDownLatch>>,
 }
 
 #[derive(Debug, Clone)]
@@ -232,19 +253,30 @@ struct Peer {
 
 impl Peers {
     /// Create an empty collection of peers.
-    pub fn empty(db_ref: ActorRef<db::Message>) -> Peers {
+    pub fn empty() -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
-                db_ref: RwLock::new(Some(db_ref)),
+                peers_connected: None,
+            }),
+        }
+    }
+
+    /// Create
+    pub fn with_latch(peers_connected: Arc<CountDownLatch>) -> Peers {
+        Peers {
+            inner: Arc::new(PeersInner {
+                peers: RwLock::new(Vec::new()),
+                consensus_id: AtomicUsize::new(0),
+                peers_connected: Some(peers_connected),
             }),
         }
     }
 
     /// Returns `true` if the collection is empty.
     pub fn is_empty(&self) -> bool {
-        self.inner.peers.read().unwrap().is_empty()
+        self.inner.peers.read().is_empty()
     }
 
     /// Start a consensus algorithm to store blob with `key`.
@@ -330,7 +362,6 @@ impl Peers {
             .inner
             .peers
             .read()
-            .unwrap()
             .iter()
             .map(|peer| {
                 let status = match peer.actor_ref.rpc(ctx, (id, request.clone())) {
@@ -363,7 +394,6 @@ impl Peers {
         self.inner
             .peers
             .read()
-            .unwrap()
             .iter()
             .map(|peer| peer.address)
             .collect()
@@ -426,8 +456,12 @@ impl Peers {
 
     /// Attempts to add `peer` to the collection.
     fn add(&self, peer: Peer) {
-        let mut peers = self.inner.peers.write().unwrap();
+        let mut peers = self.inner.peers.write();
         if !known_peer(&peers, &peer.address) {
+            if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
+                // Wait until this peer is connected.
+                peers_connected.increase();
+            }
             peers.push(peer);
         } else {
             // TODO: kill the relay?
@@ -441,58 +475,41 @@ impl Peers {
     ///
     /// Silently ignores the error if no peer was known with `address`.
     fn remove(&self, address: &SocketAddr) {
-        let mut peers = self.inner.peers.write().unwrap();
+        let mut peers = self.inner.peers.write();
         if let Some(pos) = peers.iter().position(|peer| peer.address == *address) {
+            if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
+                peers_connected.decrease();
+            }
+
             peers.remove(pos);
         }
     }
 
     /// Returns `true` if a peer at `address` is already in the collection.
     fn known(&self, address: &SocketAddr) -> bool {
-        known_peer(&*self.inner.peers.read().unwrap(), address)
+        known_peer(&*self.inner.peers.read(), address)
     }
 
     /// Mark the peer with `address` as connected.
-    fn connected<M>(&self, ctx: &mut actor::Context<M, ThreadSafe>, address: &SocketAddr) {
-        let mut peers = self.inner.peers.write().unwrap();
+    fn connected(&self, address: &SocketAddr) {
+        let mut peers = self.inner.peers.write();
         let peer = peers.iter_mut().find(|peer| peer.address == *address);
 
-        // TODO: deal with `peer = None` and `peer.is_connected = true`.
+        // TODO: deal with `peer = None`.
         if let Some(peer) = peer {
-            peer.is_connected = true;
-        }
-        drop(peers); // Don't dead lock.
+            if !peer.is_connected {
+                peer.is_connected = true;
 
-        if self.all_connected() {
-            if let Some(db_ref) = self.inner.db_ref.write().unwrap().take() {
-                self.start_sync_actor(ctx, db_ref);
+                if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
+                    peers_connected.decrease();
+                }
             }
         }
     }
 
     /// Returns `true` if all peers connected.
     pub(crate) fn all_connected(&self) -> bool {
-        self.inner
-            .peers
-            .read()
-            .unwrap()
-            .iter()
-            .all(|peer| peer.is_connected)
-    }
-
-    /// Spawn the peer synchronisation actor.
-    fn start_sync_actor<M>(
-        &self,
-        ctx: &mut actor::Context<M, ThreadSafe>,
-        db_ref: ActorRef<db::Message>,
-    ) {
-        debug!("spawning peer synchronisation actor");
-        let actor = sync::actor as fn(_, _, _) -> _;
-        let args = (db_ref, self.clone());
-        let options = ActorOptions::default()
-            .with_priority(Priority::HIGH)
-            .mark_ready();
-        ctx.spawn(NoSupervisor, actor, args, options);
+        self.inner.peers.read().iter().all(|peer| peer.is_connected)
     }
 }
 
