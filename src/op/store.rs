@@ -71,9 +71,7 @@ where
         Ok(rpc) => match rpc.await {
             Ok((result, view)) => {
                 // Mark the blob's bytes as processed and put back the buffer.
-                let mut buffer = view.into_inner();
-                buffer.processed(blob_length);
-                *buf = buffer;
+                *buf = view.processed();
 
                 match result {
                     AddBlobResponse::Query(query) => Ok(Outcome::Continue(query)),

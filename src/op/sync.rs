@@ -683,10 +683,7 @@ where
             RetrieveBlobsSate::WaitingDbSyncStored(cnt, rpc) => match Pin::new(rpc).poll(ctx) {
                 Poll::Ready(Ok(view)) => {
                     // Mark the blob's bytes as processed and put back the buffer.
-                    let blob_length = view.len();
-                    let mut buffer = view.into_inner();
-                    buffer.processed(blob_length);
-                    **buf = buffer;
+                    **buf = view.processed();
 
                     let blobs_left = *cnt - 1;
                     keys.remove(0);

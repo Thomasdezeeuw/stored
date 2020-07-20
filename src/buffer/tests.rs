@@ -124,6 +124,12 @@ fn buf_view() {
     assert_eq!(buf.len(), 4);
     assert!(!buf.is_empty());
     assert_eq!(buf.as_bytes(), &[2, 3, 4, 5]);
+
+    let view = buf.view(2);
+    let buf = view.processed();
+    assert_eq!(buf.len(), 2);
+    assert!(!buf.is_empty());
+    assert_eq!(buf.as_bytes(), &[4, 5]);
 }
 
 #[test]

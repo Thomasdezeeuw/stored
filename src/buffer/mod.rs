@@ -272,6 +272,15 @@ impl BufView {
     pub fn into_inner(self) -> Buffer {
         self.buf
     }
+
+    /// Marks the bytes in this view as processed, returning the `Buffer`.
+    ///
+    /// Essentially this is [`BufView::into_inner`] followed by
+    /// [`Buffer::processed`] with the length of the view as `n`.
+    pub fn processed(mut self) -> Buffer {
+        self.buf.processed(self.length);
+        self.buf
+    }
 }
 
 /// [`Future`] that reads from reader `R` into a [`Buffer`] or [`ReadBuffer`].
