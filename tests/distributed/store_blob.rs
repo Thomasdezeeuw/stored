@@ -6,8 +6,7 @@ use crate::util::http::{body, date_header, header};
 
 const FILTER: LevelFilter = LevelFilter::Warn;
 
-// TODO: add tests:
-// * replicas = 'all'
+// TODO: expand testing.
 
 // FIXME: something the participant dispatcher reads 0 bytes from the
 // connection, thinking that the coordinator relay closed the connection, if

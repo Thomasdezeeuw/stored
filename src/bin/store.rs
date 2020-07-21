@@ -8,10 +8,10 @@
 //! $ echo "Hello world" | store
 //! ```
 
-#![feature(bool_to_option)]
+#![feature(bool_to_option, write_all_vectored)]
 
 use std::env;
-use std::io::{self, Read, Write};
+use std::io::{self, IoSlice, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 
 use stored::cli::{first_arg, Error};
@@ -37,12 +37,8 @@ fn main() -> Result<(), Error> {
         blob.len()
     )?;
 
-    /* TODO: use vectored I/O:
-    let bufs = &[IoSlice::new(&headers), IoSlice::new(&blob)];
+    let bufs = &mut [IoSlice::new(&headers), IoSlice::new(&blob)];
     stream.write_all_vectored(bufs)?;
-    */
-    stream.write_all(&headers)?;
-    stream.write_all(&blob)?;
     stream.shutdown(Shutdown::Write)?;
 
     // Reuse the largest buffer.

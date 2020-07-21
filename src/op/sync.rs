@@ -605,7 +605,8 @@ where
 /// Maximum number of keys [`retrieve_blobs`] will request per iteration.
 const RETRIEVE_MAX_KEYS: usize = 20;
 
-// TODO: docs.
+/// Retrieve all blobs with keys in `stored_keys`.
+///
 /// After this function `stored_keys` will hold the keys successfully stored.
 async fn retrieve_blobs<M, K>(
     ctx: &mut actor::Context<M, K>,

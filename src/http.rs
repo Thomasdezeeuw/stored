@@ -21,7 +21,7 @@
 
 use std::convert::TryFrom;
 use std::error::Error;
-use std::io::{self, Write};
+use std::io::{self, IoSlice, Write};
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -311,10 +311,11 @@ impl Connection {
         let (_, mut write_buf) = self.buf.split_write(Response::MAX_HEADERS_SIZE);
         response.write_headers(&mut write_buf);
 
-        // TODO: replace with `write_all_vectored`:
-        // https://github.com/rust-lang/futures-rs/pull/1741.
-        self.stream.write_all(write_buf.as_bytes()).await?;
-        self.stream.write_all(response.body()).await
+        let bufs = &mut [
+            IoSlice::new(write_buf.as_bytes()),
+            IoSlice::new(response.body()),
+        ];
+        self.stream.write_all_vectored(bufs).await
     }
 }
 
