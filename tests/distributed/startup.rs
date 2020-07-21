@@ -66,7 +66,6 @@ fn syncing_peers() {
 }
 
 #[test]
-#[ignore = "still too flaky"]
 fn syncing_blobs() {
     // All three nodes are fully connection, but only node 1 has the blobs
     // stored.

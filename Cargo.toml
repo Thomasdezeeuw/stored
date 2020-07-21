@@ -24,6 +24,12 @@ serde      = { version = "1.0.105", default-features = false, features = ["deriv
 serde_json = { version = "1.0.52", default-features = false, features = ["std"] }
 toml       = { version = "0.5.6", default-features = false }
 
+# FIXME: use properly released version. Depends on https://github.com/rust-lang/futures-rs/pull/2187.
+[patch.crates-io]
+futures-core = { git = "https://github.com/Thomasdezeeuw/futures-rs", branch = "write-all-vectored" }
+futures-io = { git = "https://github.com/Thomasdezeeuw/futures-rs", branch = "write-all-vectored" }
+futures-util = { git = "https://github.com/Thomasdezeeuw/futures-rs", branch = "write-all-vectored" }
+
 [dev-dependencies]
 http        = { version = "0.2.0", default-features = false }
 lazy_static = { version = "1.4.0", default-features = false }

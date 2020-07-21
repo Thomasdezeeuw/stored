@@ -10,10 +10,10 @@ use heph::{actor, ActorRef};
 use log::{debug, error};
 use parking_lot::RwLock;
 
+use crate::db;
 use crate::op::full_sync;
 use crate::peer::Peers;
 use crate::util::CountDownLatch;
-use crate::{db, Buffer};
 
 pub async fn actor(
     mut ctx: actor::Context<!, ThreadSafe>,
@@ -27,8 +27,7 @@ pub async fn actor(
     start.wait().await;
     debug!("synchronising stored blobs with peers");
 
-    let mut buf = Buffer::new();
-    match full_sync(&mut ctx, &mut db_ref, &peers, &mut buf).await {
+    match full_sync(&mut ctx, &mut db_ref, &peers).await {
         Ok(()) => {
             debug!("completed synchronisation with peers, starting HTTP actor");
             if let Err(err) = start_http_ref.read().send(Start(())) {

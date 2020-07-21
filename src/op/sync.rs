@@ -1,860 +1,229 @@
+use std::cmp::min;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fmt;
 use std::future::Future;
-use std::io::{self, IoSlice};
-use std::mem::{replace, size_of, take, MaybeUninit};
+use std::io::IoSlice;
+use std::mem::replace;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::task::{self, Poll};
+use std::task::Poll;
 use std::time::Duration;
 
-use futures_io::AsyncWrite;
 use futures_util::future::poll_fn;
+use futures_util::io::AsyncWriteExt;
+use heph::actor::context::ThreadSafe;
+use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::net::TcpStream;
+use heph::rt::options::{ActorOptions, Priority};
 use heph::rt::RuntimeAccess;
-use heph::timer::Timer;
-use heph::{actor, ActorRef};
-use log::{debug, error, trace, warn};
+use heph::timer::Deadline;
+use heph::{actor, Actor, NewActor, SupervisorStrategy};
+use log::{error, warn};
 
-use crate::buffer::{BufView, Buffer};
+use crate::buffer::Buffer;
 use crate::db::{self, db_error};
-use crate::op::{db_rpc, DbRpc};
+use crate::op::{db_rpc, retrieve_blob, sync_removed_blob, sync_stored_blob};
 use crate::peer::server::{
-    BLOB_LENGTH_LEN, METADATA_LEN, NO_MORE_KEYS, N_KEYS, REQUEST_BLOB, REQUEST_KEYS,
-    REQUEST_MORE_KEYS,
+    BLOB_LENGTH_LEN, DATE_TIME_LEN, KEY_SET_SIZE_LEN, METADATA_LEN, REQUEST_BLOB, REQUEST_KEYS,
+    STORE_BLOB,
 };
-use crate::peer::Peers;
-use crate::storage::{DateTime, Keys, ModifiedTime};
+use crate::peer::{Peers, COORDINATOR_MAGIC};
+use crate::storage::{BlobEntry, DateTime, Keys, ModifiedTime};
 use crate::util::wait_for_wakeup;
 use crate::{Describe, Key};
 
-const GET_KEYS_TIMEOUT: Duration = Duration::from_secs(30);
-const RETRIEVE_BLOBS_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout used for I/O.
+const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 // FIXME: what happens to the consensus algorithm when we're not synced and a
 // request is made to remove a blob?
 
 // FIXME: handle the case where the peers have removed a blob and is still
-// stored locally.
+// stored locally, currently we just check if key is in the database.
+
+// TODO: cleanup `full_sync`, it is too long.
 
 /// Run a full sync of the stored blob.
 ///
 /// # Notes
 ///
 /// The `peers` should be connected to all known peers.
-pub async fn full_sync<M, K>(
-    ctx: &mut actor::Context<M, K>,
+pub async fn full_sync<M>(
+    ctx: &mut actor::Context<M, ThreadSafe>,
     db_ref: &mut ActorRef<db::Message>,
     peers: &Peers,
-    buf: &mut Buffer,
-) -> Result<(), ()>
-where
-    K: RuntimeAccess,
-{
+) -> Result<(), ()> {
+    if peers.is_empty() {
+        return Ok(());
+    }
+
     debug_assert!(
         peers.all_connected(),
         "called `full_sync` with not all peers connected"
     );
 
-    let addresses = peers.addresses();
-    let mut conns = Vec::with_capacity(addresses.len());
-    for address in addresses {
-        match Connection::connect(ctx, address) {
-            Ok(conn) => conns.push(conn),
-            // TODO: try again here?
-            Err(err) => {
-                error!(
-                    "error connecting to peer, ignoring the peer in synchronisation: {}: \
-                    remote_address={}",
-                    err, address
-                );
-                continue;
-            }
-        }
-    }
-
-    let mut peer_keys = get_known_keys(ctx, &mut conns, buf).await;
-
-    // Remove any connection that failed.
-    // FIXME: reconnect the connections.
-    conns.retain(Connection::is_complete);
-
+    // Keys stored locally.
     let stored_keys: Keys = db_rpc(ctx, db_ref, ())?.await?;
+    // Keys missing locally.
+    let mut missing_keys = Vec::new();
 
-    // NOTE: "stored" is used below to mean either that a blob is stored, or
-    // stored and removed, i.e any blob for which we have an index entry.
-
-    // Blobs stored by us, but not by any peers.
-    let extra_keys = stored_keys
+    let mut peers = peers
+        .addresses()
         .into_iter()
-        // `remove` returns `true` if the key is in `peer_keys`.
-        .filter(|key| !peer_keys.remove(key))
-        .cloned()
-        .collect();
+        .filter_map(|peer_address| SyncingPeer::start(ctx, db_ref.clone(), peer_address))
+        .collect::<Vec<_>>();
 
-    // Any keys left we in `extra_keys` means that we store the key, but our
-    // peers didn't.
-    share_blobs(db_ref, &mut conns, buf, extra_keys).await;
+    // Whether or not we received all known keys from all peers.
+    let mut got_all_known_keys = false;
 
-    // Any blobs not removed from `peer_keys` are missing from our local
-    // storage.
-    retrieve_blobs(ctx, db_ref, conns, buf, peer_keys).await;
+    poll_fn(move |task_ctx| {
+        if !got_all_known_keys {
+            // All peers (not in the failed state) are in the waiting state.
+            let mut all_waiting = true;
 
-    Ok(())
-}
+            for peer in peers.iter_mut() {
+                match &mut peer.state {
+                    State::GettingKeys(rpc) => match Pin::new(&mut *rpc).poll(task_ctx) {
+                        Poll::Ready(Ok(known_keys)) => {
+                            // All the keys the peer didn't store, but we stored
+                            // locally.
+                            let peer_missing_keys = stored_keys
+                                .into_iter()
+                                .filter_map(|key| {
+                                    (!known_keys.iter().any(|k| k == key)).then(|| key.clone())
+                                })
+                                .collect::<Vec<_>>();
 
-#[derive(Debug)]
-struct Connection<S> {
-    stream: TcpStream,
-    address: SocketAddr,
-    state: S,
-}
+                            // All the keys missing locally.
+                            let local_missing_keys = known_keys.iter().filter_map(|key| {
+                                (!stored_keys.into_iter().any(|k| k == key)).then(|| key.clone())
+                            });
+                            missing_keys.extend(local_missing_keys);
 
-trait State {
-    fn is_complete(&self) -> bool;
-}
-
-impl<S> Connection<S>
-where
-    S: State,
-{
-    fn connect<M, K>(
-        ctx: &mut actor::Context<M, K>,
-        address: SocketAddr,
-    ) -> io::Result<Connection<S>>
-    where
-        K: RuntimeAccess,
-        S: Default,
-    {
-        TcpStream::connect(ctx, address).and_then(|mut stream| {
-            // Set `TCP_NODELAY` as we send single byte requests.
-            stream.set_nodelay(true).map(|()| Connection {
-                stream,
-                address,
-                state: S::default(),
-            })
-        })
-    }
-
-    /// Return `true` if the connection is in the `Complete` state.
-    fn is_complete(&self) -> bool {
-        self.state.is_complete()
-    }
-}
-
-/// State of a [`Connection`] for [`get_known_keys`].
-#[derive(Copy, Clone, Debug)]
-enum GetKeysState {
-    /// Initial state.
-    ///
-    /// Write the request to the stream.
-    Init,
-    /// Waiting for a response from the peer. `usize` is the number of response
-    /// retrieved so far.
-    ///
-    /// Read the response from the stream.
-    WaitingResponse(usize),
-    /// Need to request more keys from the peer.
-    ///
-    /// Write the request for more to the stream.
-    RequestingMore,
-    /// Operation is complete.
-    Complete,
-    /// Previously returned an I/O error.
-    Failed,
-}
-
-impl State for GetKeysState {
-    fn is_complete(&self) -> bool {
-        matches!(self, GetKeysState::Complete)
-    }
-}
-
-impl Default for GetKeysState {
-    fn default() -> GetKeysState {
-        GetKeysState::Init
-    }
-}
-
-impl Connection<GetKeysState> {
-    fn get_keys<'c, 'k, 'b>(
-        &'c mut self,
-        keys: &'k mut HashSet<Key>,
-        buf: &'b mut Buffer,
-    ) -> GetKeys<'c, 'k, 'b> {
-        GetKeys {
-            conn: self,
-            keys,
-            buf,
-        }
-    }
-
-    fn prepare_retrieve_blobs(self) -> Connection<RetrieveBlobsSate> {
-        Connection {
-            stream: self.stream,
-            address: self.address,
-            state: self.state.into(),
-        }
-    }
-}
-
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct GetKeys<'c, 'k, 'b> {
-    conn: &'c mut Connection<GetKeysState>,
-    keys: &'k mut HashSet<Key>,
-    buf: &'b mut Buffer,
-}
-
-// Keep in sync with `COORDINATOR_MAGIC` in `peer` module.
-#[rustfmt::skip]
-const REQUEST_BYTES: &[u8] = &[
-    // "Stored coordinate\0".
-    83, 116, 111, 114, 101, 100, 32, 99, 111, 111, 114, 100, 105, 110, 97, 116, 101, 0,
-    // Request all keys.
-    REQUEST_KEYS,
-];
-
-/// Future state functions.
-impl<'c, 'k, 'b> GetKeys<'c, 'k, 'b> {
-    fn write_initial_request(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-    ) -> Poll<crate::Result<()>> {
-        debug!(
-            "writing keys requests to connection: remote_address={}",
-            self.conn.address
-        );
-        debug_assert!(matches!(self.conn.state, GetKeysState::Init));
-
-        match Pin::new(&mut self.conn.stream).poll_write(ctx, &REQUEST_BYTES) {
-            Poll::Ready(Ok(n)) if n == REQUEST_BYTES.len() => {
-                // We're sending a small amount of bytes, so set no delay.
-                if let Err(err) = self.conn.stream.set_nodelay(true) {
-                    warn!("failed to set no delay, continuing: {}", err);
-                }
-
-                // Advance to the next state.
-                self.conn.state = GetKeysState::WaitingResponse(0);
-                self.poll(ctx)
-            }
-            Poll::Ready(Ok(..)) => {
-                self.fail(io::Error::from(io::ErrorKind::WriteZero).describe("writing request"))
-            }
-            Poll::Ready(Err(err)) => self.fail(err.describe("writing request")),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn read_response(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<crate::Result<()>> {
-        let GetKeys { conn, keys, buf } = &mut *self;
-
-        loop {
-            debug!(
-                "reading response from connection: remote_address={}",
-                conn.address
-            );
-            debug_assert!(matches!(conn.state, GetKeysState::WaitingResponse(..)));
-
-            match Pin::new(&mut buf.read_from(&mut conn.stream)).poll(ctx) {
-                Poll::Ready(Ok(0)) => {
-                    return self.fail(
-                        io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading response"),
-                    )
-                }
-                Poll::Ready(Ok(1)) if buf.next_byte() == Some(NO_MORE_KEYS) => {
-                    debug!("retrieved all keys: remote_address={}", conn.address);
-                    // Read all keys the peer stored.
-                    conn.state = GetKeysState::Complete;
-                    buf.processed(1);
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Ready(Ok(..)) => {
-                    // Add all keys to our set.
-                    let mut n_keys = 0;
-                    for key_bytes in buf.as_bytes().chunks(Key::LENGTH) {
-                        if key_bytes.len() != Key::LENGTH {
-                            let no_more_keys = key_bytes == [NO_MORE_KEYS];
-                            buf.processed(buf.len());
-
-                            return if no_more_keys {
-                                debug!("retrieved all keys: remote_address={}", conn.address);
-                                // No more keys, so we're done.
-                                conn.state = GetKeysState::Complete;
-                                Poll::Ready(Ok(()))
+                            if peer_missing_keys.is_empty() {
+                                peer.state = State::Waiting;
                             } else {
-                                self.fail(
-                                    io::Error::from(io::ErrorKind::InvalidData)
-                                        .describe("invalid length when reading keys"),
-                                )
-                            };
-                        }
-
-                        // Safety: we've ensure that the chunks are
-                        // correctly sized.
-                        let key = Key::from_bytes(key_bytes);
-                        keys.get_or_insert_owned(key);
-                        n_keys += 1;
-                    }
-
-                    buf.processed(buf.len());
-
-                    match conn.state {
-                        GetKeysState::WaitingResponse(ref mut cnt) => {
-                            *cnt += n_keys;
-                            if *cnt >= N_KEYS {
-                                // Read all keys, request some more.
-                                conn.state = GetKeysState::RequestingMore;
-                                return self.poll(ctx);
+                                match peer.actor_ref.rpc(ctx, peer_missing_keys.clone()) {
+                                    Ok(rpc) => {
+                                        peer.state = State::SharingBlobs(rpc, peer_missing_keys);
+                                        all_waiting = false;
+                                    }
+                                    Err(err) => peer_failed(peer, err),
+                                }
                             }
-                            // Haven't yet read all send keys.
                         }
-                        _ => unreachable!("invalid `GetKeys` state"),
-                    }
-                }
-                Poll::Ready(Err(err)) => return self.fail(err.describe("reading response")),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
-    }
-
-    fn write_more_keys_request(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-    ) -> Poll<crate::Result<()>> {
-        debug!(
-            "writing more keys request to connection: remote_address={}",
-            self.conn.address
-        );
-        debug_assert!(matches!(self.conn.state, GetKeysState::RequestingMore));
-
-        match Pin::new(&mut self.conn.stream).poll_write(ctx, &[REQUEST_MORE_KEYS]) {
-            Poll::Ready(Ok(1)) => {
-                // Advance to the next state.
-                self.conn.state = GetKeysState::WaitingResponse(0);
-                self.poll(ctx)
-            }
-            Poll::Ready(Ok(..)) => self.fail(
-                io::Error::from(io::ErrorKind::WriteZero).describe("writing more keys request"),
-            ),
-            Poll::Ready(Err(err)) => self.fail(err.describe("writing more keys request")),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    /// Fail the future, setting the state to `Failed` and return `err`.
-    fn fail(&mut self, err: crate::Error) -> Poll<crate::Result<()>> {
-        self.conn.state = GetKeysState::Failed;
-        Poll::Ready(Err(err))
-    }
-}
-
-impl<'c, 'k, 'b> Future for GetKeys<'c, 'k, 'b> {
-    type Output = crate::Result<()>;
-
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        match self.conn.state {
-            GetKeysState::Init => self.write_initial_request(ctx),
-            GetKeysState::WaitingResponse(..) => self.read_response(ctx),
-            GetKeysState::RequestingMore => self.write_more_keys_request(ctx),
-            GetKeysState::Complete | GetKeysState::Failed => Poll::Ready(Ok(())),
-        }
-    }
-}
-
-/// Wrapper to log all failed connections.
-struct FailedConnections<I>(I);
-
-impl<'a, I, S: 'a> fmt::Display for FailedConnections<I>
-where
-    I: Iterator<Item = &'a Connection<S>> + Clone,
-    S: State,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[")?;
-        let mut first = true;
-        for conn in self.0.clone() {
-            if !conn.is_complete() {
-                if !first {
-                    f.write_str(", ")?;
-                }
-                first = false;
-                conn.address.fmt(f)?;
-            }
-        }
-        f.write_str("]")
-    }
-}
-
-/// Get all keys known to our `peers`.
-async fn get_known_keys<M, K>(
-    ctx: &mut actor::Context<M, K>,
-    conns: &mut [Connection<GetKeysState>],
-    buf: &mut Buffer,
-) -> HashSet<Key>
-where
-    K: RuntimeAccess,
-{
-    let timer = Timer::timeout(ctx, GET_KEYS_TIMEOUT);
-    let mut keys = HashSet::new();
-    loop {
-        // This is more complex then it needs to be, but here we are...
-        //
-        // We need to call the `GetKeys` future only once, not `await`ing until
-        // its complete, as that would waste time waiting for each connection
-        // one by one. But to call the future once we need a `task::Context`,
-        // hence we need `poll_fn`.
-        let done = poll_fn(|ctx| {
-            let mut done = true;
-            for conn in conns.iter_mut() {
-                // Try to advance the state of the connection just once, not
-                // waiting for one connection to complete before checking the
-                // next.
-                // NOTE: we're polling not ready and already completed `Future`s
-                // here, not the most efficient way (event technically
-                // unspecified behaviour), but with a low number of peers its
-                // fine.
-                match Pin::new(&mut conn.get_keys(&mut keys, buf)).poll(ctx) {
-                    Poll::Ready(Ok(())) => {}
-                    Poll::Ready(Err(err)) => {
-                        // TODO: try again?
-                        warn!(
-                            "error synchronising stored blobs with peers, \
-                            continuing with other peers: {}: remote_address={}",
-                            err, conn.address
-                        );
-                    }
-                    // Incomplete, try again later.
-                    Poll::Pending => done = false,
-                }
-            }
-            // Always return `Poll::Ready` since we're looping.
-            Poll::Ready(done)
-        })
-        .await;
-
-        if done {
-            break;
-        }
-
-        if timer.has_passed() {
-            warn!(
-                "getting the set of stored blobs timed out, \
-                continuing with current set: failed_peers={}",
-                FailedConnections(conns.iter())
-            );
-            break;
-        }
-
-        // We get scheduled once one of the stream is ready to read or write, or
-        // if the deadline passed.
-        wait_for_wakeup().await;
-    }
-
-    keys
-}
-
-/// Request all `peers` to store the blobs in `keys`.
-async fn share_blobs(
-    _db_ref: &mut ActorRef<db::Message>,
-    _conns: &mut [Connection<GetKeysState>],
-    _buf: &mut Buffer,
-    _keys: Vec<Key>,
-) {
-    // FIXME: todo.
-}
-
-/// State of a [`Connection`] for [`retrieve_blobs`].
-#[derive(Debug)]
-enum RetrieveBlobsSate {
-    /// Request blobs.
-    ///
-    /// Writes the request to the stream.
-    Requesting,
-    /// Waiting for a response from the peer. `usize` is the number of response
-    /// left to receive.
-    ///
-    /// Reads the blobs from the stream.
-    WaitingResponse(usize),
-    /// Holds the number of responses left to receive (same as
-    /// `WaitingResponse`) and the database RPC we're currently handling.
-    WaitingDbSyncStored(usize, DbRpc<BufView>),
-    /// Same as `WaitingDbSyncStored`, but then for syncing a removed blob.
-    WaitingDbSyncRemoved(usize, DbRpc<()>),
-    /// Operation is complete.
-    Complete,
-    /// Previously returned an I/O error.
-    Failed,
-}
-
-impl State for RetrieveBlobsSate {
-    fn is_complete(&self) -> bool {
-        matches!(self, RetrieveBlobsSate::Complete)
-    }
-}
-
-impl From<GetKeysState> for RetrieveBlobsSate {
-    fn from(prev_state: GetKeysState) -> RetrieveBlobsSate {
-        match prev_state {
-            GetKeysState::Complete => RetrieveBlobsSate::Requesting,
-            _ => RetrieveBlobsSate::Failed,
-        }
-    }
-}
-
-impl Connection<RetrieveBlobsSate> {
-    fn retrieve_blobs<'c, 'cn, 'k, 'b, 'd, 'f, M, K>(
-        &'cn mut self,
-        ctx: &'c mut actor::Context<M, K>,
-        keys: &'k mut Vec<Key>,
-        buf: &'b mut Buffer,
-        db_ref: &'d mut ActorRef<db::Message>,
-        failed: &'f mut Vec<Key>,
-    ) -> RetrieveBlob<'c, 'cn, 'k, 'b, 'd, 'f, M, K> {
-        RetrieveBlob {
-            ctx,
-            conn: self,
-            keys,
-            buf,
-            db_ref,
-            failed,
-        }
-    }
-
-    /// Return `true` if the connection is in the `Failed` state.
-    fn has_failed(&self) -> bool {
-        matches!(self.state, RetrieveBlobsSate::Failed)
-    }
-}
-
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-struct RetrieveBlob<'c, 'cn, 'k, 'b, 'd, 'f, M, K> {
-    ctx: &'c mut actor::Context<M, K>,
-    conn: &'cn mut Connection<RetrieveBlobsSate>,
-    keys: &'k mut Vec<Key>,
-    buf: &'b mut Buffer,
-    db_ref: &'d mut ActorRef<db::Message>,
-    failed: &'f mut Vec<Key>,
-}
-
-impl<'c, 'cn, 'k, 'b, 'd, 'f, M, K> RetrieveBlob<'c, 'cn, 'k, 'b, 'd, 'f, M, K>
-where
-    K: RuntimeAccess,
-{
-    fn write_blob_requests(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-    ) -> Poll<crate::Result<()>> {
-        if self.keys.is_empty() {
-            self.conn.state = RetrieveBlobsSate::Complete;
-            return Poll::Ready(Ok(()));
-        };
-
-        debug!(
-            "requesting keys from peer: remote_address={}",
-            self.conn.address
-        );
-
-        let RetrieveBlob { conn, keys, .. } = &mut *self;
-
-        // Request a maximum of 5 keys at a time.
-        let mut bufs: [MaybeUninit<IoSlice>; 10] = MaybeUninit::uninit_array();
-        let mut length = 0;
-        for (key, i) in keys.iter().take(bufs.len() / 2).zip((0..).step_by(2)) {
-            bufs[i] = MaybeUninit::new(IoSlice::new(&[REQUEST_BLOB]));
-            bufs[i + 1] = MaybeUninit::new(IoSlice::new(key.as_bytes()));
-            length += 2;
-        }
-
-        // Safety: initialised up to `length` elements in `bufs` above.
-        let bufs = unsafe { MaybeUninit::slice_get_ref(&bufs[..length]) };
-
-        let want_length = (length / 2) * (1 + Key::LENGTH);
-        match Pin::new(&mut conn.stream).poll_write_vectored(ctx, bufs) {
-            Poll::Ready(Ok(n)) if n == want_length => {
-                // Advance to the next state.
-                conn.state = RetrieveBlobsSate::WaitingResponse(length);
-                self.poll(ctx)
-            }
-            Poll::Ready(Ok(..)) => {
-                self.fail(io::Error::from(io::ErrorKind::WriteZero).describe("writing request"))
-            }
-            Poll::Ready(Err(err)) => self.fail(err.describe("writing request")),
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn read_responses(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-    ) -> Poll<crate::Result<()>> {
-        debug!(
-            "reading responses from peer: remote_address={}",
-            self.conn.address
-        );
-
-        // Number of bytes we want to read after we exit this loop.
-        let mut want_read = METADATA_LEN;
-        while self.buf.len() >= METADATA_LEN {
-            // Safety: checked above if we read enough bytes so indexing won't
-            // panic.
-            let bytes = self.buf.as_bytes();
-            let timestamp =
-                DateTime::from_bytes(&bytes[0..size_of::<DateTime>()]).unwrap_or(DateTime::INVALID);
-            let blob_length_bytes = bytes[..BLOB_LENGTH_LEN].try_into().unwrap();
-            let blob_length = u64::from_be_bytes(blob_length_bytes);
-            trace!("read blob length: length={}", blob_length);
-
-            if (self.buf.len() as u64) < blob_length {
-                // Haven't yet read the entire blob, we do that below.
-                want_read = blob_length as usize;
-                break;
-            }
-
-            let cnt = match self.conn.state {
-                RetrieveBlobsSate::WaitingResponse(cnt, ..) => cnt,
-                _ => unreachable!("invalid `RetrieveBlob` state"),
-            };
-
-            self.buf.processed(METADATA_LEN);
-            let RetrieveBlob {
-                ctx: c,
-                db_ref,
-                conn,
-                buf,
-                keys,
-                ..
-            } = &mut *self;
-
-            match timestamp.into() {
-                ModifiedTime::Created(timestamp) => {
-                    let view = replace(*buf, Buffer::empty()).view(blob_length as usize);
-                    match db_rpc(c, db_ref, (view, timestamp)) {
-                        Ok(rpc) => {
-                            conn.state = RetrieveBlobsSate::WaitingDbSyncStored(cnt, rpc);
-                            return self.sync_stored(ctx);
+                        // NOTE: error is already logged by the supervisor.
+                        Poll::Ready(Err(..)) => match peer.actor_ref.rpc(ctx, ()) {
+                            // Try again, the supervisor keep track of restarts
+                            // so we don't do this for ever..
+                            Ok(r) => {
+                                *rpc = r;
+                                all_waiting = false;
+                            }
+                            Err(err) => peer_failed(peer, err),
+                        },
+                        Poll::Pending => all_waiting = false,
+                    },
+                    State::SharingBlobs(rpc, peer_missing_keys) => {
+                        match Pin::new(&mut *rpc).poll(task_ctx) {
+                            Poll::Ready(Ok(())) => peer.state = State::Waiting,
+                            // NOTE: error is already logged by the supervisor.
+                            Poll::Ready(Err(..)) => {
+                                // Try again.
+                                match peer.actor_ref.rpc(ctx, peer_missing_keys.clone()) {
+                                    Ok(r) => {
+                                        *rpc = r;
+                                        all_waiting = false;
+                                    }
+                                    Err(err) => peer_failed(peer, err),
+                                }
+                            }
+                            Poll::Pending => all_waiting = false,
                         }
-                        Err(()) => return Poll::Ready(Err(db_error())),
                     }
-                }
-                ModifiedTime::Removed(timestamp) => {
-                    match db_rpc(c, db_ref, (keys[0].clone(), timestamp)) {
-                        Ok(rpc) => {
-                            conn.state = RetrieveBlobsSate::WaitingDbSyncRemoved(cnt, rpc);
-                            return self.sync_removed(ctx);
-                        }
-                        Err(()) => return Poll::Ready(Err(db_error())),
-                    }
-                }
-                ModifiedTime::Invalid => {
-                    // This can happen if the peer isn't fully synced, in
-                    // which case we let another peer handle the request for us.
-                    let failed_key = self.keys.remove(0);
-                    self.failed.push(failed_key);
+                    State::Waiting | State::Failed => {}
+                    State::RetrievingBlobs(..) => unreachable!(
+                        "`full_sync` in an invalid state while getting known keys: state={:?}",
+                        peer.state
+                    ),
                 }
             }
+
+            if !all_waiting {
+                return Poll::Pending;
+            }
+
+            got_all_known_keys = true;
+            split_keys(ctx, &mut peers, &missing_keys)?;
         }
 
-        // Read at least the minimum amount of bytes we want, either the
-        // `META_SIZE` or the length of the blob.
         loop {
-            let RetrieveBlob { conn, buf, .. } = &mut *self;
-            match Pin::new(&mut buf.read_from(&mut conn.stream)).poll(ctx) {
-                Poll::Ready(Ok(0)) => {
-                    break self.fail(
-                        io::Error::from(io::ErrorKind::UnexpectedEof).describe("reading blob"),
-                    )
+            let mut all_complete = true;
+            for peer in peers.iter_mut() {
+                match &mut peer.state {
+                    State::RetrievingBlobs(rpc, keys) => match Pin::new(&mut *rpc).poll(task_ctx) {
+                        Poll::Ready(Ok(stored_keys)) => {
+                            remove_from(stored_keys, &mut missing_keys);
+                            peer.state = State::Waiting;
+                        }
+                        // NOTE: error is already logged by the supervisor.
+                        Poll::Ready(Err(..)) => match peer.actor_ref.rpc(ctx, keys.clone()) {
+                            Ok(r) => {
+                                all_complete = false;
+                                *rpc = r
+                            }
+                            Err(err) => peer_failed(peer, err),
+                        },
+                        Poll::Pending => all_complete = false,
+                    },
+                    State::Waiting | State::Failed => {}
+                    State::GettingKeys(..) | State::SharingBlobs(..) => unreachable!(
+                        "`full_sync` in an invalid state while retrieving blobs: state={:?}",
+                        peer.state
+                    ),
                 }
-                // Read enough bytes to continue above (by calling ourself).
-                Poll::Ready(Ok(n)) if n >= want_read => break self.read_responses(ctx),
-                // Didn't read enough bytes, so read some more.
-                Poll::Ready(Ok(..)) => continue,
-                Poll::Ready(Err(err)) => break self.fail(err.describe("reading blob")),
-                Poll::Pending => break Poll::Pending,
+            }
+
+            if all_complete {
+                if missing_keys.is_empty() {
+                    break Poll::Ready(Ok(()));
+                } else {
+                    // Some peers (partially) failed, so we need to try again.
+                    split_keys(ctx, &mut peers, &missing_keys)?;
+                }
+            } else {
+                break Poll::Pending;
             }
         }
-    }
-
-    fn sync_stored(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<crate::Result<()>> {
-        let RetrieveBlob {
-            conn, keys, buf, ..
-        } = &mut *self;
-        match &mut conn.state {
-            RetrieveBlobsSate::WaitingDbSyncStored(cnt, rpc) => match Pin::new(rpc).poll(ctx) {
-                Poll::Ready(Ok(view)) => {
-                    // Mark the blob's bytes as processed and put back the buffer.
-                    **buf = view.processed();
-
-                    let blobs_left = *cnt - 1;
-                    keys.remove(0);
-                    if blobs_left == 0 {
-                        self.conn.state = RetrieveBlobsSate::Requesting;
-                        self.write_blob_requests(ctx)
-                    } else {
-                        self.conn.state = RetrieveBlobsSate::WaitingResponse(blobs_left);
-                        self.read_responses(ctx)
-                    }
-                }
-                Poll::Ready(Err(())) => Poll::Ready(Err(db_error())),
-                Poll::Pending => Poll::Pending,
-            },
-            _ => unreachable!("invalid `RetrieveBlob` state"),
-        }
-    }
-
-    fn sync_removed(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<crate::Result<()>> {
-        let RetrieveBlob { conn, keys, .. } = &mut *self;
-        match &mut conn.state {
-            RetrieveBlobsSate::WaitingDbSyncRemoved(cnt, rpc) => match Pin::new(rpc).poll(ctx) {
-                Poll::Ready(Ok(())) => {
-                    let blobs_left = *cnt - 1;
-                    keys.remove(0);
-                    if blobs_left == 0 {
-                        self.conn.state = RetrieveBlobsSate::Requesting;
-                        self.write_blob_requests(ctx)
-                    } else {
-                        self.conn.state = RetrieveBlobsSate::WaitingResponse(blobs_left);
-                        self.read_responses(ctx)
-                    }
-                }
-                Poll::Ready(Err(())) => Poll::Ready(Err(db_error())),
-                Poll::Pending => Poll::Pending,
-            },
-            _ => unreachable!("invalid `RetrieveBlob` state"),
-        }
-    }
-
-    /// Fail the future, setting the state to `Failed` and return `err`.
-    fn fail(&mut self, err: crate::Error) -> Poll<crate::Result<()>> {
-        self.conn.state = RetrieveBlobsSate::Failed;
-        Poll::Ready(Err(err))
-    }
+    })
+    .await
 }
 
-impl<'c, 'cn, 'k, 'b, 'd, 'f, M, K> Future for RetrieveBlob<'c, 'cn, 'k, 'b, 'd, 'f, M, K>
+fn peer_failed<E>(peer: &mut SyncingPeer, err: E)
 where
-    K: RuntimeAccess,
+    E: fmt::Display,
 {
-    type Output = crate::Result<()>;
-
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        match self.conn.state {
-            RetrieveBlobsSate::Requesting => self.write_blob_requests(ctx),
-            RetrieveBlobsSate::WaitingResponse(..) => self.read_responses(ctx),
-            RetrieveBlobsSate::WaitingDbSyncStored(..) => self.sync_stored(ctx),
-            RetrieveBlobsSate::WaitingDbSyncRemoved(..) => self.sync_removed(ctx),
-            RetrieveBlobsSate::Complete | RetrieveBlobsSate::Failed => Poll::Ready(Ok(())),
-        }
-    }
+    warn!(
+        "syncing with peer failed: {}: remote_address={}",
+        err, peer.address
+    );
+    peer.state = State::Failed;
 }
 
-/// Retrieve all blobs in `keys` for our `peers` and store them locally.
-async fn retrieve_blobs<M, K>(
-    ctx: &mut actor::Context<M, K>,
-    db_ref: &mut ActorRef<db::Message>,
-    conns: Vec<Connection<GetKeysState>>,
-    buf: &mut Buffer,
-    keys: HashSet<Key>,
-) where
-    K: RuntimeAccess,
-{
-    if keys.is_empty() {
-        debug!("no blobs to retrieve from peers");
-        return;
-    } else if conns.is_empty() {
-        error!("can not receive blobs from peers, all connections to our peers have failed");
-    }
-    debug!("retrieving blobs from peers");
-
-    let partitions = partition(keys, conns.len());
-    trace!(
-        "retrieving blobs, paritions ({}): {:?}",
-        partitions.len(),
-        partitions
-    );
-
-    debug_assert_eq!(conns.len(), partitions.len());
-    let mut conns: Vec<(_, Vec<Key>)> = conns
-        .into_iter()
-        .zip(partitions)
-        .map(|(conn, keys)| (conn.prepare_retrieve_blobs(), keys))
-        .collect();
-
-    let timer = Timer::timeout(ctx, RETRIEVE_BLOBS_TIMEOUT);
-    // List of keys we failed to retrieve.
-    let mut failed = Vec::new();
-    loop {
-        let done = poll_fn(|task_ctx| {
-            let mut done = true;
-            for (conn, keys) in conns.iter_mut() {
-                if conn.has_failed() {
-                    continue;
-                }
-
-                if keys.is_empty() {
-                    if let Some(key) = failed.pop() {
-                        keys.push(key);
-                    } else {
-                        // Retrieved all keys.
-                        continue;
-                    }
-                }
-
-                match Pin::new(&mut conn.retrieve_blobs(ctx, keys, buf, db_ref, &mut failed))
-                    .poll(task_ctx)
-                {
-                    Poll::Ready(Ok(())) => {}
-                    Poll::Ready(Err(err)) => {
-                        warn!(
-                            "error retrieving blob(s) from peer, \
-                                continuing with other peers: {}: remote_address={}",
-                            err, conn.address
-                        );
-                        failed.extend(take(keys));
-
-                        // FIXME: this could lead to awaiting for ever if all
-                        // other blobs are already retrieved.
-                        done = false;
-                    }
-                    // Incomplete, try again later.
-                    Poll::Pending => done = false,
-                }
-            }
-
-            // Always return `Poll::Ready` since we're looping.
-            Poll::Ready(done)
-        })
-        .await;
-
-        if done {
-            break;
+/// Returns the number of peers that are in an ok state (i.e. have not failed).
+fn ok_peers(peers: &[SyncingPeer]) -> usize {
+    let mut n = 0;
+    for peer in peers {
+        if !peer.has_failed() {
+            n += 1;
         }
-
-        if timer.has_passed() {
-            for (_, keys) in conns.iter_mut() {
-                failed.extend(take(keys));
-            }
-            break;
-        }
-
-        // We get scheduled once one of the stream is ready to read or write, or
-        // if the deadline passed.
-        wait_for_wakeup().await;
     }
-
-    if !failed.is_empty() {
-        // FIXME: request keys using different connections.
-        error!(
-            "retrieving blobs timed out: failed_peers={}, n_missing_keys={}, missing_keys={}",
-            FailedConnections(conns.iter().map(|(conn, _)| conn)),
-            failed.len(),
-            Key::display_keys(failed.iter()),
-        );
-    }
+    n
 }
 
 /// Partitions `keys`, returning a list of `n` lists of keys.
-fn partition(keys: HashSet<Key>, n: usize) -> Vec<Vec<Key>> {
+fn partition(keys: &[Key], n: usize) -> Vec<Vec<Key>> {
     debug_assert!(n != 0, "called `partition` with 0");
     let mut size = keys.len() / n;
     if size * n != keys.len() {
@@ -863,6 +232,462 @@ fn partition(keys: HashSet<Key>, n: usize) -> Vec<Vec<Key>> {
         size += 1;
     }
 
-    let mut iter = keys.into_iter();
+    let mut iter = keys.into_iter().cloned();
     (0..n).map(|_| (&mut iter).take(size).collect()).collect()
+}
+
+/// All peers not in the failed state must be in the [`State::Waiting`] state.
+fn split_keys<M>(
+    ctx: &mut actor::Context<M, ThreadSafe>,
+    peers: &mut [SyncingPeer],
+    missing_keys: &[Key],
+) -> Result<(), ()> {
+    let n = ok_peers(&peers);
+    if n == 0 {
+        error!("failed to synchronise blobs, all peers failed");
+        return Err(());
+    }
+
+    let partitions = partition(&missing_keys, n);
+
+    for (peer, keys) in peers.iter_mut().filter(|p| !p.has_failed()).zip(partitions) {
+        match &mut peer.state {
+            State::Waiting => match peer.actor_ref.rpc(ctx, keys.clone()) {
+                Ok(rpc) => peer.state = State::RetrievingBlobs(rpc, keys),
+                Err(err) => peer_failed(peer, err),
+            },
+            State::GettingKeys(..)
+            | State::SharingBlobs(..)
+            | State::RetrievingBlobs(..)
+            | State::Failed => unreachable!(
+                "`full_sync` in an invalid state starting to retrieve missing blobs: state={:?}",
+                peer.state
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// Removes `keys` from `missing_keys`.
+fn remove_from(keys: Vec<Key>, missing_keys: &mut Vec<Key>) {
+    for key in keys {
+        if let Some(pos) = missing_keys.iter().position(|k| *k == key) {
+            missing_keys.swap_remove(pos);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SyncingPeer {
+    actor_ref: ActorRef<Message>,
+    address: SocketAddr,
+    state: State,
+}
+
+impl SyncingPeer {
+    /// Start [`peer_sync_actor`], retuning `None` we can't make a RPC to it.
+    fn start<M>(
+        ctx: &mut actor::Context<M, ThreadSafe>,
+        db_ref: ActorRef<db::Message>,
+        peer_address: SocketAddr,
+    ) -> Option<SyncingPeer> {
+        let args = (db_ref.clone(), peer_address);
+        let supervisor = Supervisor {
+            db_ref: db_ref.clone(),
+            peer_address,
+            restarts_left: MAX_RESTARTS,
+        };
+        let peer_sync_actor = peer_sync_actor as fn(_, _, _) -> _;
+        let options = ActorOptions::default()
+            .with_priority(Priority::HIGH)
+            .mark_ready();
+        let actor_ref = ctx.spawn(supervisor, peer_sync_actor, args, options);
+        match actor_ref.rpc(ctx, ()) {
+            Ok(rpc) => Some(SyncingPeer {
+                actor_ref,
+                address: peer_address,
+                state: State::GettingKeys(rpc),
+            }),
+            Err(err) => {
+                warn!(
+                    "failed to start syncing to actor: {}: remote_address={}",
+                    err, peer_address
+                );
+                None
+            }
+        }
+    }
+
+    /// Returns `true` if the peer is in the [`State::Failed`] state.
+    fn has_failed(&self) -> bool {
+        matches!(self.state, State::Failed)
+    }
+}
+
+/// State of the [`SyncingPeer`].
+#[derive(Debug)]
+enum State {
+    /// Getting the known keys from the peer.
+    GettingKeys(Rpc<HashSet<Key>>),
+    /// Actor is sharing blobs with the peer, the vector is the list of keys the
+    /// peer is missing.
+    SharingBlobs(Rpc<()>, Vec<Key>),
+    /// Actor is retrieving blobs and storing them locally. Vector is the list
+    /// of keys to store.
+    RetrievingBlobs(Rpc<Vec<Key>>, Vec<Key>),
+    /// Actor is currently inactive.
+    Waiting,
+    /// Actor failed.
+    Failed,
+}
+
+/// Supervisor for [`peer_sync_actor`].
+#[derive(Debug)]
+struct Supervisor {
+    db_ref: ActorRef<db::Message>,
+    peer_address: SocketAddr,
+    restarts_left: usize,
+}
+
+/// Maximum number of times the [`actor`] will be restarted.
+const MAX_RESTARTS: usize = 5;
+
+impl<NA, A> heph::Supervisor<NA> for Supervisor
+where
+    NA: NewActor<Argument = (ActorRef<db::Message>, SocketAddr), Error = !, Actor = A>,
+    A: Actor<Error = crate::Error>,
+{
+    fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
+        if self.restarts_left >= 1 {
+            self.restarts_left -= 1;
+            warn!(
+                "peer synchronisation actor failed, restarting it ({}/{} restarts left): {}: remote_addres={}",
+                self.restarts_left, MAX_RESTARTS, err, self.peer_address
+            );
+            SupervisorStrategy::Restart((self.db_ref.clone(), self.peer_address))
+        } else {
+            warn!(
+                "peer synchronisation actor failed, stopping it: {}: remote_address={}",
+                err, self.peer_address
+            );
+            SupervisorStrategy::Stop
+        }
+    }
+
+    fn decide_on_restart_error(&mut self, err: NA::Error) -> SupervisorStrategy<NA::Argument> {
+        err
+    }
+
+    fn second_restart_error(&mut self, err: NA::Error) {
+        err
+    }
+}
+
+/// Actor that synchronises with a single peer.
+async fn peer_sync_actor<K>(
+    mut ctx: actor::Context<Message, K>,
+    mut db_ref: ActorRef<db::Message>,
+    peer_address: SocketAddr,
+) -> crate::Result<()>
+where
+    K: RuntimeAccess,
+{
+    let mut stream = TcpStream::connect(&mut ctx, peer_address)
+        .map_err(|err| err.describe("connecting to peer"))?;
+
+    // Ensure the `TcpStream` is connected.
+    wait_for_wakeup().await;
+
+    // Set `TCP_NODELAY` as we send single byte requests and buffer larger
+    // writes.
+    if let Err(err) = stream.set_nodelay(true) {
+        error!(
+            "error setting `TCP_NODELAY`, continuing: {}: remote_address={}",
+            err, peer_address
+        );
+    }
+
+    stream
+        .write_all(COORDINATOR_MAGIC)
+        .await
+        .map_err(|err| err.describe("writing magic bytes"))?;
+
+    // FIXME: this doesn't return.
+    // Change this to `while let Some(msg) = ctx.receive_next()`.
+    let mut buf = Buffer::new();
+    loop {
+        match ctx.receive_next().await {
+            Message::GetKnownKeys(RpcMessage { response, .. }) => {
+                let known_keys = get_known_keys(&mut ctx, &mut stream, &mut buf).await?;
+                if let Result::Err(err) = response.respond(known_keys) {
+                    // TODO: better name for the actor?
+                    warn!("peer sync actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::ShareBlobs(RpcMessage { request, response }) => {
+                share_blobs(&mut ctx, &mut db_ref, &mut stream, request).await?;
+                if let Result::Err(err) = response.respond(()) {
+                    // TODO: better name for the actor?
+                    warn!("peer sync actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::RetrieveBlobs(RpcMessage { request, response }) => {
+                let mut stored_keys = request;
+                let res = retrieve_blobs(
+                    &mut ctx,
+                    &mut db_ref,
+                    &mut stream,
+                    &mut buf,
+                    &mut stored_keys,
+                )
+                .await;
+                if let Result::Err(err) = response.respond(stored_keys) {
+                    // TODO: better name for the actor?
+                    warn!("peer sync actor failed to send response to actor: {}", err);
+                }
+                res?;
+            }
+        }
+    }
+}
+
+/// Message type used by [`peer_sync_actor`].
+enum Message {
+    /// Get the set of known keys from the peer.
+    GetKnownKeys(RpcMessage<(), HashSet<Key>>),
+    /// Request the peer to store the blobs with the provided keys.
+    ///
+    /// # Panics
+    ///
+    /// All keys must be stored, or the actor will panic.
+    ShareBlobs(RpcMessage<Vec<Key>, ()>),
+    /// Retrieves the blobs with keys and stores them.
+    ///
+    /// Returns the list of blobs successfully stored.
+    RetrieveBlobs(RpcMessage<Vec<Key>, Vec<Key>>),
+}
+
+impl From<RpcMessage<(), HashSet<Key>>> for Message {
+    fn from(msg: RpcMessage<(), HashSet<Key>>) -> Message {
+        Message::GetKnownKeys(msg)
+    }
+}
+
+impl From<RpcMessage<Vec<Key>, ()>> for Message {
+    fn from(msg: RpcMessage<Vec<Key>, ()>) -> Message {
+        Message::ShareBlobs(msg)
+    }
+}
+
+impl From<RpcMessage<Vec<Key>, Vec<Key>>> for Message {
+    fn from(msg: RpcMessage<Vec<Key>, Vec<Key>>) -> Message {
+        Message::RetrieveBlobs(msg)
+    }
+}
+
+/// Request all known keys from `stream` (connected to [`peer::server`]).
+async fn get_known_keys<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    stream: &mut TcpStream,
+    buf: &mut Buffer,
+) -> crate::Result<HashSet<Key>>
+where
+    K: RuntimeAccess,
+{
+    stream
+        .write_all(&[REQUEST_KEYS])
+        .await
+        .map_err(|err| err.describe("writing known keys request"))?;
+
+    if buf.len() < KEY_SET_SIZE_LEN {
+        let n = KEY_SET_SIZE_LEN - buf.len();
+        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            Ok(..) => {}
+            Err(err) => return Err(err.describe("reading number of keys")),
+        }
+    }
+
+    let bytes = buf.as_bytes();
+    let size_bytes = bytes[0..KEY_SET_SIZE_LEN].try_into().unwrap();
+    let size = u64::from_be_bytes(size_bytes) as usize;
+    buf.processed(KEY_SET_SIZE_LEN);
+
+    // FIXME: put a limit on `size`.
+    // TODO: give a large enough set we might want to stream the set.
+    let mut known_keys = HashSet::with_capacity(size);
+
+    while known_keys.len() != size {
+        if buf.len() < Key::LENGTH {
+            let n = Key::LENGTH - buf.len();
+            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                Ok(..) => {}
+                Err(err) => return Err(err.describe("reading known keys")),
+            }
+        }
+
+        // Safety: we've checked the length above, so this slicing won't panic.
+        let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
+        known_keys.get_or_insert_owned(key);
+        buf.processed(Key::LENGTH);
+    }
+
+    Ok(known_keys)
+}
+
+/// Request all `peers` to store the blobs in `keys`.
+///
+/// # Panics
+///
+/// This panics if a key in `keys` in not stored by the `db_ref` actor.
+async fn share_blobs<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    stream: &mut TcpStream,
+    keys: Vec<Key>,
+) -> crate::Result<()>
+where
+    K: RuntimeAccess,
+{
+    for key in keys {
+        match retrieve_blob(ctx, db_ref, key.clone()).await {
+            Ok(Some(BlobEntry::Stored(blob))) => {
+                write_blob(
+                    ctx,
+                    stream,
+                    &key,
+                    ModifiedTime::Created(blob.created_at()),
+                    blob.bytes(),
+                )
+                .await?;
+            }
+            Ok(Some(BlobEntry::Removed(timestamp))) => {
+                write_blob(ctx, stream, &key, ModifiedTime::Removed(timestamp), &[]).await?
+            }
+            // SAFETY: this can never happen.
+            Ok(None) => unreachable!(
+                "failed to share blob with peer: blob not stored locally: key={}",
+                key
+            ),
+            Err(()) => return Err(db_error()),
+        }
+    }
+
+    Ok(())
+}
+
+/// Writes a blob, with `key`, `timestamp` and the `bytes`, to `stream`.
+async fn write_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    stream: &mut TcpStream,
+    key: &Key,
+    timestamp: ModifiedTime,
+    bytes: &[u8],
+) -> crate::Result<()>
+where
+    K: RuntimeAccess,
+{
+    // TODO: buffer smaller blobs, current minimum is 84 bytes (which we
+    // directly send as we use `TCP_NODELAY`).
+    let timestamp: DateTime = timestamp.into();
+    let length: [u8; BLOB_LENGTH_LEN] = (bytes.len() as u64).to_be_bytes();
+    let bufs = &mut [
+        IoSlice::new(&[STORE_BLOB]),
+        IoSlice::new(key.as_bytes()),
+        IoSlice::new(timestamp.as_bytes()),
+        IoSlice::new(&length),
+        IoSlice::new(bytes),
+    ];
+    Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
+        .await
+        .map_err(|err| err.describe("writing blob"))
+}
+
+/// Maximum number of keys [`retrieve_blobs`] will request per iteration.
+const RETRIEVE_MAX_KEYS: usize = 20;
+
+// TODO: docs.
+/// After this function `stored_keys` will hold the keys successfully stored.
+async fn retrieve_blobs<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    stream: &mut TcpStream,
+    buf: &mut Buffer,
+    stored_keys: &mut Vec<Key>,
+) -> crate::Result<()>
+where
+    K: RuntimeAccess,
+{
+    let mut keys = replace(stored_keys, Vec::new());
+
+    while !keys.is_empty() {
+        // TODO: use `MaybeUninit` here?
+        let mut bufs = [IoSlice::new(&[]); 2 * RETRIEVE_MAX_KEYS];
+        for (i, key) in (0..)
+            .step_by(2)
+            .zip(keys.iter().rev().take(RETRIEVE_MAX_KEYS))
+        {
+            bufs[i] = IoSlice::new(&[REQUEST_BLOB]);
+            bufs[i + 1] = IoSlice::new(key.as_bytes());
+        }
+
+        let length = min(RETRIEVE_MAX_KEYS, keys.len());
+        let bufs = &mut bufs[0..length * 2];
+        Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
+            .await
+            .map_err(|err| err.describe("writing blob"))?;
+
+        let mut left = length;
+        let mut want_read = METADATA_LEN;
+        while left > 0 {
+            if buf.len() < want_read {
+                let n = want_read - buf.len();
+                match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                    Ok(..) => {}
+                    Err(err) => return Err(err.describe("reading blob")),
+                }
+            }
+
+            // Safety: checked above if we read enough bytes so indexing won't
+            // panic.
+            let bytes = buf.as_bytes();
+            let timestamp =
+                DateTime::from_bytes(&bytes[0..DATE_TIME_LEN]).unwrap_or(DateTime::INVALID);
+            let blob_length_bytes = bytes[DATE_TIME_LEN..DATE_TIME_LEN + BLOB_LENGTH_LEN]
+                .try_into()
+                .unwrap();
+            let blob_length = u64::from_be_bytes(blob_length_bytes) as usize;
+
+            if buf.len() < blob_length + METADATA_LEN {
+                // Don't have the entire blob yet.
+                want_read = blob_length + METADATA_LEN;
+                continue;
+            }
+
+            buf.processed(METADATA_LEN);
+            left -= 1;
+            want_read = METADATA_LEN;
+
+            let key = keys.pop().unwrap();
+            match timestamp.into() {
+                ModifiedTime::Created(timestamp) => {
+                    let view = replace(buf, Buffer::empty()).view(blob_length as usize);
+                    match sync_stored_blob(ctx, db_ref, view, timestamp).await {
+                        Ok(view) => *buf = view.processed(),
+                        Err(()) => return Err(db_error()),
+                    }
+                }
+                ModifiedTime::Removed(timestamp) => {
+                    match sync_removed_blob(ctx, db_ref, key.clone(), timestamp).await {
+                        Ok(()) => {}
+                        Err(()) => return Err(db_error()),
+                    }
+                }
+                ModifiedTime::Invalid => continue,
+            }
+
+            stored_keys.push(key);
+        }
+    }
+
+    Ok(())
 }

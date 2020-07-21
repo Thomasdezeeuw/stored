@@ -4,8 +4,9 @@
 //!
 //! [peer server actor]: actor()
 
-use std::io::Write;
-use std::mem::size_of;
+use std::convert::TryInto;
+use std::io::{IoSlice, Write};
+use std::mem::{replace, size_of};
 use std::net::SocketAddr;
 use std::time::Duration;
 
@@ -16,11 +17,12 @@ use heph::timer::Deadline;
 use heph::{actor, ActorRef};
 use log::{debug, warn};
 
-use crate::buffer::{Buffer, INITIAL_BUF_SIZE};
+use crate::buffer::Buffer;
 use crate::db::{self, db_error};
 use crate::error::Describe;
-use crate::storage::{self, BlobEntry, DateTime};
-use crate::{op, Key};
+use crate::op::{self, sync_removed_blob, sync_stored_blob};
+use crate::storage::{self, BlobEntry, DateTime, ModifiedTime};
+use crate::Key;
 
 /// The length (in bytes) that make the metadata that prefixes the blob send.
 pub const METADATA_LEN: usize = DATE_TIME_LEN + BLOB_LENGTH_LEN;
@@ -37,20 +39,22 @@ pub const BLOB_LENGTH_LEN: usize = size_of::<BlobLength>();
 /// Length send if the blob is not found.
 pub const NO_BLOB: [u8; BLOB_LENGTH_LEN] = 0u64.to_be_bytes();
 
+/// Type used to send the size of the set of known keys over the write in big
+/// endian.
+pub type KeysSetSize = u64;
+
+/// The length (in bytes) that make up the size of the key set
+pub const KEY_SET_SIZE_LEN: usize = size_of::<KeysSetSize>();
+
+/// Size of the set send if no blobs are stored.
+pub const NO_KEYS: [u8; KEY_SET_SIZE_LEN] = 0u64.to_be_bytes();
+
 /// Request type to retrieve a blob.
 pub const REQUEST_BLOB: u8 = 1;
 /// Request type to retrieve all keys.
 pub const REQUEST_KEYS: u8 = 2;
-/// Request type to retrieve more keys, follow-up to [`REQUEST_KEYS`].
-pub const REQUEST_MORE_KEYS: u8 = 3;
-
-/// Byte send to indicate no more keys are coming, i.e. all keys are send, in a
-/// response to [`REQUEST_MORE_KEYS`].
-pub const NO_MORE_KEYS: u8 = 0;
-
-/// The number of keys send at a time in [`REQUEST_KEYS`] request.
-// TODO: benchmark with larger sizes.
-pub const N_KEYS: usize = INITIAL_BUF_SIZE / Key::LENGTH;
+/// Request type to store a blob, used by the synchronisation process.
+pub const STORE_BLOB: u8 = 3;
 
 /// Timeout used for I/O.
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -86,8 +90,11 @@ pub(crate) async fn run_actor<M>(
 ///   committed or uncommitted) it writes [`DateTime::INVALID`] and a blob of
 ///   length 0. For uncommitted blob the timestamp will also be
 ///   [`DateTime::INVALID`], but the length non-zero.
-/// * [`REQUEST_KEYS`] returns a stream of [`Key`]s, writing [`N_KEYS`] keys at
-///   a time, writing more keys once [`REQUEST_MORE_KEYS`] byte is read.
+/// * [`REQUEST_KEYS`] returns a stream of [`Key`]s, prefixed with the length as
+///   `u64`.
+/// * [`STORE_BLOB`] expects the [`Key`], metadata ([`DateTime`] and length as
+///   `u64`) and the blob to store. Supports both actually stored blobs and
+///   removed blobs.
 ///
 /// [`participant::consensus`]: crate::peer::participant::consensus
 /// [`Blob`]: crate::storage::Blob
@@ -110,20 +117,25 @@ pub async fn actor<M>(
         // bytes.
         while let Some(request_byte) = buf.next_byte() {
             match request_byte {
-                // Need `Key::LENGTH + 1` bytes (hence `>`).
-                REQUEST_BLOB if buf.len() > Key::LENGTH => {
+                REQUEST_BLOB => {
                     buf.processed(1);
                     retrieve_blob(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
                 }
-                // Not enough bytes yet, read some more.
-                REQUEST_BLOB => break,
                 REQUEST_KEYS => {
                     buf.processed(1);
                     retrieve_keys(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
                 }
-                _ => {
-                    // Forcefully close the connection, letting the peer known
-                    // there's an error.
+                STORE_BLOB => {
+                    buf.processed(1);
+                    store_blob(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
+                }
+                byte => {
+                    // Invalid byte. Forcefully close the connection, letting
+                    // the peer known there's an error.
+                    warn!(
+                        "unexpected request from peer (byte: '{}'), closing connection",
+                        byte
+                    );
                     return Ok(());
                 }
             }
@@ -173,11 +185,20 @@ async fn retrieve_blob<M>(
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
 ) -> crate::Result<()> {
+    if buf.len() < Key::LENGTH {
+        let n = Key::LENGTH - buf.len();
+        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            Ok(..) => {}
+            Err(err) => return Err(err.describe("reading key of blob to retrieve")),
+        }
+    }
+
+    // SAFETY: checked length above, so indexing is safe.
     let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]).to_owned();
     buf.processed(Key::LENGTH);
     debug!("got peer request for blob: key={}", key);
 
-    let (blob, time) = match op::retrieve_uncommitted_blob(ctx, db_ref, key).await {
+    let (blob, timestamp) = match op::retrieve_uncommitted_blob(ctx, db_ref, key).await {
         Ok(Ok(blob)) => {
             if let Err(err) = blob.prefetch() {
                 warn!("error prefetching uncommitted blob, continuing: {}", err);
@@ -196,25 +217,19 @@ async fn retrieve_blob<M>(
         Err(()) => return Err(db_error()),
     };
 
-    // TODO: use vectored I/O here. See
-    // https://github.com/rust-lang/futures-rs/pull/2181.
-    match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(time.as_bytes())).await {
-        Ok(()) => {}
-        Err(err) => return Err(err.describe("writing blob length")),
-    }
-    let length: [u8; 8] = (blob.len() as u64).to_be_bytes();
-    match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&length)).await {
-        Ok(()) => {}
-        Err(err) => return Err(err.describe("writing blob length")),
-    }
-    Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(blob.bytes()))
+    let length: [u8; BLOB_LENGTH_LEN] = (blob.len() as u64).to_be_bytes();
+    let bufs = &mut [
+        IoSlice::new(timestamp.as_bytes()),
+        IoSlice::new(&length),
+        IoSlice::new(blob.bytes()),
+    ];
+    Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
         .await
-        .map_err(|err| err.describe("writing blob bytes"))
+        .map_err(|err| err.describe("writing blob"))
 }
 
-/// Writes up to [`N_KEYS`] [`Key`]s at a time, reading [`REQUEST_MORE_KEYS`]
-/// will send more keys. Once all keys are send it will write [`NO_MORE_KEYS`].
-/// bytes to it.
+/// Writes all [`Key`]s stored at the time of calling this function, prefixed
+/// with the length as `u64`.
 async fn retrieve_keys<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
@@ -227,47 +242,109 @@ async fn retrieve_keys<M>(
         .await
         .map_err(|()| db_error())?;
     let mut iter = keys.into_iter();
+    let length = iter.len();
 
+    /// The number of keys send at a time in [`REQUEST_KEYS`] request.
+    // TODO: benchmark with larger sizes.
+    const N_KEYS: usize = 100;
+
+    let mut first = true;
     loop {
-        let mut wbuf = buf.split_write(N_KEYS * Key::LENGTH).1;
+        let mut wbuf = buf.split_write(BLOB_LENGTH_LEN + (N_KEYS * Key::LENGTH)).1;
 
-        let mut n = 0;
+        if first {
+            // NOTE: writing to buffer never fails.
+            wbuf.write(&u64::to_be_bytes(length as u64)).unwrap();
+            first = false;
+        }
+
+        let mut iter = (&mut iter).take(N_KEYS);
         while let Some(key) = iter.next() {
             // NOTE: writing to buffer never fails.
             let bytes_written = wbuf.write(key.as_bytes()).unwrap();
             debug_assert_eq!(bytes_written, Key::LENGTH);
+        }
 
-            // At most write `N_KEYS` keys to not overflow the buffer.
-            n += 1;
-            if n == N_KEYS {
-                break;
-            }
+        // Wrote all keys.
+        if wbuf.is_empty() {
+            return Ok(());
         }
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
         Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
+    }
+}
 
-        if n < N_KEYS {
-            // TODO: use vectored I/O here.
-            return Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&[NO_MORE_KEYS]))
-                .await
-                .map_err(|err| err.describe("writing no more keys"));
-        }
-
-        // Wait before sending more keys.
-        match Deadline::timeout(ctx, ALIVE_TIMEOUT, buf.read_from(&mut *stream)).await {
-            Ok(0) => return Ok(()),
+/// Expects to read the [`Key`], metadata of the blob (timestamp, length),
+/// followed by the bytes that make up the blob. Writes nothing to the
+/// connection.
+async fn store_blob<M>(
+    ctx: &mut actor::Context<M, ThreadSafe>,
+    stream: &mut TcpStream,
+    buf: &mut Buffer,
+    db_ref: &mut ActorRef<db::Message>,
+) -> crate::Result<()> {
+    // Read at least the metadata of the blob to store.
+    if buf.len() < Key::LENGTH + METADATA_LEN {
+        let n = (Key::LENGTH + METADATA_LEN) - buf.len();
+        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => {}
-            Err(err) => return Err(err.describe("reading from socket")),
+            Err(err) => return Err(err.describe("reading metadata from socket")),
         }
+    }
 
-        match buf.next_byte() {
-            // Want more keys.
-            Some(REQUEST_MORE_KEYS) => buf.processed(1),
-            // Some different request, we don't handle that.
-            _ => return Ok(()),
+    // Read the key, timestamp and blob length from the buffer.
+    // Safety: ensured above that we read enough bytes so indexing and
+    // `split_at` won't panic.
+    let bytes = buf.as_bytes();
+    // Key.
+    let (key_bytes, bytes) = bytes.split_at(Key::LENGTH);
+    let key = Key::from_bytes(key_bytes).to_owned();
+    // Timestamp.
+    let (timestamp_bytes, bytes) = bytes.split_at(size_of::<DateTime>());
+    let timestamp = DateTime::from_bytes(timestamp_bytes).unwrap_or(DateTime::INVALID);
+    // Blob length.
+    let blob_length_bytes = bytes[0..BLOB_LENGTH_LEN].try_into().unwrap();
+    let blob_length = u64::from_be_bytes(blob_length_bytes);
+    buf.processed(Key::LENGTH + METADATA_LEN);
+
+    debug!(
+        "storing blob: key={}, length={}, timestamp={:?}",
+        key, blob_length, timestamp
+    );
+
+    // Read the entire blob.
+    if buf.len() < (blob_length as usize) {
+        let n = (blob_length as usize) - buf.len();
+        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            Ok(..) => {}
+            Err(err) => return Err(err.describe("reading blob from socket")),
+        }
+    }
+
+    match timestamp.into() {
+        ModifiedTime::Created(timestamp) => {
+            let view = replace(buf, Buffer::empty()).view(blob_length as usize);
+            match sync_stored_blob(ctx, db_ref, view, timestamp).await {
+                Ok(view) => {
+                    *buf = view.processed();
+                    Ok(())
+                }
+                Err(()) => Err(db_error()),
+            }
+        }
+        ModifiedTime::Removed(timestamp) => {
+            match sync_removed_blob(ctx, db_ref, key, timestamp).await {
+                Ok(()) => Ok(()),
+                Err(()) => Err(db_error()),
+            }
+        }
+        ModifiedTime::Invalid => {
+            warn!("peer wanted to a blob with an invalid timestamp");
+            // TODO: do something more?
+            Ok(())
         }
     }
 }

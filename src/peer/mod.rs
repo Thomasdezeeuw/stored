@@ -638,7 +638,7 @@ impl<'a, Res> fmt::Display for DisplayTimedoutPeers<'a, Res> {
 }
 
 // Magic bytes indicate the kind of connection.
-const COORDINATOR_MAGIC: &[u8] = b"Stored coordinate\0";
+pub const COORDINATOR_MAGIC: &[u8] = b"Stored coordinate\0";
 const PARTICIPANT_MAGIC: &[u8] = b"Stored participate";
 const MAGIC_LENGTH: usize = 18;
 

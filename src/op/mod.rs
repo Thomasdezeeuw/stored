@@ -11,6 +11,7 @@ use heph::timer::Timer;
 use heph::{actor, ActorRef};
 use log::{debug, error, warn};
 
+use crate::buffer::BufView;
 use crate::db::{self, HealthCheck, HealthOk};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
@@ -47,11 +48,14 @@ pub(crate) enum Outcome<T, U> {
 /// Retrieve the blob with `key`.
 ///
 /// Returns an error if the database actor can't be accessed.
-pub async fn retrieve_blob<M>(
-    ctx: &mut actor::Context<M>,
+pub async fn retrieve_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
     key: Key,
-) -> Result<Option<BlobEntry>, ()> {
+) -> Result<Option<BlobEntry>, ()>
+where
+    K: RuntimeAccess,
+{
     debug!("running retrieve operation");
     match db_rpc(ctx, db_ref, key) {
         Ok(rpc) => rpc.await,
@@ -97,12 +101,49 @@ where
 /// Runs a health check on the database.
 ///
 /// Returns an error if the database actor can't be accessed.
-pub async fn check_health<M>(
-    ctx: &mut actor::Context<M>,
+pub async fn check_health<M, K>(
+    ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
-) -> Result<HealthOk, ()> {
+) -> Result<HealthOk, ()>
+where
+    K: RuntimeAccess,
+{
     debug!("running health check");
     match db_rpc(ctx, db_ref, HealthCheck) {
+        Ok(rpc) => rpc.await,
+        Err(()) => Err(()),
+    }
+}
+
+/// Store the blob in `view` at `timestamp`.
+pub(crate) async fn sync_stored_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    view: BufView,
+    timestamp: SystemTime,
+) -> Result<BufView, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!("syncing stored blob");
+    match db_rpc(ctx, db_ref, (view, timestamp)) {
+        Ok(rpc) => rpc.await,
+        Err(()) => Err(()),
+    }
+}
+
+/// Store the blob with `key` and removed `timestamp`.
+pub(crate) async fn sync_removed_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    key: Key,
+    timestamp: SystemTime,
+) -> Result<(), ()>
+where
+    K: RuntimeAccess,
+{
+    debug!("syncing removed blob");
+    match db_rpc(ctx, db_ref, (key, timestamp)) {
         Ok(rpc) => rpc.await,
         Err(()) => Err(()),
     }

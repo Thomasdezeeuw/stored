@@ -23,7 +23,7 @@ use futures_io::AsyncRead;
 mod tests;
 
 /// Size used as initial buffer size.
-pub(crate) const INITIAL_BUF_SIZE: usize = 8 * 1024;
+const INITIAL_BUF_SIZE: usize = 8 * 1024;
 
 /// Minimum number of processed bytes before the data is moved to the start of
 /// the buffer.

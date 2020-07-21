@@ -1,6 +1,5 @@
 //! Module with the `Key` type.
 
-use std::cell::RefCell;
 use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -115,19 +114,6 @@ impl Key {
             io,
             skip_left: skip,
         }
-    }
-
-    /// Wrapper around a list of keys to display them neatly.
-    ///
-    /// # Notes
-    ///
-    /// Can only be used/formatted once (as the iterator will be empty the second call to
-    /// `fmt::Display`).
-    pub(crate) fn display_keys<'i, I>(iter: I) -> DisplayKeys<I>
-    where
-        I: Iterator<Item = &'i Key>,
-    {
-        DisplayKeys(RefCell::new(iter))
     }
 }
 
@@ -478,27 +464,6 @@ where
     }
 }
 
-/// Wrapper to implement `fmt::Display` for multiple keys.
-pub(crate) struct DisplayKeys<I>(RefCell<I>);
-
-impl<'i, I> fmt::Display for DisplayKeys<I>
-where
-    I: Iterator<Item = &'i Key>,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[")?;
-        let mut first = true;
-        while let Some(key) = self.0.borrow_mut().next() {
-            if !first {
-                f.write_str(", ")?;
-            }
-            first = false;
-            key.fmt(f)?;
-        }
-        f.write_str("]")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::io::{self, Read};
@@ -525,20 +490,6 @@ mod tests {
         assert_eq!(format!("{}", key), expected); // `fmt::Display` trait.
         assert_eq!(format!("{:?}", key), expected); // `fmt::Debug` trait.
         assert_eq!(key.to_string(), expected); // ToString trait.
-    }
-
-    #[test]
-    fn display_keys_formatting() {
-        let keys = &[
-            Key::for_blob(b"Hello world"),
-            Key::for_blob(b"Hello mars"),
-            Key::for_blob(b"Hello moon"),
-        ];
-
-        let expected = "[b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47, \
-            b09bcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c, \
-            f9024e47777547c1e80da15d5b8edcf3cbc592ae889bb4d86b059dd5947977eb94bac26024d9d9dcd5a57a758efd30ed0011290b15ea09bfe07ff53bfdbaeac3]";
-        assert_eq!(format!("{}", Key::display_keys(keys.iter())), expected);
     }
 
     #[test]
