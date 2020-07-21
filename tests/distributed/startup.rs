@@ -92,7 +92,7 @@ fn syncing_blobs() {
     let _p = start_stored();
 
     // Give the nodes some time to sync up.
-    sleep(Duration::from_secs(40)); // FIXME: 1 second.
+    sleep(Duration::from_secs(10));
 
     // The blobs stored in the database of node 1.
     let tests: &[(&str, &[u8], &str, &str)] = &[
