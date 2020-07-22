@@ -5,10 +5,10 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::time::{Duration, SystemTime};
 
-use heph::actor_ref::rpc::{Rpc, RpcMessage};
+use heph::actor;
+use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
-use heph::{actor, ActorRef};
 use log::{debug, error, warn};
 
 use crate::buffer::BufView;
@@ -254,6 +254,9 @@ pub(crate) trait Query: storage::Query {
         peers: &Peers,
         id: ConsensusId,
     ) -> PeerRpc<()>;
+
+    /// Coordinator committed to the query.
+    fn committed(peers: &Peers, id: ConsensusId, key: Key, timestamp: SystemTime);
 }
 
 /// Runs a consensus algorithm for `query`.
@@ -382,7 +385,13 @@ where
         // TODO: optimisation: check `rpc` to see if we got a single `Ok`
         // response and then start the commit process ourselves, then we can
         // wait for the peers and the storing concurrently.
-        return commit_query(ctx, db_ref, query, timestamp).await;
+        let key = query.key().to_owned();
+        let timestamp = commit_query(ctx, db_ref, query, timestamp).await?;
+
+        // Let the participants know the operation is complete.
+        Q::committed(peers, consensus_id, key, timestamp);
+
+        return Ok(timestamp);
     }
 
     // Failed too many times.

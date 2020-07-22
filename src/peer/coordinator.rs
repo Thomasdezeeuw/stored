@@ -23,7 +23,7 @@ pub mod relay {
     use crate::error::Describe;
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
-        EXIT_PARTICIPANT, PARTICIPANT_MAGIC,
+        EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
     };
     use crate::util::wait_for_wakeup;
     use crate::Key;
@@ -82,8 +82,6 @@ pub mod relay {
                     "peer coordinator relay failed, stopping it: {}: remote_address={}, server_address={}",
                     err, self.remote, self.server,
                 );
-                // FIXME: if this is the last peer to connect we'll never start
-                // the peer sync actor.
                 self.peers.remove(&self.remote);
                 SupervisorStrategy::Stop
             }
@@ -179,6 +177,8 @@ pub mod relay {
         CommitStoreBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
         /// Abort storing blob with [`Key`].
         AbortStoreBlob(RpcMessage<(ConsensusId, Key), Result<(), Error>>),
+        /// Coordinator committed to storing blob with [`Key`].
+        CoordinatorCommittedStore(ConsensusId, Key, SystemTime),
 
         /// Remove the blob with [`Key`].
         ///
@@ -188,48 +188,89 @@ pub mod relay {
         CommitRemoveBlob(RpcMessage<(ConsensusId, Key, SystemTime), Result<(), Error>>),
         /// Abort removing blob with [`Key`].
         AbortRemoveBlob(RpcMessage<(ConsensusId, Key), Result<(), Error>>),
+        /// Coordinator committed to removing blob with [`Key`].
+        CoordinatorCommittedRemove(ConsensusId, Key, SystemTime),
+
+        /// Participant has committed to storing blob with [`Key`].
+        ShareCommitmentStored(Key, SystemTime),
+        /// Participant has not committed to storing blob with [`Key`].
+        UncommittedStored(Key),
+        /// Participant has committed to removing blob with [`Key`].
+        ShareCommitmentRemoved(Key, SystemTime),
+        /// Participant has not committed to removing blob with [`Key`].
+        UncommittedRemoved(Key),
     }
 
     impl Message {
         /// Convert this `Message` into a [`Request`] and a [`RpcResponder`].
-        fn convert(self, request_id: usize) -> (Request, RpcResponder) {
+        fn convert(self, request_id: usize) -> (Request, Option<RpcResponder>) {
             let (consensus_id, key, op, response) = match self {
                 Message::AddBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::AddBlob,
-                    RpcResponder::AddBlob(response),
+                    Some(RpcResponder::AddBlob(response)),
                 ),
                 Message::CommitStoreBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::CommitStoreBlob(request.2),
-                    RpcResponder::CommitStoreBlob(response),
+                    Some(RpcResponder::CommitStoreBlob(response)),
                 ),
                 Message::AbortStoreBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::AbortStoreBlob,
-                    RpcResponder::AbortStoreBlob(response),
+                    Some(RpcResponder::AbortStoreBlob(response)),
+                ),
+                Message::CoordinatorCommittedStore(consensus_id, key, timestamp) => (
+                    consensus_id,
+                    key,
+                    Operation::StoreCommitted(timestamp),
+                    None,
                 ),
                 Message::RemoveBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::RemoveBlob,
-                    RpcResponder::RemoveBlob(response),
+                    Some(RpcResponder::RemoveBlob(response)),
                 ),
                 Message::CommitRemoveBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::CommitRemoveBlob(request.2),
-                    RpcResponder::CommitRemoveBlob(response),
+                    Some(RpcResponder::CommitRemoveBlob(response)),
                 ),
                 Message::AbortRemoveBlob(RpcMessage { request, response }) => (
                     request.0,
                     request.1,
                     Operation::AbortRemoveBlob,
-                    RpcResponder::AbortRemoveBlob(response),
+                    Some(RpcResponder::AbortRemoveBlob(response)),
                 ),
+                Message::CoordinatorCommittedRemove(consensus_id, key, timestamp) => (
+                    consensus_id,
+                    key,
+                    Operation::RemoveCommitted(timestamp),
+                    None,
+                ),
+                Message::ShareCommitmentStored(key, timestamp) => (
+                    PARTICIPANT_CONSENSUS_ID,
+                    key,
+                    Operation::StoreCommitted(timestamp),
+                    None,
+                ),
+                Message::UncommittedStored(key) => {
+                    (PARTICIPANT_CONSENSUS_ID, key, Operation::AddBlob, None)
+                }
+                Message::ShareCommitmentRemoved(key, timestamp) => (
+                    PARTICIPANT_CONSENSUS_ID,
+                    key,
+                    Operation::RemoveCommitted(timestamp),
+                    None,
+                ),
+                Message::UncommittedRemoved(key) => {
+                    (PARTICIPANT_CONSENSUS_ID, key, Operation::RemoveBlob, None)
+                }
             };
             let request = Request {
                 id: request_id,
@@ -271,6 +312,18 @@ pub mod relay {
             msg_types!(struct $name, $inner_type, stringify!($name));
             msg_types!(impl $name, $name, $return_type, 0);
         };
+        ($name: ident ($inner_type: ty)) => {
+            msg_types!(struct $name, $inner_type, stringify!($name));
+            msg_types!(impl $name, $name, 0);
+        };
+        ($name: ident ($inner_type: ty, $inner_type2: ty)) => {
+            msg_types!(struct $name, $inner_type, $inner_type2, stringify!($name));
+            msg_types!(impl $name, $name, 0, 1);
+        };
+        ($name: ident ($inner_type: ty, $inner_type2: ty, $inner_type3: ty)) => {
+            msg_types!(struct $name, $inner_type, $inner_type2, $inner_type3, stringify!($name));
+            msg_types!(impl $name, $name, 0, 1, 2);
+        };
         (struct $name: ident, $inner_type: ty, $doc: expr) => {
             doc_comment! {
                 concat!("Message type to use with [`ActorRef::rpc`] for [`Message::", $doc, "`]."),
@@ -285,6 +338,13 @@ pub mod relay {
                 pub(crate) struct $name(pub $inner_type1, pub $inner_type2);
             }
         };
+        (struct $name: ident, $inner_type1: ty, $inner_type2: ty, $inner_type3: ty, $doc: expr) => {
+            doc_comment! {
+                concat!("Message type to use with [`ActorRef::rpc`] for [`Message::", $doc, "`]."),
+                #[derive(Debug, Clone)]
+                pub(crate) struct $name(pub $inner_type1, pub $inner_type2, pub $inner_type3);
+            }
+        };
         (impl $name: ident, $ty: ty, $return_type: ty, $( $field: tt ),*) => {
             impl From<RpcMessage<(ConsensusId, $ty), Result<$return_type, Error>>> for Message {
                 fn from(msg: RpcMessage<(ConsensusId, $ty), Result<$return_type, Error>>) -> Message {
@@ -295,14 +355,29 @@ pub mod relay {
                 }
             }
         };
+        (impl $name: ident, $ty: ty, $( $field: tt ),*) => {
+            impl From<$ty> for Message {
+                fn from(msg: $ty) -> Message {
+                    Message::$name($( (msg).$field ),*)
+                }
+            }
+        };
     }
 
     msg_types!(AddBlob(Key) -> SystemTime);
     msg_types!(CommitStoreBlob(Key, SystemTime) -> ());
     msg_types!(AbortStoreBlob(Key) -> ());
+    msg_types!(CoordinatorCommittedStore(ConsensusId, Key, SystemTime));
+
     msg_types!(RemoveBlob(Key) -> SystemTime);
     msg_types!(CommitRemoveBlob(Key, SystemTime) -> ());
     msg_types!(AbortRemoveBlob(Key) -> ());
+    msg_types!(CoordinatorCommittedRemove(ConsensusId, Key, SystemTime));
+
+    msg_types!(ShareCommitmentStored(Key, SystemTime));
+    msg_types!(UncommittedStored(Key));
+    msg_types!(ShareCommitmentRemoved(Key, SystemTime));
+    msg_types!(UncommittedRemoved(Key));
 
     /// Start a participant connection to `remote` address.
     async fn connect_to_participant(
@@ -490,7 +565,9 @@ pub mod relay {
             .map_err(|err| io::Error::from(err).describe("serializing request"))?;
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&wbuf.as_bytes())).await {
             Ok(()) => {
-                responses.insert(id, response);
+                if let Some(response) = response {
+                    responses.insert(id, response);
+                }
                 Ok(())
             }
             Err(err) => Err(err.describe("reading known peers")),

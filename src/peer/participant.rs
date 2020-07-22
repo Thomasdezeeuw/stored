@@ -125,7 +125,7 @@ pub mod dispatcher {
     use crate::peer::participant::{ConsensusPhase, RpcResponder};
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
-        EXIT_PARTICIPANT,
+        EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID,
     };
     use crate::{db, Buffer};
 
@@ -192,7 +192,8 @@ pub mod dispatcher {
                 }
                 Either::Right((Ok(_), _)) => {
                     // Read one or more requests from the stream.
-                    let close = read_requests(&mut ctx, &remote, &mut buf, &db_ref, &mut running)?;
+                    let close =
+                        read_requests(&mut ctx, &remote, &mut buf, &db_ref, &peers, &mut running)?;
                     if close {
                         debug!("coordinator relay closing connection");
                         while let Some(msg) = ctx.try_receive_next() {
@@ -297,6 +298,7 @@ pub mod dispatcher {
         remote: &SocketAddr,
         buf: &mut Buffer,
         db_ref: &ActorRef<db::Message>,
+        peers: &Peers,
         running: &mut HashMap<ConsensusId, ActorRef<VoteResult>>,
     ) -> crate::Result<bool> {
         // TODO: reuse the `Deserializer`, it allocates scratch memory.
@@ -304,7 +306,7 @@ pub mod dispatcher {
 
         while let Some(result) = de.next() {
             match result {
-                Ok(request) => handle_request(ctx, remote, db_ref, running, request),
+                Ok(request) => handle_request(ctx, remote, db_ref, peers, running, request),
                 Err(err) if err.is_eof() => break,
                 Err(err) => {
                     let bytes_processed = de.byte_offset();
@@ -333,10 +335,19 @@ pub mod dispatcher {
         ctx: &mut actor::Context<Response, ThreadSafe>,
         remote: &SocketAddr,
         db_ref: &ActorRef<db::Message>,
+        peers: &Peers,
         running: &mut HashMap<ConsensusId, ActorRef<VoteResult>>,
         request: Request,
     ) {
         debug!("received a request: {:?}", request);
+        if request.consensus_id == PARTICIPANT_CONSENSUS_ID {
+            let msg = consensus::Message::Peer {
+                key: request.key,
+                op: request.op,
+            };
+            peers.send_participant_consensus(msg);
+            return;
+        }
 
         // TODO: DRY this.
         match request.op {
@@ -367,21 +378,27 @@ pub mod dispatcher {
                     "participant dispatcher starting store blob consensus actor: request={:?}, response={:?}",
                     request, responder
                 );
-                let consensus = consensus::store_blob_actor as fn(_, _, _, _, _) -> _;
+                let consensus = consensus::store_blob_actor as fn(_, _, _, _, _, _) -> _;
                 let actor_ref = ctx.spawn(
                     |err| {
                         warn!("store blob consensus actor failed: {}", err);
                         SupervisorStrategy::Stop
                     },
                     consensus,
-                    (request.key, *remote, responder, db_ref.clone()),
+                    (
+                        db_ref.clone(),
+                        peers.clone(),
+                        *remote,
+                        request.key,
+                        responder,
+                    ),
                     ActorOptions::default().mark_ready(),
                 );
                 // Checked above that we don't have duplicates.
                 let _ = running.insert(consensus_id, actor_ref);
             }
             Operation::CommitStoreBlob(timestamp) => {
-                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                if let Some(actor_ref) = running.get(&request.consensus_id) {
                     // Relay the message to the correct actor.
                     let msg = VoteResult {
                         request_id: request.id,
@@ -389,6 +406,8 @@ pub mod dispatcher {
                         result: ConsensusVote::Commit(timestamp),
                     };
                     if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
                         // In case we fail we send ourself a message to relay to
                         // the coordinator that the actor failed.
                         let response = Response {
@@ -418,6 +437,8 @@ pub mod dispatcher {
                         result: ConsensusVote::Abort,
                     };
                     if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for abort request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
                         // In case we fail we send ourself a message to relay to
                         // the coordinator that the actor failed.
                         let response = Response {
@@ -438,9 +459,26 @@ pub mod dispatcher {
                     ctx.actor_ref().send(response).unwrap();
                 }
             }
+            Operation::StoreCommitted(timestamp) => {
+                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                    // Relay the message to the correct actor.
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key,
+                        result: ConsensusVote::Commit(timestamp),
+                    };
+                    if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for committed request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
+                    }
+                } else {
+                    warn!("can't find consensus actor for committed request: request_id={}, consensus_id={}",
+                        request.id, request.consensus_id);
+                }
+            }
             Operation::RemoveBlob => {
                 let consensus_id = request.consensus_id;
-                if let Some(actor_ref) = running.remove(&consensus_id) {
+                if let Some(actor_ref) = running.get(&consensus_id) {
                     warn!(
                         "received conflicting consensus ids, stopping both: consensus_id={}",
                         consensus_id
@@ -465,21 +503,27 @@ pub mod dispatcher {
                     "participant dispatcher starting remove blob consensus actor: request={:?}, response={:?}",
                     request, responder
                 );
-                let consensus = consensus::remove_blob_actor as fn(_, _, _, _, _) -> _;
+                let consensus = consensus::remove_blob_actor as fn(_, _, _, _, _, _) -> _;
                 let actor_ref = ctx.spawn(
                     |err| {
                         warn!("remove blob consensus actor failed: {}", err);
                         SupervisorStrategy::Stop
                     },
                     consensus,
-                    (request.key, *remote, responder, db_ref.clone()),
+                    (
+                        db_ref.clone(),
+                        peers.clone(),
+                        *remote,
+                        request.key,
+                        responder,
+                    ),
                     ActorOptions::default().mark_ready(),
                 );
                 // Checked above that we don't have duplicates.
                 let _ = running.insert(consensus_id, actor_ref);
             }
             Operation::CommitRemoveBlob(timestamp) => {
-                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                if let Some(actor_ref) = running.get(&request.consensus_id) {
                     // Relay the message to the correct actor.
                     let msg = VoteResult {
                         request_id: request.id,
@@ -487,6 +531,8 @@ pub mod dispatcher {
                         result: ConsensusVote::Commit(timestamp),
                     };
                     if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
                         // In case we fail we send ourself a message to relay to
                         // the coordinator that the actor failed.
                         let response = Response {
@@ -516,6 +562,8 @@ pub mod dispatcher {
                         result: ConsensusVote::Abort,
                     };
                     if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for abort request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
                         // In case we fail we send ourself a message to relay to
                         // the coordinator that the actor failed.
                         let response = Response {
@@ -536,6 +584,23 @@ pub mod dispatcher {
                     ctx.actor_ref().send(response).unwrap();
                 }
             }
+            Operation::RemoveCommitted(timestamp) => {
+                if let Some(actor_ref) = running.remove(&request.consensus_id) {
+                    // Relay the message to the correct actor.
+                    let msg = VoteResult {
+                        request_id: request.id,
+                        key: request.key,
+                        result: ConsensusVote::Commit(timestamp),
+                    };
+                    if let Err(..) = actor_ref.send(msg) {
+                        warn!("failed to send to consensus actor for committed request: request_id={}, consensus_id={}",
+                            request.id, request.consensus_id);
+                    }
+                } else {
+                    warn!("can't find consensus actor for committed request: request_id={}, consensus_id={}",
+                        request.id, request.consensus_id);
+                }
+            }
         }
     }
 }
@@ -543,6 +608,7 @@ pub mod dispatcher {
 pub mod consensus {
     //! Module with consensus actor.
 
+    use std::collections::HashMap;
     use std::convert::TryInto;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime};
@@ -562,8 +628,8 @@ pub mod consensus {
     use crate::peer::server::{
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
     };
-    use crate::peer::{ConsensusVote, COORDINATOR_MAGIC};
-    use crate::storage::Query;
+    use crate::peer::{ConsensusVote, Operation, Peers, COORDINATOR_MAGIC};
+    use crate::storage::{Query, RemoveBlob, StoreBlob};
     use crate::{db, Buffer, Key};
 
     /// Timeout used for I/O between peers.
@@ -584,13 +650,21 @@ pub mod consensus {
         pub(super) result: ConsensusVote,
     }
 
+    impl VoteResult {
+        /// Returns `true` if the result is to commit.
+        fn is_committed(&self) -> bool {
+            matches!(self.result, ConsensusVote::Commit(..))
+        }
+    }
+
     /// Actor that runs the consensus algorithm for storing a blob.
     pub async fn store_blob_actor(
         mut ctx: actor::Context<VoteResult, ThreadSafe>,
-        key: Key,
-        remote: SocketAddr,
-        mut responder: RpcResponder,
         mut db_ref: ActorRef<db::Message>,
+        peers: Peers,
+        remote: SocketAddr,
+        key: Key,
+        mut responder: RpcResponder,
     ) -> crate::Result<()> {
         debug!(
             "store blob consensus actor started: key={}, remote_address={}",
@@ -659,6 +733,8 @@ pub mod consensus {
                 return Ok(());
             }
         };
+        // We checked the blob's key in `read_blob`.
+        debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
         let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
@@ -671,46 +747,63 @@ pub mod consensus {
                 vote_result
             }
             Either::Right(..) => {
-                warn!("failed to get consensus result in time, considering it failed");
-                let _ = abort_query(&mut ctx, &mut db_ref, query).await;
+                warn!(
+                    "failed to get consensus result in time, running peer conensus: key={}",
+                    query.key()
+                );
+                peers.uncommitted_stored(query);
                 return Ok(());
             }
         };
 
-        let response = if key.ne(query.key()) {
-            error!(
-                "received an incorrect key in consensus run: want_key={}, consensus_key={}",
-                key,
-                query.key()
-            );
-            let _ = abort_query(&mut ctx, &mut db_ref, query).await;
-            // Let the peer know the operation failed.
-            Err(())
-        } else {
-            match vote_result.result {
-                ConsensusVote::Commit(timestamp) => {
-                    commit_query(&mut ctx, &mut db_ref, query, timestamp)
-                        .await
-                        .map(|_| ())
+        let response = match vote_result.result {
+            ConsensusVote::Commit(timestamp) => {
+                commit_query(&mut ctx, &mut db_ref, query, timestamp)
+                    .await
+                    .map(Some)
+            }
+            ConsensusVote::Abort | ConsensusVote::Fail => abort_query(&mut ctx, &mut db_ref, query)
+                .await
+                .map(|_| None),
+        };
+
+        let timestamp = match response {
+            Ok(timestamp) => {
+                let response = ConsensusVote::Commit(SystemTime::now());
+                responder.respond(response);
+                match timestamp {
+                    Some(timestamp) => timestamp,
+                    // If the query is aborted we're done.
+                    None => return Ok(()),
                 }
-                ConsensusVote::Abort | ConsensusVote::Fail => {
-                    abort_query(&mut ctx, &mut db_ref, query).await
-                }
+            }
+            Err(()) => {
+                responder.respond(ConsensusVote::Abort);
+                return Ok(());
             }
         };
 
-        // TODO: Thesis section 3.2.2.1
-        // * Step 10: detect failure of coordinator.
-        // * Step 11: share commit/abort with all other peers.
-        // * Step 12a, 13: no commits -> abort query.
-        // * Step 12b, 9a, 10b: at least one commit -> commit query.
-
-        let response = match response {
-            Ok(()) => ConsensusVote::Commit(SystemTime::now()),
-            Err(()) => ConsensusVote::Abort,
-        };
-        responder.respond(response);
-        Ok(())
+        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let f = select(ctx.receive_next(), timer);
+        match f.await {
+            // Coordinator committed, so we're done.
+            Either::Left((vote, ..)) if vote.is_committed() => Ok(()),
+            Either::Left(..) | Either::Right(..) => {
+                // If the coordinator didn't send us a message that it (and all
+                // other participants) committed we could be in an invalid
+                // state, where some participants committed and some didn't. We
+                // use peer consensus to get us back into an ok state.
+                warn!(
+                    "failed to get committed message from coordinator, \
+                    running peer conensus: key={}",
+                    key
+                );
+                // We're committed, let all other participants know.
+                peers.share_stored_commitment(key, timestamp);
+                // TODO: check if all peers committed?
+                Ok(())
+            }
+        }
     }
 
     /// Read a blob (as returned by the [`coordinator::server`]) from `stream`.
@@ -791,10 +884,11 @@ pub mod consensus {
     // FIXME: use consensus id in logging.
     pub async fn remove_blob_actor(
         mut ctx: actor::Context<VoteResult, ThreadSafe>,
-        key: Key,
-        remote: SocketAddr,
-        mut responder: RpcResponder,
         mut db_ref: ActorRef<db::Message>,
+        peers: Peers,
+        remote: SocketAddr,
+        key: Key,
+        mut responder: RpcResponder,
     ) -> crate::Result<()> {
         debug!(
             "remove blob consensus actor started: key={}, remote_address={}",
@@ -826,6 +920,7 @@ pub mod consensus {
                 return Ok(());
             }
         };
+        debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
         let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
@@ -838,45 +933,181 @@ pub mod consensus {
                 vote_result
             }
             Either::Right(..) => {
-                warn!("failed to get consensus result in time, considering it failed");
-                let _ = abort_query(&mut ctx, &mut db_ref, query).await;
+                warn!(
+                    "failed to get consensus result in time, running peer conensus: key={}",
+                    query.key()
+                );
+                peers.uncommitted_removed(query);
                 return Ok(());
             }
         };
 
-        let response = if key.ne(query.key()) {
-            error!(
-                "received an incorrect key in consensus run: want_key={}, consensus_key={}",
-                key,
-                query.key()
-            );
-            let _ = abort_query(&mut ctx, &mut db_ref, query).await;
-            // Let the peer know the operation failed.
-            Err(())
-        } else {
-            match vote_result.result {
-                ConsensusVote::Commit(timestamp) => {
-                    commit_query(&mut ctx, &mut db_ref, query, timestamp)
-                        .await
-                        .map(|_| ())
+        let response = match vote_result.result {
+            ConsensusVote::Commit(timestamp) => {
+                commit_query(&mut ctx, &mut db_ref, query, timestamp)
+                    .await
+                    .map(Some)
+            }
+            ConsensusVote::Abort | ConsensusVote::Fail => abort_query(&mut ctx, &mut db_ref, query)
+                .await
+                .map(|()| None),
+        };
+
+        let timestamp = match response {
+            Ok(timestamp) => {
+                let response = ConsensusVote::Commit(SystemTime::now());
+                responder.respond(response);
+                match timestamp {
+                    Some(timestamp) => timestamp,
+                    // If the query is aborted we're done.
+                    None => return Ok(()),
                 }
-                ConsensusVote::Abort | ConsensusVote::Fail => {
-                    abort_query(&mut ctx, &mut db_ref, query).await
-                }
+            }
+            Err(()) => {
+                responder.respond(ConsensusVote::Abort);
+                return Ok(());
             }
         };
 
-        // TODO: Thesis section 3.2.4.1
-        // * Step 10: detect failure of coordinator.
-        // * Step 11: share commit/abort with all other peers.
-        // * Step 12a, 13: no commits -> abort query.
-        // * Step 12b, 9a, 10b: at least one commit -> commit query.
+        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let f = select(ctx.receive_next(), timer);
+        match f.await {
+            // Coordinator committed, so we're done.
+            Either::Left((vote, ..)) if vote.is_committed() => Ok(()),
+            Either::Left(..) | Either::Right(..) => {
+                // If the coordinator didn't send us a message that it (and all
+                // other participants) committed we could be in an invalid
+                // state, where some participants committed and some didn't. We
+                // use peer consensus to get us back into an ok state.
+                warn!(
+                    "failed to get committed message from coordinator, \
+                    running peer conensus: key={}",
+                    key
+                );
+                // We're committed, let all other participants know.
+                peers.share_removed_commitment(key, timestamp);
+                // TODO: check if all peers committed?
+                Ok(())
+            }
+        }
+    }
 
-        let response = match response {
-            Ok(()) => ConsensusVote::Commit(SystemTime::now()),
-            Err(()) => ConsensusVote::Abort,
-        };
-        responder.respond(response);
-        Ok(())
+    /// Message for the [participant consensus actor].
+    ///
+    /// [participant consensus actor]: actor
+    #[derive(Debug)]
+    pub enum Message {
+        /// Store query that is uncommitted, where the coordinator failed.
+        UncommittedStore(StoreBlob),
+        /// Remove query that is uncommitted, where the coordinator failed.
+        UncommittedRemove(RemoveBlob),
+        /// Message from a peer node.
+        Peer { key: Key, op: Operation },
+    }
+
+    /// Result for a 2PC as defined by the peers.
+    struct PeerResult {
+        /// If some at least a single participant committed with the timestamp.
+        committed: Option<SystemTime>,
+        /// Number of results.
+        count: usize,
+    }
+
+    enum StorageQuery {
+        Store(StoreBlob),
+        Remove(RemoveBlob),
+    }
+
+    /// Actor that handles participant consensus for this node.
+    pub async fn actor(
+        mut ctx: actor::Context<Message, ThreadSafe>,
+        mut db_ref: ActorRef<db::Message>,
+    ) -> Result<(), !> {
+        // Queries from local consensus actor where the coordinator failed.
+        let mut queries: HashMap<Key, StorageQuery> = HashMap::new();
+        // Results from peers for consensus queries where the coordinator
+        // failed.
+        let mut peer_results: HashMap<Key, PeerResult> = HashMap::new();
+
+        loop {
+            let msg = ctx.receive_next().await;
+            debug!("participant consensus received a message: {:?}", msg);
+
+            match msg {
+                Message::UncommittedStore(query) => {
+                    if let Some(result) = peer_results.get(query.key()) {
+                        if let Some(timestamp) = result.committed {
+                            // Don't care about the result, can't handle it
+                            // here.
+                            let _ = commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                            continue;
+                        }
+                    }
+
+                    // TODO: deal with duplicates.
+                    queries.insert(query.key().to_owned(), StorageQuery::Store(query));
+                }
+                Message::UncommittedRemove(query) => {
+                    if let Some(result) = peer_results.get(query.key()) {
+                        if let Some(timestamp) = result.committed {
+                            // Don't care about the result, can't handle it
+                            // here.
+                            let _ = commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                            continue;
+                        }
+                    }
+
+                    // TODO: deal with duplicates.
+                    queries.insert(query.key().to_owned(), StorageQuery::Remove(query));
+                }
+                Message::Peer { key, op } => {
+                    use Operation::*;
+                    let res = peer_results
+                        .entry(key.clone())
+                        .and_modify(|res| match op {
+                            CommitStoreBlob(timestamp)
+                            | StoreCommitted(timestamp)
+                            | CommitRemoveBlob(timestamp)
+                            | RemoveCommitted(timestamp) => res.committed = Some(timestamp),
+                            // TODO: declare the query as failed at some point.
+                            _ => res.count += 1,
+                        })
+                        .or_insert_with(|| match op {
+                            CommitStoreBlob(timestamp)
+                            | StoreCommitted(timestamp)
+                            | CommitRemoveBlob(timestamp)
+                            | RemoveCommitted(timestamp) => PeerResult {
+                                committed: Some(timestamp),
+                                count: 0,
+                            },
+                            _ => PeerResult {
+                                committed: None,
+                                count: 1,
+                            },
+                        });
+
+                    // If one of the peers has committed we also want to commit
+                    // the query.
+                    if let Some(timestamp) = res.committed {
+                        if let Some(query) = queries.remove(&key) {
+                            match query {
+                                StorageQuery::Store(query) => {
+                                    // Don't care about the result, can't handle
+                                    // it here.
+                                    let _ =
+                                        commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                                }
+                                StorageQuery::Remove(query) => {
+                                    // Don't care about the result, can't handle
+                                    // it here.
+                                    let _ =
+                                        commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }

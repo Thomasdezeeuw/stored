@@ -24,6 +24,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Describe;
+use crate::storage::{RemoveBlob, StoreBlob};
 use crate::util::CountDownLatch;
 use crate::{config, db, Key};
 
@@ -38,6 +39,7 @@ pub mod sync;
 mod tests;
 
 use coordinator::relay;
+use participant::consensus;
 
 /// Start the all actors related to peer interaction.
 pub fn start(
@@ -52,7 +54,10 @@ pub fn start(
         _ => unimplemented!("currently only replicas = 'all' is supported"),
     }
 
-    let peers = Peers::with_latch(start_sync.clone());
+    let relay = consensus::actor as fn(_, _) -> _;
+    let participant_ref =
+        runtime.spawn(NoSupervisor, relay, db_ref.clone(), ActorOptions::default());
+    let peers = Peers::new(participant_ref, start_sync.clone());
 
     start_listener(
         runtime,
@@ -166,6 +171,9 @@ impl fmt::Display for ConsensusId {
     }
 }
 
+/// Consensus id used to mark a message as meant for participant consensus.
+pub const PARTICIPANT_CONSENSUS_ID: ConsensusId = ConsensusId(usize::max_value());
+
 /// Request message send from [`coordinator::relay`] to
 /// [`participant::dispatcher`].
 #[derive(Debug, Deserialize, Serialize)]
@@ -192,6 +200,8 @@ pub enum Operation {
     CommitStoreBlob(SystemTime),
     /// Abort storing the blob.
     AbortStoreBlob,
+    /// Coordinator committed to storing the blob.
+    StoreCommitted(SystemTime),
 
     /// Remove the blob (phase one in removing it).
     RemoveBlob,
@@ -199,6 +209,8 @@ pub enum Operation {
     CommitRemoveBlob(SystemTime),
     /// Abort removing the blob.
     AbortRemoveBlob,
+    /// Coordinator committed to removing the blob.
+    RemoveCommitted(SystemTime),
 }
 
 /// Response message send from [`participant::dispatcher`] to
@@ -242,6 +254,10 @@ struct PeersInner {
     /// Count down latch that gets decreased once a (previously unconnected)
     /// peer is connected.
     peers_connected: Option<Arc<CountDownLatch>>,
+    /// Actor reference to the [participant consensus actor].
+    ///
+    /// [participant consensus actor]: consensus::actor
+    participant_ref: Option<ActorRef<consensus::Message>>,
 }
 
 #[derive(Debug, Clone)]
@@ -252,24 +268,29 @@ struct Peer {
 }
 
 impl Peers {
-    /// Create an empty collection of peers.
+    /// Create an empty collection of peers, can't grow.
     pub fn empty() -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
                 peers_connected: None,
+                participant_ref: None,
             }),
         }
     }
 
-    /// Create
-    pub fn with_latch(peers_connected: Arc<CountDownLatch>) -> Peers {
+    /// Create a new peer collections.
+    pub fn new(
+        participant_ref: ActorRef<consensus::Message>,
+        peers_connected: Arc<CountDownLatch>,
+    ) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
                 peers_connected: Some(peers_connected),
+                participant_ref: Some(participant_ref),
             }),
         }
     }
@@ -311,6 +332,13 @@ impl Peers {
         self.rpc(ctx, id, coordinator::relay::AbortStoreBlob(key))
     }
 
+    /// Committed to storing a blob.
+    pub fn committed_store_blob(&self, id: ConsensusId, key: Key, timestamp: SystemTime) {
+        self.send(coordinator::relay::CoordinatorCommittedStore(
+            id, key, timestamp,
+        ))
+    }
+
     /// Start a consensus algorithm to remove blob with `key`.
     pub fn remove_blob<M>(
         &self,
@@ -345,6 +373,45 @@ impl Peers {
         key: Key,
     ) -> PeerRpc<()> {
         self.rpc(ctx, id, coordinator::relay::AbortRemoveBlob(key))
+    }
+
+    /// Committed to removing a blob.
+    pub fn committed_remove_blob(&self, id: ConsensusId, key: Key, timestamp: SystemTime) {
+        self.send(coordinator::relay::CoordinatorCommittedRemove(
+            id, key, timestamp,
+        ))
+    }
+
+    /// Share with the peers to commit to storing the blob with `key` at
+    /// `timestamp`.
+    pub fn share_stored_commitment(&self, key: Key, timestamp: SystemTime) {
+        self.send(coordinator::relay::ShareCommitmentStored(key, timestamp))
+    }
+
+    /// Same as `share_stored_commitment` but for a remove query.
+    pub fn share_removed_commitment(&self, key: Key, timestamp: SystemTime) {
+        self.send(coordinator::relay::ShareCommitmentRemoved(key, timestamp))
+    }
+
+    /// 2PC participant is uncommitted the `query` and the coordinator timed
+    /// out. Send it to the participant consensus actor.
+    pub fn uncommitted_stored(&self, query: StoreBlob) {
+        self.send_participant_consensus(consensus::Message::UncommittedStore(query))
+    }
+
+    /// Same as `uncommitted_stored`, but with a remove query.
+    pub fn uncommitted_removed(&self, query: RemoveBlob) {
+        self.send_participant_consensus(consensus::Message::UncommittedRemove(query))
+    }
+
+    /// Send a message to the [participant consensus actor].
+    ///
+    /// [participant consensus actor]: consensus::actor
+    pub(crate) fn send_participant_consensus(&self, msg: consensus::Message) {
+        match self.inner.participant_ref.as_ref() {
+            Some(participant_ref) if participant_ref.send(msg).is_ok() => {}
+            _ => warn!("failed to send message to participant consensus actor"),
+        }
     }
 
     /// Rpc with all peers in the collection.
@@ -382,6 +449,22 @@ impl Peers {
             .collect();
         let timer = Timer::timeout(ctx, PEER_TIMEOUT);
         PeerRpc { rpcs, timer }
+    }
+
+    /// Send a message to all peers in the collection.
+    fn send<Req>(&self, request: Req)
+    where
+        relay::Message: From<Req>,
+        Req: Clone,
+    {
+        for peer in self.inner.peers.read().iter() {
+            if let Err(err) = peer.actor_ref.send(request.clone()) {
+                warn!(
+                    "failed to send message to peer relay: {}: address={}",
+                    err, peer.address
+                );
+            }
+        }
     }
 
     fn new_consensus_id(&self) -> ConsensusId {

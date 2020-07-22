@@ -42,6 +42,8 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 // FIXME: handle the case where the peers have removed a blob and is still
 // stored locally, currently we just check if key is in the database.
 
+// FIXME: also sync metadata.
+
 // TODO: cleanup `full_sync`, it is too long.
 
 /// Run a full sync of the stored blob.

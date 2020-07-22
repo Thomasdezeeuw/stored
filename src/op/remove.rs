@@ -115,6 +115,10 @@ impl super::Query for RemoveBlob {
     ) -> PeerRpc<()> {
         peers.abort_remove_blob(ctx, id, self.key().clone())
     }
+
+    fn committed(peers: &Peers, id: ConsensusId, key: Key, timestamp: SystemTime) {
+        peers.committed_remove_blob(id, key, timestamp)
+    }
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]

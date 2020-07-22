@@ -124,6 +124,10 @@ impl super::Query for StoreBlob {
     ) -> PeerRpc<()> {
         peers.abort_store_blob(ctx, id, self.key().clone())
     }
+
+    fn committed(peers: &Peers, id: ConsensusId, key: Key, timestamp: SystemTime) {
+        peers.committed_store_blob(id, key, timestamp)
+    }
 }
 
 #[must_use = "futures do nothing unless you `.await` or poll them"]
