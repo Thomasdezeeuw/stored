@@ -1,6 +1,7 @@
 use std::hash::{Hash, Hasher};
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::measurement::Measurement;
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkGroup, Criterion};
 use stored::Key;
 
 /// Empty key, all zeros.
@@ -13,37 +14,50 @@ const HELLO_KEY: Key = Key::new([
     215, 111,
 ]);
 
-pub fn std(c: &mut Criterion) {
+criterion_main!(hash_benches);
+criterion_group!(hash_benches, group1, group2);
+
+fn group1(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Hash Key/group1");
+    // FxHash is literally on a different time scale.
+    fxhash(&mut group);
+    group.finish();
+}
+
+fn group2(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Hash Key/group2");
+    std(&mut group);
+    ahash(&mut group);
+    fnv(&mut group);
+    rustc_hash(&mut group);
+    seahash(&mut group);
+    group.finish();
+}
+
+pub fn std<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use std::collections::hash_map::DefaultHasher;
-    let mut group = c.benchmark_group("std");
     group.bench_function("DefaultHasher/empty", |b| {
         b.iter(|| bench_empty::<DefaultHasher>())
     });
     group.bench_function("DefaultHasher/hello", |b| {
         b.iter(|| bench_hello::<DefaultHasher>())
     });
-    group.finish();
 }
 
-pub fn ahash(c: &mut Criterion) {
+pub fn ahash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use ahash::AHasher;
-    let mut group = c.benchmark_group("ahash");
     group.bench_function("AHasher/empty", |b| b.iter(|| bench_empty::<AHasher>()));
     group.bench_function("AHasher/hello", |b| b.iter(|| bench_hello::<AHasher>()));
-    group.finish();
 }
 
-pub fn fnv(c: &mut Criterion) {
+pub fn fnv<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use fnv::FnvHasher;
-    let mut group = c.benchmark_group("fnv");
     group.bench_function("FnvHasher/empty", |b| b.iter(|| bench_empty::<FnvHasher>()));
     group.bench_function("FnvHasher/hello", |b| b.iter(|| bench_hello::<FnvHasher>()));
-    group.finish();
 }
 
-pub fn fxhash(c: &mut Criterion) {
+pub fn fxhash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use fxhash::{FxHasher, FxHasher32, FxHasher64};
-    let mut group = c.benchmark_group("fxhash");
 
     group.bench_function("FxHasher/empty", |b| b.iter(|| bench_empty::<FxHasher>()));
     group.bench_function("FxHasher/hello", |b| b.iter(|| bench_hello::<FxHasher>()));
@@ -61,24 +75,22 @@ pub fn fxhash(c: &mut Criterion) {
     group.bench_function("FxHasher64/hello", |b| {
         b.iter(|| bench_hello::<FxHasher64>())
     });
-
-    group.finish();
 }
 
-pub fn rustc_hash(c: &mut Criterion) {
+pub fn rustc_hash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use rustc_hash::FxHasher;
-    let mut group = c.benchmark_group("rustc_hash");
-    group.bench_function("FxHasher/empty", |b| b.iter(|| bench_empty::<FxHasher>()));
-    group.bench_function("FxHasher/hello", |b| b.iter(|| bench_hello::<FxHasher>()));
-    group.finish();
+    group.bench_function("rustc/FxHasher/empty", |b| {
+        b.iter(|| bench_empty::<FxHasher>())
+    });
+    group.bench_function("rustc/FxHasher/hello", |b| {
+        b.iter(|| bench_hello::<FxHasher>())
+    });
 }
 
-pub fn seahash(c: &mut Criterion) {
+pub fn seahash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use seahash::SeaHasher;
-    let mut group = c.benchmark_group("seahash");
     group.bench_function("SeaHasher/empty", |b| b.iter(|| bench_empty::<SeaHasher>()));
     group.bench_function("SeaHasher/hello", |b| b.iter(|| bench_hello::<SeaHasher>()));
-    group.finish();
 }
 
 macro_rules! make_bench {
@@ -97,6 +109,3 @@ macro_rules! make_bench {
 
 make_bench!(bench_empty, EMPTY_KEY);
 make_bench!(bench_hello, HELLO_KEY);
-
-criterion_group!(hash_benches, std, ahash, fnv, fxhash, rustc_hash, seahash);
-criterion_main!(hash_benches);
