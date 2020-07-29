@@ -10,6 +10,7 @@ chrono            = { version = "0.4.11", default-features = false, features = [
 crossbeam-channel = { version = "0.4.0", default-features = false }
 futures-io        = { version = "0.3.4", default-features = false, features = ["std"] }
 futures-util      = { version = "0.3.5", default-features = false, features = ["io", "std", "write-all-vectored"] }
+fxhash            = { version = "0.2.1", default-features = false }
 # TODO: replace with published crate.
 heph              = { path = "../heph" }
 libc              = { version = "0.2.67", default-features = false }

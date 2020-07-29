@@ -12,6 +12,7 @@ pub mod relay {
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
+    use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::actor_ref::{RpcMessage, RpcResponse, SendError};
     use heph::net::TcpStream;
@@ -111,7 +112,7 @@ pub mod relay {
             remote, server
         );
 
-        let mut responses = HashMap::new();
+        let mut responses = HashMap::with_hasher(FxBuildHasher::default());
         let mut req_id = 0;
         let mut buf = Buffer::new();
 
@@ -552,7 +553,7 @@ pub mod relay {
         ctx: &mut actor::Context<Message, ThreadSafe>,
         stream: &mut TcpStream,
         mut wbuf: WriteBuffer<'b>,
-        responses: &mut HashMap<usize, RpcResponder>,
+        responses: &mut HashMap<usize, RpcResponder, FxBuildHasher>,
         id: usize,
         msg: Message,
     ) -> crate::Result<()> {
@@ -580,7 +581,7 @@ pub mod relay {
     /// Return `Ok(true)` if the participant wants to close the connection.
     /// Returns `Ok(false)` if more responses are to be expected.
     fn relay_responses(
-        responses: &mut HashMap<usize, RpcResponder>,
+        responses: &mut HashMap<usize, RpcResponder, FxBuildHasher>,
         buf: &mut Buffer,
     ) -> crate::Result<bool> {
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();

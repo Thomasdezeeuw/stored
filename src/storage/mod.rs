@@ -122,6 +122,7 @@ use std::sync::atomic::{self, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 use std::{fmt, slice, thread};
 
+use fxhash::FxBuildHasher;
 use log::{error, trace, warn};
 
 use crate::Key;
@@ -265,11 +266,11 @@ pub struct Storage {
     /// `blobs` must be declared before `data` because it must be dropped before
     /// `data`.
     // TODO: use different hashing algorithm.
-    blobs: HashMap<Key, (EntryIndex, BlobEntry)>,
+    blobs: HashMap<Key, (EntryIndex, BlobEntry), FxBuildHasher>,
     /// Uncommitted blobs.
     ///
     /// The `usize` is the number of [`StoreBlob`]s adding the blob.
-    uncommitted: HashMap<Key, (usize, UncommittedBlob)>,
+    uncommitted: HashMap<Key, (usize, UncommittedBlob), FxBuildHasher>,
     /// Length of `blob` that are not [`BlobEntry::Removed`].
     length: usize,
     /// # Safety
@@ -339,7 +340,7 @@ impl Storage {
             data,
             index,
             blobs,
-            uncommitted: HashMap::new(),
+            uncommitted: HashMap::with_hasher(FxBuildHasher::default()),
             length,
         })
     }

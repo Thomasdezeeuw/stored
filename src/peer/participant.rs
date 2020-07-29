@@ -112,6 +112,7 @@ pub mod dispatcher {
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
+    use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::rt::options::ActorOptions;
@@ -159,7 +160,7 @@ pub mod dispatcher {
     /// algorithm.
     ///
     /// [`coordinator::relay`]: crate::peer::coordinator::relay
-    /// [`consensus`]: super::consensus::actor
+    /// [`consensus`]: super::consensus::actor()
     pub async fn actor(
         mut ctx: actor::Context<Response, ThreadSafe>,
         mut stream: TcpStream,
@@ -176,7 +177,7 @@ pub mod dispatcher {
         peers.spawn(&mut ctx, remote, server);
 
         write_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
-        let mut running = HashMap::new();
+        let mut running = HashMap::with_hasher(FxBuildHasher::default());
 
         // TODO: close connection cleanly, sending `EXIT_PARTICIPANT`.
 
@@ -299,7 +300,7 @@ pub mod dispatcher {
         buf: &mut Buffer,
         db_ref: &ActorRef<db::Message>,
         peers: &Peers,
-        running: &mut HashMap<ConsensusId, ActorRef<VoteResult>>,
+        running: &mut HashMap<ConsensusId, ActorRef<VoteResult>, FxBuildHasher>,
     ) -> crate::Result<bool> {
         // TODO: reuse the `Deserializer`, it allocates scratch memory.
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Request>();
@@ -336,7 +337,7 @@ pub mod dispatcher {
         remote: &SocketAddr,
         db_ref: &ActorRef<db::Message>,
         peers: &Peers,
-        running: &mut HashMap<ConsensusId, ActorRef<VoteResult>>,
+        running: &mut HashMap<ConsensusId, ActorRef<VoteResult>, FxBuildHasher>,
         request: Request,
     ) {
         debug!("received a request: {:?}", request);
@@ -615,6 +616,7 @@ pub mod consensus {
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
+    use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::rt::RuntimeAccess;
@@ -994,7 +996,7 @@ pub mod consensus {
 
     /// Message for the [participant consensus actor].
     ///
-    /// [participant consensus actor]: actor
+    /// [participant consensus actor]: actor()
     #[derive(Debug)]
     pub enum Message {
         /// Store query that is uncommitted, where the coordinator failed.
@@ -1024,10 +1026,11 @@ pub mod consensus {
         mut db_ref: ActorRef<db::Message>,
     ) -> Result<(), !> {
         // Queries from local consensus actor where the coordinator failed.
-        let mut queries: HashMap<Key, StorageQuery> = HashMap::new();
+        let mut queries = HashMap::with_hasher(FxBuildHasher::default());
         // Results from peers for consensus queries where the coordinator
         // failed.
-        let mut peer_results: HashMap<Key, PeerResult> = HashMap::new();
+        let mut peer_results: HashMap<_, PeerResult, _> =
+            HashMap::with_hasher(FxBuildHasher::default());
 
         loop {
             let msg = ctx.receive_next().await;
