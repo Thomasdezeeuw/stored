@@ -16,9 +16,9 @@ use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorGroup, ActorRef, NoResponse, Rpc, RpcMessage, SendError};
 use heph::net::tcp;
 use heph::rt::options::{ActorOptions, Priority};
-use heph::supervisor::{NoSupervisor, RestartSupervisor};
+use heph::supervisor::NoSupervisor;
 use heph::timer::Timer;
-use heph::Runtime;
+use heph::{restart_supervisor, Runtime};
 use log::{debug, warn};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
@@ -75,6 +75,8 @@ pub fn start(
     Ok(peers)
 }
 
+restart_supervisor!(ListenerSupervisor, "peer listener", (), 2);
+
 /// Start the peer listener, listening for incoming TCP connections from its
 /// peers starting a new [switcher actor] for each connection.
 ///
@@ -92,7 +94,7 @@ fn start_listener(
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
     let server_actor = tcp::Server::setup(address, NoSupervisor, switcher, ActorOptions::default())
         .map_err(|err| err.describe("creating peer listener"))?;
-    let supervisor = RestartSupervisor::new("consensus listener", ());
+    let supervisor = ListenerSupervisor::new(());
     let options = ActorOptions::default().with_priority(Priority::HIGH);
     let server_ref = runtime
         .try_spawn(supervisor, server_actor, (), options)
