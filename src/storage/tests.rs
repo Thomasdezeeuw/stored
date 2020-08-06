@@ -1501,6 +1501,7 @@ mod storage {
     #[test]
     fn open_storage_with_removed_blobs() {
         let path = test_data_path("009.db");
+        let _guard = DB_009.lock().unwrap();
         let storage = Storage::open(&path).unwrap();
 
         assert_eq!(storage.len(), 1);
