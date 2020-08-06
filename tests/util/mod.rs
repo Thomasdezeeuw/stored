@@ -278,10 +278,11 @@ fn build_stored() {
     static mut BUILD_SUCCESS: bool = false;
 
     BUILD.call_once(|| {
-        let output = Command::new("cargo")
-            .args(&["build", "--bin", "stored"])
-            .output()
-            .expect("unable to build server");
+        let mut cmd = Command::new("cargo");
+        cmd.args(&["build", "--bin", "stored"]);
+        #[cfg(not(debug_assertions))]
+        cmd.arg("--release");
+        let output = cmd.output().expect("unable to build server");
 
         if !output.status.success() {
             let stdout = String::from_utf8_lossy(&output.stdout);

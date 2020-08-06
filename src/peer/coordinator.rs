@@ -74,7 +74,7 @@ pub mod relay {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres={}, server_address={}",
+                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres={}, server_address={}",
                     self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
                 );
                 SupervisorStrategy::Restart((self.remote, self.peers.clone(), self.server))
