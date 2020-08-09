@@ -14,7 +14,7 @@ use crate::util::http::{
 };
 
 const DB_PORT: u16 = 9004;
-const DB_PATH: &str = "/tmp/stored_pipelining_tests.db";
+const DB_PATH: &str = "/tmp/stored/pipelining_tests.db";
 const CONF_PATH: &str = "tests/config/pipelining.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;
 

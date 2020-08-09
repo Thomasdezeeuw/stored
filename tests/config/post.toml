@@ -1,4 +1,4 @@
-path = "/tmp/stored_post_tests.db"
+path = "/tmp/stored/post_tests.db"
 
 [http]
 address = "127.0.0.1:9002"

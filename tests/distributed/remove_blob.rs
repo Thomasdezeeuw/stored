@@ -62,7 +62,7 @@ macro_rules! tests {
     };
 
     (_db_paths: $( $n: tt ),*) => {
-        &[ $( concat!("/tmp/stored_remove_blob_tests", $n, ".db") ),* ];
+        &[ $( concat!("/tmp/stored/remove_blob_tests", $n, ".db") ),* ];
     };
     (_conf_paths: $( $n: tt ),*) => {
         &[ $( concat!("tests/config/remove_blob_peer", $n, ".toml") ),* ];

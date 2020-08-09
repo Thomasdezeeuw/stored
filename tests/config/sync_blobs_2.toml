@@ -1,4 +1,4 @@
-path = "/tmp/stored_sync_blob_tests_2.db"
+path = "/tmp/stored/sync_blob_tests_2.db"
 
 [http]
 address = "127.0.0.1:10012"

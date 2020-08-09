@@ -1,4 +1,4 @@
-path = "/tmp/stored_remove_blob_tests3_3.db"
+path = "/tmp/stored/remove_blob_tests3_3.db"
 
 [http]
 address = "127.0.0.1:12033"

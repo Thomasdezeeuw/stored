@@ -7,7 +7,7 @@ use log::LevelFilter;
 use crate::util::http::{body, date_header, header};
 
 const DB_PORT: u16 = 9002;
-const DB_PATH: &str = "/tmp/stored_post_tests.db";
+const DB_PATH: &str = "/tmp/stored/post_tests.db";
 const CONF_PATH: &str = "tests/config/post.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;
 

@@ -115,7 +115,7 @@ impl Drop for TempFile {
 }
 
 fn temp_file(name: &str) -> TempFile {
-    let path = env::temp_dir().join(name);
+    let path = env::temp_dir().join("stored").join(name);
     // Remove the old database from previous tests.
     let _ = fs::remove_dir_all(&path);
     TempFile { path }
@@ -146,7 +146,7 @@ impl Drop for TempDir {
 }
 
 fn temp_dir(name: &str) -> TempDir {
-    let path = env::temp_dir().join(name);
+    let path = env::temp_dir().join("stored").join(name);
     // Remove the old database from previous tests.
     let _ = fs::remove_dir_all(&path);
     TempDir { path }

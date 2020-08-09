@@ -15,7 +15,7 @@ mod util;
 
 #[allow(dead_code)] // FIXME: use this along with the tests.
 const DB_PORT: u16 = 9000;
-const DB_PATH: &str = "/tmp/stored_cli_tests.db";
+const DB_PATH: &str = "/tmp/stored/cli_tests.db";
 const CONF_PATH: &str = "tests/config/cli.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;
 
