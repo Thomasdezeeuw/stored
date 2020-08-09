@@ -1,14 +1,17 @@
-use std::fs::{remove_dir_all, remove_file};
+use std::env;
+use std::fs::{create_dir_all, remove_dir_all, remove_file};
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::{env, fs};
+use std::time::SystemTime;
 
 use lazy_static::lazy_static;
 
+use crate::storage::{
+    AddResult, Blob, BlobEntry, DateTime, Entry, RemoveBlob, RemoveResult, StoreBlob, DATA_MAGIC,
+    INDEX_MAGIC,
+};
 use crate::Key;
-
-use super::*;
 
 impl BlobEntry {
     fn unwrap(self) -> Blob {
@@ -115,9 +118,10 @@ impl Drop for TempFile {
 }
 
 fn temp_file(name: &str) -> TempFile {
-    let path = env::temp_dir().join("stored").join(name);
+    let mut path = stored_temp_dir();
+    path.push(name);
     // Remove the old database from previous tests.
-    let _ = fs::remove_dir_all(&path);
+    let _ = remove_file(&path);
     TempFile { path }
 }
 
@@ -146,10 +150,25 @@ impl Drop for TempDir {
 }
 
 fn temp_dir(name: &str) -> TempDir {
-    let path = env::temp_dir().join("stored").join(name);
+    let mut path = stored_temp_dir();
+    path.push(name);
     // Remove the old database from previous tests.
-    let _ = fs::remove_dir_all(&path);
+    let _ = remove_dir_all(&path);
     TempDir { path }
+}
+
+fn stored_temp_dir() -> PathBuf {
+    let mut path = env::temp_dir();
+    path.push("stored");
+    if let Err(err) = create_dir_all(&path) {
+        panic!(
+            "failed to create temporary directory ('{}'): {}",
+            path.display(),
+            err
+        );
+    } else {
+        path
+    }
 }
 
 mod date_time {
@@ -157,7 +176,7 @@ mod date_time {
     use std::ptr;
     use std::time::{Duration, SystemTime};
 
-    use super::{DateTime, ModifiedTime};
+    use crate::storage::{DateTime, ModifiedTime};
 
     #[test]
     fn bits_valid() {
@@ -359,10 +378,9 @@ mod index {
     use std::mem::size_of;
     use std::{fs, io};
 
-    use super::{
-        temp_file, test_data_path, test_entries, DateTime, Entry, Index, Key, ModifiedTime, DATA,
-        DATA_MAGIC, DB_001, INDEX_MAGIC,
-    };
+    use crate::storage::{DateTime, Entry, Index, Key, ModifiedTime, DATA_MAGIC, INDEX_MAGIC};
+
+    use super::{temp_file, test_data_path, test_entries, DATA, DB_001};
 
     #[test]
     fn entry_size() {
@@ -389,13 +407,27 @@ mod index {
     }
 
     #[test]
-    fn empty_index() {
+    fn crate_empty_index_file() {
         let path = temp_file("empty_index.index");
         fs::write(&path, INDEX_MAGIC).unwrap();
 
         let mut index = Index::open(&path).unwrap();
 
         let entries = index.entries().unwrap();
+        assert_eq!(entries.len(), 0);
+        let mut entries = entries.iter();
+        assert!(entries.next().is_none());
+    }
+
+    #[test]
+    fn existing_empty_index_file() {
+        let path = test_data_path("011.db/index");
+        fs::write(&path, INDEX_MAGIC).unwrap();
+
+        let mut index = Index::open(&path).unwrap();
+
+        let entries = index.entries().unwrap();
+        assert_eq!(entries.len(), 0);
         let mut entries = entries.iter();
         assert!(entries.next().is_none());
     }
@@ -465,9 +497,7 @@ mod index {
     #[test]
     fn incorrect_length() {
         let path = test_data_path("003.db/index");
-        let mut index = Index::open(&path).unwrap();
-        let res = index.entries();
-        match res {
+        match Index::open(&path) {
             Ok(_) => panic!("expected to fail to access index entries"),
             Err(err) => {
                 assert_eq!(err.kind(), io::ErrorKind::InvalidData);
@@ -482,6 +512,7 @@ mod index {
         let mut index = Index::open(&path).unwrap();
         let entries = index.entries().unwrap();
         assert_eq!(entries.len(), 2);
+        let entries = entries.as_slice();
 
         let want1 = Entry {
             key: Key::for_blob(DATA[0]),
@@ -509,101 +540,45 @@ mod index {
 }
 
 mod data {
-    use std::mem::{size_of, ManuallyDrop};
     use std::ptr::NonNull;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::Ordering;
     use std::time::Duration;
-    use std::{fs, io, slice, thread};
+    use std::{fs, io, thread};
 
-    use super::{
-        is_page_aligned, mmap, munmap, next_page_aligned, temp_file, test_data_path, test_entries,
-        Data, MmapArea, MmapAreaControl, DATA, DATA_MAGIC, DB_001, PAGE_BITS, PAGE_SIZE,
+    use crate::storage::{
+        is_page_aligned, mmap, munmap, next_page_aligned, Data, MmapAreaControl, DATA_MAGIC,
+        DATA_PRE_ALLOC_BYTES,
     };
 
-    #[test]
-    fn page_size() {
-        let got = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-        assert_eq!(got, PAGE_SIZE as libc::c_long, "incorrect page size");
-    }
+    use super::{temp_file, test_data_path, test_entries, DATA, DB_001};
 
     #[test]
-    fn in_area() {
-        // Don't want to drop the area as the address is invalid to unmap.
-        let mut area = ManuallyDrop::new(MmapArea {
-            mmap_address: NonNull::dangling(),
-            mmap_length: 0,
-            offset: 0,
-            length: 0,
-            ref_count: AtomicUsize::new(1),
-        });
-
-        #[allow(clippy::type_complexity)]
-        let tests: &[((u64, libc::size_t), (u64, u32), bool)] = &[
-            ((0, 10), (0, 5), true),
-            ((0, 5), (0, 5), true),
-            ((0, 0), (0, 0), true),
-            // Incorrect offset.
-            ((10, 10), (0, 5), false),
-            ((10, 10), (0, 20), false),
-            // Offset ok, too large.
-            ((0, 0), (0, 1), false),
-            ((0, 10), (0, 12), false),
-        ];
-
-        for ((offset, length), (blob_offset, blob_length), want) in tests.iter().copied() {
-            area.offset = offset;
-            area.length = length;
-
-            let got = area.in_area(blob_offset, blob_length);
-            assert_eq!(got, want);
-        }
-    }
-
-    #[test]
-    fn test_is_page_aligned() {
-        assert!(is_page_aligned(0));
-        for n_bits in 1..PAGE_BITS {
-            assert!(!is_page_aligned(1 << n_bits));
-            assert!(!is_page_aligned((1 << n_bits) + 1));
-        }
-
-        for n_bits in PAGE_BITS..(size_of::<usize>() * 8) {
-            assert!(is_page_aligned(1 << n_bits));
-            assert!(!is_page_aligned((1 << n_bits) - 1));
-        }
-    }
-
-    #[test]
-    fn test_next_page_aligned() {
-        assert_eq!(next_page_aligned(0), PAGE_SIZE);
-        assert_eq!(next_page_aligned(1), PAGE_SIZE);
-        assert_eq!(next_page_aligned(10), PAGE_SIZE);
-        assert_eq!(next_page_aligned(100), PAGE_SIZE);
-        assert_eq!(next_page_aligned(PAGE_SIZE - 1), PAGE_SIZE);
-        assert_eq!(next_page_aligned(PAGE_SIZE), 2 * PAGE_SIZE);
-        assert_eq!(next_page_aligned(PAGE_SIZE + 1), 2 * PAGE_SIZE);
-        assert_eq!(next_page_aligned(2 * PAGE_SIZE - 1), 2 * PAGE_SIZE);
-        assert_eq!(next_page_aligned(2 * PAGE_SIZE), 3 * PAGE_SIZE);
-        assert_eq!(next_page_aligned(2 * PAGE_SIZE + 1), 3 * PAGE_SIZE);
-        assert_eq!(
-            next_page_aligned(2 * PAGE_SIZE + (PAGE_SIZE - 1)),
-            3 * PAGE_SIZE
-        );
-    }
-
-    #[test]
-    fn empty_data() {
+    fn create_data_file() {
         let path = temp_file("empty_data.data");
         fs::write(&path, DATA_MAGIC).unwrap();
 
         let data = Data::open(&path).unwrap();
-        assert_eq!(data.length, DATA_MAGIC.len() as u64);
-        // Should already `mmap` the magic header bytes.
+        assert_eq!(data.used_bytes, DATA_MAGIC.len() as u64);
+
         assert_eq!(data.areas.len(), 1);
-        let area = &data.areas[0];
-        assert_eq!(area.mmap_length, DATA_MAGIC.len());
-        assert_eq!(area.offset, 0);
-        assert_eq!(area.length, DATA_MAGIC.len());
+        let area = data.areas[0].area();
+        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(area.mmap_offset, 0);
+        assert_eq!(area.ref_count.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn existing_empty_data_file() {
+        let path = test_data_path("011.db/data");
+        fs::write(&path, DATA_MAGIC).unwrap();
+
+        let data = Data::open(&path).unwrap();
+        assert_eq!(data.used_bytes, DATA_MAGIC.len() as u64);
+
+        assert_eq!(data.areas.len(), 1);
+        let area = data.areas[0].area();
+        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(area.mmap_offset, 0);
         assert_eq!(area.ref_count.load(Ordering::Relaxed), 1);
     }
 
@@ -614,80 +589,113 @@ mod data {
         let data = Data::open(&path).unwrap();
 
         assert_eq!(
-            data.file_length(),
+            data.used_bytes(),
             (DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()) as u64
         );
         assert_eq!(data.areas.len(), 1);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(
-            mmap_area.length,
-            DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()
-        );
+        let area = data.areas[0].area();
+        assert_eq!(area.mmap_offset, 0);
+        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
 
         for (i, entry) in test_entries().iter().enumerate() {
-            let (blob_address, _) = data.address_for(entry.offset(), entry.length()).unwrap();
-            let blob =
-                unsafe { slice::from_raw_parts(blob_address.as_ptr(), entry.length() as usize) };
-
-            assert_eq!(blob, DATA[i]);
+            let blob = data.slice(entry.offset(), entry.length() as usize).unwrap();
+            assert_eq!(blob.as_slice(), DATA[i]);
         }
     }
 
     #[test]
+    fn add_blob_grow_in_area() {
+        let path = temp_file("add_blob_grow_in_area.data");
+        let mut data = Data::open(&path).unwrap();
+        assert_eq!(data.areas.len(), 1);
+        assert_eq!(data.used_bytes(), DATA_MAGIC.len() as u64);
+
+        // Adding a first blob should create a new area.
+        let (blob1, offset) = data.add_blob(DATA[0]).unwrap();
+        assert_eq!(offset, DATA_MAGIC.len() as u64);
+        assert_eq!(blob1.as_slice(), DATA[0]);
+
+        assert_eq!(data.used_bytes(), (DATA[0].len() + DATA_MAGIC.len()) as u64);
+        assert_eq!(data.areas.len(), 1);
+        let mmap_area = data.areas[0].area();
+        assert_eq!(mmap_area.mmap_offset, 0);
+        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+
+        // Adding a second blob should fit in the existing area.
+        let (blob2, offset) = data.add_blob(DATA[1]).unwrap();
+        // Should be placed after the first blob.
+        assert_eq!(
+            unsafe { blob1.address.as_ptr().add(DATA[0].len()) },
+            blob2.address.as_ptr()
+        );
+        assert_eq!(offset, (DATA[0].len() + DATA_MAGIC.len()) as u64);
+        assert_eq!(blob2.as_slice(), DATA[1]);
+
+        assert_eq!(
+            data.used_bytes(),
+            (DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()) as u64
+        );
+        assert_eq!(data.areas.len(), 1);
+        let mmap_area = data.areas[0].area();
+        assert_eq!(mmap_area.mmap_offset, 0);
+        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+
+        drop(data);
+        // Blobs must still be valid.
+        assert_eq!(blob1.as_slice(), DATA[0]);
+        assert_eq!(blob2.as_slice(), DATA[1]);
+    }
+
+    #[test]
+    #[ignore = "test is flaky due to the required memory placement"]
     fn add_blob_grow_area() {
         let path = temp_file("add_blob_grow_area.data");
         let mut data = Data::open(&path).unwrap();
         assert_eq!(data.areas.len(), 1);
-        assert_eq!(data.file_length(), DATA_MAGIC.len() as u64);
+        assert_eq!(data.used_bytes(), DATA_MAGIC.len() as u64);
 
         // Adding a first blob should create a new area.
-        let (offset, address1, _) = data.add_blob(DATA[0]).unwrap();
+        let (blob1, offset) = data.add_blob(DATA[0]).unwrap();
         assert_eq!(offset, DATA_MAGIC.len() as u64);
-        let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), DATA[0].len()) };
-        assert_eq!(got1, DATA[0]);
+        assert_eq!(blob1.as_slice(), DATA[0]);
 
-        assert_eq!(
-            data.file_length(),
-            (DATA[0].len() + DATA_MAGIC.len()) as u64
-        );
+        assert_eq!(data.used_bytes(), (DATA[0].len() + DATA_MAGIC.len()) as u64);
         assert_eq!(data.areas.len(), 1);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(mmap_area.length, DATA[0].len() + DATA_MAGIC.len());
+        let mmap_area = data.areas[0].area();
+        assert_eq!(mmap_area.mmap_offset, 0);
+        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
 
-        // Adding a second should grow the existing area.
-        let (offset, address2, _) = data.add_blob(DATA[1]).unwrap();
-        // Check area grown.
+        // Force the are to grow.
+        const LARGE_BLOB: &[u8] = &[5; DATA_PRE_ALLOC_BYTES];
+        let (blob2, offset) = data.add_blob(LARGE_BLOB).unwrap();
+        // Should be placed after the first blob.
         assert_eq!(
-            unsafe { address1.as_ptr().add(DATA[0].len()) },
-            address2.as_ptr()
+            unsafe { blob1.address.as_ptr().add(DATA[0].len()) },
+            blob2.address.as_ptr()
         );
         assert_eq!(offset, (DATA[0].len() + DATA_MAGIC.len()) as u64);
-        let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), DATA[1].len()) };
-        assert_eq!(got2, DATA[1]);
+        assert_eq!(blob2.as_slice(), LARGE_BLOB);
 
         assert_eq!(
-            data.file_length(),
-            (DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()) as u64
+            data.used_bytes(),
+            (DATA_MAGIC.len() + DATA[0].len() + LARGE_BLOB.len()) as u64
         );
         assert_eq!(data.areas.len(), 1);
-        let mmap_area = data.areas.first().unwrap();
-        assert_eq!(mmap_area.offset, 0);
-        assert_eq!(
-            mmap_area.length,
-            DATA.iter().map(|d| d.len()).sum::<usize>() + DATA_MAGIC.len()
-        );
+        let mmap_area = data.areas[0].area();
+        assert_eq!(mmap_area.mmap_offset, 0);
+        assert_eq!(mmap_area.mmap_length, 3 * DATA_PRE_ALLOC_BYTES);
 
-        // Original address must still be valid.
-        assert_eq!(got1, DATA[0]);
+        drop(data);
+        // Blobs must still be valid.
+        assert_eq!(blob1.as_slice(), DATA[0]);
+        assert_eq!(blob2.as_slice(), LARGE_BLOB);
     }
 
     /// Length used in `create_dummy_area_after` to create dummy `mmap` areas.
     const DUMMY_LENGTH: usize = 100;
 
-    fn create_dummy_area_after(areas: &[MmapAreaControl]) -> *mut libc::c_void {
-        let area = areas.last().unwrap();
+    fn create_dummy_area_after(areas: &[MmapAreaControl]) -> NonNull<libc::c_void> {
+        let area = areas.last().unwrap().area();
         let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
         let want_dummy_address = if is_page_aligned(end_address) {
             end_address as *mut libc::c_void
@@ -706,13 +714,13 @@ mod data {
             )
             .unwrap();
 
-            if dummy_address == want_dummy_address {
+            if dummy_address.as_ptr() == want_dummy_address {
                 // Success!
                 return dummy_address;
             } else {
                 // Wrong page, try again.
-                munmap(dummy_address, DUMMY_LENGTH).unwrap();
-                thread::sleep(Duration::from_millis(10));
+                munmap(dummy_address.as_ptr(), DUMMY_LENGTH).unwrap();
+                thread::sleep(Duration::from_millis(50));
             }
         }
 
@@ -722,96 +730,75 @@ mod data {
     #[test]
     #[ignore = "test is flaky due to the required memory placement"]
     fn add_blob_new_area() {
-        const DATA1: [u8; PAGE_SIZE] = [1; PAGE_SIZE];
-        const DATA2: [u8; PAGE_SIZE] = [2; PAGE_SIZE];
-        const DATA3: [u8; PAGE_SIZE] = [3; PAGE_SIZE];
+        let path = temp_file("add_blob_new_area.data");
+        let mut data = Data::open(&path).unwrap();
+        assert_eq!(data.areas.len(), 1);
+        assert_eq!(data.used_bytes(), DATA_MAGIC.len() as u64);
 
-        let tests = &[
-            // Perfect fit.
-            (PAGE_SIZE, PAGE_SIZE, PAGE_SIZE),
-            // Too small a space leftover.
-            (PAGE_SIZE - 1, PAGE_SIZE, PAGE_SIZE),
-            (PAGE_SIZE, PAGE_SIZE - 1, PAGE_SIZE),
-            (PAGE_SIZE, PAGE_SIZE, PAGE_SIZE - 1),
-            (1, PAGE_SIZE, PAGE_SIZE),
-            (PAGE_SIZE, 1, PAGE_SIZE),
-            (PAGE_SIZE, PAGE_SIZE, 1),
-            // Misc.
-            (PAGE_SIZE - 1, 2, PAGE_SIZE),
-        ];
+        // Adding a first blob should create a new area.
+        let (blob1, offset) = data.add_blob(DATA[0]).unwrap();
+        assert_eq!(offset, DATA_MAGIC.len() as u64);
+        assert_eq!(blob1.as_slice(), DATA[0]);
 
-        for (s1, s2, s3) in tests.iter().copied() {
-            let blob1 = &DATA1[0..s1];
-            let blob2 = &DATA2[0..s2];
-            let blob3 = &DATA3[0..s3];
+        assert_eq!(data.used_bytes(), (DATA[0].len() + DATA_MAGIC.len()) as u64);
+        assert_eq!(data.areas.len(), 1);
+        let mmap_area = data.areas[0].area();
+        assert_eq!(mmap_area.mmap_offset, 0);
+        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
 
-            let path = temp_file("add_blob_new_area.data");
-            let mut data = Data::open(&path).unwrap();
+        let dummy_address = create_dummy_area_after(&data.areas);
 
-            // Adding a first blob should create a new area.
-            let (offset, address1, _) = data.add_blob(blob1).unwrap();
-            assert_eq!(offset, 0);
-            let got1 = unsafe { slice::from_raw_parts(address1.as_ptr(), blob1.len()) };
-            assert_eq!(got1, blob1);
+        // Force the are to grow.
+        const LARGE_BLOB: &[u8] = &[8; DATA_PRE_ALLOC_BYTES];
+        let (blob2, offset) = data.add_blob(LARGE_BLOB).unwrap();
+        // Should be placed after the first blob.
+        assert_ne!(
+            unsafe { blob1.address.as_ptr().add(DATA[0].len()) },
+            blob2.address.as_ptr()
+        );
+        assert_eq!(offset, (DATA[0].len() + DATA_MAGIC.len()) as u64);
+        assert_eq!(blob2.as_slice(), LARGE_BLOB);
 
-            assert_eq!(data.file_length(), blob1.len() as u64);
-            assert_eq!(data.areas.len(), 1);
-            let mmap_area = &data.areas[0];
-            assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, blob1.len());
+        assert_eq!(
+            data.used_bytes(),
+            (DATA_PRE_ALLOC_BYTES + LARGE_BLOB.len()) as u64
+        );
+        assert_eq!(data.areas.len(), 2);
+        let mmap_area1 = data.areas[0].area();
+        assert_eq!(mmap_area1.mmap_offset, 0);
+        assert_eq!(mmap_area1.mmap_length, DATA_PRE_ALLOC_BYTES);
+        let mmap_area2 = data.areas[1].area();
+        assert_eq!(mmap_area2.mmap_offset, DATA_PRE_ALLOC_BYTES as libc::off_t);
+        assert_eq!(mmap_area2.mmap_length, 2 * DATA_PRE_ALLOC_BYTES);
 
-            // Create an new `mmap`ing so that the area created above can't be
-            // extended.
-            let dummy_address1 = create_dummy_area_after(&data.areas);
+        drop(data);
+        // Blobs must still be valid.
+        assert_eq!(blob1.as_slice(), DATA[0]);
+        assert_eq!(blob2.as_slice(), LARGE_BLOB);
+        munmap(dummy_address.as_ptr(), DUMMY_LENGTH).unwrap();
+    }
 
-            // Adding a second blob should create a new area.
-            let (offset, address2, _) = data.add_blob(blob2).unwrap();
-            assert_eq!(offset, blob1.len() as u64);
-            let got2 = unsafe { slice::from_raw_parts(address2.as_ptr(), blob2.len()) };
-            assert_eq!(got2, blob2);
-            // Check that we didn't overwrite our dummy.
-            assert_ne!(address2.as_ptr(), dummy_address1 as *mut _);
+    #[test]
+    fn data_file_shrinks_on_drop() {
+        let path = temp_file("data_file_shrinks_on_drop.data");
+        let mut data = Data::open(&path).unwrap();
+        assert_eq!(data.areas.len(), 1);
+        assert_eq!(data.used_bytes(), DATA_MAGIC.len() as u64);
 
-            assert_eq!(data.file_length(), (blob1.len() + blob2.len()) as u64);
-            assert_eq!(data.areas.len(), 2);
-            let mmap_area = &data.areas[0];
-            assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, blob1.len());
-            let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, blob1.len() as u64);
-            assert_eq!(mmap_area.length, blob2.len());
+        // Adding a first blob should create a new area.
+        let _ = data.add_blob(DATA[0]).unwrap();
+        let _ = data.add_blob(DATA[1]).unwrap();
+        let want_size = (DATA_MAGIC.len() + DATA[0].len() + DATA[1].len()) as u64;
+        assert_eq!(data.used_bytes(), want_size);
 
-            let dummy_address2 = create_dummy_area_after(&data.areas);
-            // Adding a second blob should create a new area.
-            let (offset, address3, _) = data.add_blob(blob3).unwrap();
-            assert_eq!(offset, (blob1.len() + blob2.len()) as u64);
-            let got3 = unsafe { slice::from_raw_parts(address3.as_ptr(), blob3.len()) };
-            assert_eq!(got3, blob3);
-            // Check that we didn't overwrite our dummy.
-            assert_ne!(address3.as_ptr(), dummy_address2 as *mut _);
+        // While open it allocate additional space.
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.len(), DATA_PRE_ALLOC_BYTES as u64);
 
-            assert_eq!(
-                data.file_length(),
-                (blob1.len() + blob2.len() + blob3.len()) as u64
-            );
-            assert_eq!(data.areas.len(), 3);
-            let mmap_area = &data.areas[0];
-            assert_eq!(mmap_area.offset, 0);
-            assert_eq!(mmap_area.length, blob1.len());
-            let mmap_area = &data.areas[1];
-            assert_eq!(mmap_area.offset, blob1.len() as u64);
-            assert_eq!(mmap_area.length, blob2.len());
-            let mmap_area = &data.areas[2];
-            assert_eq!(mmap_area.offset, (blob1.len() + blob2.len()) as u64);
-            assert_eq!(mmap_area.length, blob3.len());
-
-            // All returned addresses must still be valid.
-            assert_eq!(got1, blob1);
-            assert_eq!(got2, blob2);
-
-            munmap(dummy_address1, DUMMY_LENGTH).unwrap();
-            munmap(dummy_address2, DUMMY_LENGTH).unwrap();
-        }
+        drop(data);
+        // Data file must shrink into to the correct size.
+        let metadata = fs::metadata(&path).unwrap();
+        assert_eq!(metadata.len(), want_size);
     }
 
     #[test]
@@ -834,11 +821,13 @@ mod storage {
     use std::time::{Duration, SystemTime};
     use std::{fs, io};
 
-    use super::{
-        temp_dir, test_data_path, test_entries, AddResult, Blob, BlobEntry, Entry, EntryIndex,
-        ModifiedTime, Query, RemoveResult, Storage, DATA, DATA_MAGIC, DB_001, DB_009, INDEX_MAGIC,
+    use crate::storage::{
+        AddResult, Blob, BlobEntry, Entry, EntryIndex, ModifiedTime, Query, RemoveResult, Storage,
+        DATA_MAGIC, INDEX_MAGIC,
     };
     use crate::Key;
+
+    use super::{temp_dir, test_data_path, test_entries, DATA, DB_001, DB_009};
 
     #[test]
     fn blob_size() {
@@ -853,15 +842,18 @@ mod storage {
         let _guard = DB_001.lock().unwrap();
         let storage = Storage::open(&path).unwrap();
 
+        let want_data_length = DATA_MAGIC.len() as u64
+            + test_entries()
+                .iter()
+                .map(|e| e.length() as u64)
+                .sum::<u64>();
+        let want_index_length =
+            (INDEX_MAGIC.len() + test_entries().len() * size_of::<Entry>()) as u64;
+
         assert_eq!(storage.len(), DATA.len());
-        let data_metadata = fs::metadata(path.join("data")).unwrap();
-        assert_eq!(storage.data_size(), data_metadata.len());
-        let index_metadata = fs::metadata(path.join("index")).unwrap();
-        assert_eq!(storage.index_size(), index_metadata.len());
-        assert_eq!(
-            storage.total_size(),
-            data_metadata.len() + index_metadata.len()
-        );
+        assert_eq!(storage.data_size(), want_data_length);
+        assert_eq!(storage.index_size(), want_index_length);
+        assert_eq!(storage.total_size(), want_data_length + want_index_length);
 
         for (i, entry) in test_entries().iter().enumerate() {
             assert!(storage.contains(entry.key()));
@@ -873,6 +865,13 @@ mod storage {
                 entry.modified_time()
             );
         }
+
+        drop(storage);
+
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_length);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_length);
     }
 
     #[test]
@@ -917,20 +916,18 @@ mod storage {
         }
 
         assert_eq!(storage.len(), blobs.len());
-        let data_metadata = fs::metadata(path.join("data")).unwrap();
         let want_data_size =
             (blobs.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
-        assert_eq!(storage.data_size(), data_metadata.len());
         assert_eq!(storage.data_size(), want_data_size);
-        let index_metadata = fs::metadata(path.join("index")).unwrap();
         let want_index_size = (blobs.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
-        assert_eq!(storage.index_size(), index_metadata.len());
         assert_eq!(storage.index_size(), want_index_size);
-        assert_eq!(
-            storage.total_size(),
-            data_metadata.len() + index_metadata.len()
-        );
         assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
     }
 
     #[test]
@@ -1127,6 +1124,7 @@ mod storage {
         assert_eq!(storage.lookup(&key1).unwrap().unwrap().bytes(), blob1);
     }
 
+    /*
     #[test]
     fn concurrently_adding_same_blob() {
         let path = temp_dir("concurrently_adding_same_blob.db");
@@ -1189,6 +1187,7 @@ mod storage {
             (size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
         );
     }
+    */
 
     #[test]
     fn aborting_adding_blob() {
@@ -1694,19 +1693,17 @@ mod storage {
         }
 
         assert_eq!(storage.len(), 2);
-        let data_metadata = fs::metadata(path.join("data")).unwrap();
         let want_data_size = (DATA_MAGIC.len() + DATA[0].len() + DATA[1].len()) as u64;
-        assert_eq!(storage.data_size(), data_metadata.len());
         assert_eq!(storage.data_size(), want_data_size);
-        let index_metadata = fs::metadata(path.join("index")).unwrap();
         let want_index_size = (2 * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
-        assert_eq!(storage.index_size(), index_metadata.len());
         assert_eq!(storage.index_size(), want_index_size);
-        assert_eq!(
-            storage.total_size(),
-            data_metadata.len() + index_metadata.len()
-        );
         assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
     }
 
     #[test]
@@ -1782,19 +1779,17 @@ mod storage {
         }
 
         assert_eq!(storage.len(), 0);
-        let data_metadata = fs::metadata(path.join("data")).unwrap();
         let want_data_size = (DATA_MAGIC.len() + DATA[0].len() + DATA[1].len()) as u64;
-        assert_eq!(storage.data_size(), data_metadata.len());
         assert_eq!(storage.data_size(), want_data_size);
-        let index_metadata = fs::metadata(path.join("index")).unwrap();
         let want_index_size = (3 * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
-        assert_eq!(storage.index_size(), index_metadata.len());
         assert_eq!(storage.index_size(), want_index_size);
-        assert_eq!(
-            storage.total_size(),
-            data_metadata.len() + index_metadata.len()
-        );
         assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
     }
 
     #[test]
@@ -1892,7 +1887,9 @@ mod storage {
 mod validate {
     use std::num::NonZeroUsize;
 
-    use super::{test_data_path, test_entries, validate, DB_008};
+    use crate::storage::validate;
+
+    use super::{test_data_path, test_entries, DB_008};
 
     #[test]
     fn validate_database() {
@@ -1904,5 +1901,75 @@ mod validate {
         // "Hello world" was changed to "Hello pluto".
         assert_eq!(corruptions.len(), 1);
         assert_eq!(*corruptions[0].key(), test_entries()[0].key);
+    }
+}
+
+mod mmap {
+    use std::mem::size_of;
+
+    use crate::storage::{
+        is_page_aligned, next_page_aligned, prev_page_aligned, DATA_PRE_ALLOC_BYTES, PAGE_BITS,
+        PAGE_SIZE,
+    };
+
+    #[test]
+    fn page_size() {
+        let got = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+        assert_eq!(got, PAGE_SIZE as libc::c_long, "incorrect page size");
+    }
+
+    #[test]
+    fn pre_alloc_is_page_aligned() {
+        assert!(is_page_aligned(DATA_PRE_ALLOC_BYTES));
+    }
+
+    #[test]
+    fn test_is_page_aligned() {
+        assert!(is_page_aligned(0));
+        for n_bits in 1..PAGE_BITS {
+            assert!(!is_page_aligned(1 << n_bits));
+            assert!(!is_page_aligned((1 << n_bits) + 1));
+        }
+
+        for n_bits in PAGE_BITS..(size_of::<usize>() * 8) {
+            assert!(is_page_aligned(1 << n_bits));
+            assert!(!is_page_aligned((1 << n_bits) - 1));
+        }
+    }
+
+    #[test]
+    fn test_prev_page_aligned() {
+        assert_eq!(prev_page_aligned(0), 0);
+        assert_eq!(prev_page_aligned(1), 0);
+        assert_eq!(prev_page_aligned(10), 0);
+        assert_eq!(prev_page_aligned(100), 0);
+        assert_eq!(prev_page_aligned(PAGE_SIZE - 1), 0);
+        assert_eq!(prev_page_aligned(PAGE_SIZE), PAGE_SIZE);
+        assert_eq!(prev_page_aligned(PAGE_SIZE + 1), PAGE_SIZE);
+        assert_eq!(prev_page_aligned(2 * PAGE_SIZE - 1), PAGE_SIZE);
+        assert_eq!(prev_page_aligned(2 * PAGE_SIZE), 2 * PAGE_SIZE);
+        assert_eq!(prev_page_aligned(2 * PAGE_SIZE + 1), 2 * PAGE_SIZE);
+        assert_eq!(
+            prev_page_aligned(2 * PAGE_SIZE + (PAGE_SIZE - 1)),
+            2 * PAGE_SIZE
+        );
+    }
+
+    #[test]
+    fn test_next_page_aligned() {
+        assert_eq!(next_page_aligned(0), PAGE_SIZE);
+        assert_eq!(next_page_aligned(1), PAGE_SIZE);
+        assert_eq!(next_page_aligned(10), PAGE_SIZE);
+        assert_eq!(next_page_aligned(100), PAGE_SIZE);
+        assert_eq!(next_page_aligned(PAGE_SIZE - 1), PAGE_SIZE);
+        assert_eq!(next_page_aligned(PAGE_SIZE), 2 * PAGE_SIZE);
+        assert_eq!(next_page_aligned(PAGE_SIZE + 1), 2 * PAGE_SIZE);
+        assert_eq!(next_page_aligned(2 * PAGE_SIZE - 1), 2 * PAGE_SIZE);
+        assert_eq!(next_page_aligned(2 * PAGE_SIZE), 3 * PAGE_SIZE);
+        assert_eq!(next_page_aligned(2 * PAGE_SIZE + 1), 3 * PAGE_SIZE);
+        assert_eq!(
+            next_page_aligned(2 * PAGE_SIZE + (PAGE_SIZE - 1)),
+            3 * PAGE_SIZE
+        );
     }
 }

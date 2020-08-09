@@ -105,27 +105,36 @@
 // TODO: if an index entry is detected, or if the index file length is incorrect
 // should we validate the database?
 
-use std::cell::UnsafeCell;
+// TODO: benchmarks using `MAP_PRIVATE` and `PROT_READ` for already written
+// data (e.g. read-only at that point) in `Data`.
+
+// TODO: see if some of the assertions can be debug assertions.
+
+// TODO: DRY the various `MmapSlice` variants.
+
+use std::cmp::max;
 use std::collections::hash_map::{self, HashMap};
 use std::convert::TryInto;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::iter::FusedIterator;
 use std::marker::PhantomData;
-use std::mem::{replace, size_of};
-use std::ops::{Deref, DerefMut};
+use std::mem::{align_of, replace, size_of, MaybeUninit};
 use std::os::unix::fs::FileExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{self, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
-use std::{fmt, slice, thread};
+use std::{fmt, slice};
 
 use fxhash::FxBuildHasher;
 use log::{error, trace, warn};
 
-use crate::Key;
+use crate::key::Key;
+
+#[cfg(test)]
+use std::thread;
 
 mod validate;
 
@@ -134,6 +143,16 @@ mod tests;
 
 pub use validate::{validate, validate_storage, Corruption};
 
+/// The size of a single page.
+// TODO: ensure this is correct on all architectures. Tested in
+// `data::page_size` test in the tests module.
+pub const PAGE_SIZE: usize = 1 << PAGE_BITS; // 4096.
+const PAGE_BITS: usize = 12;
+
+/// Number of pages to pre-allocate for the [`Data`] file.
+const DATA_PRE_ALLOC_PAGES: usize = 16;
+const DATA_PRE_ALLOC_BYTES: usize = DATA_PRE_ALLOC_PAGES * PAGE_SIZE; // 65,536 bytes.
+
 /// Magic header strings for the data and index files.
 const DATA_MAGIC: &[u8] = b"Stored data v01\0"; // Null padded to 16 bytes.
 const INDEX_MAGIC: &[u8] = b"Stored index v01";
@@ -141,27 +160,20 @@ const INDEX_MAGIC: &[u8] = b"Stored index v01";
 /// A Binary Large OBject (BLOB).
 #[derive(Clone)]
 pub struct Blob {
-    /// **The lifetime is a lie!** However the `lifetime` field ensures that the
-    /// bytes are alive.
-    bytes: &'static [u8],
+    mmap_slice: MmapSlice<u8>,
     /// Date at which the `Blob` was created/stored.
     created: SystemTime,
-    /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
-    /// `Blob`, as that would invalidate the `bytes` field.
-    lifetime: MmapLifetime,
 }
 
 impl Blob {
     /// Returns the bytes that make up the `Blob`.
     pub fn bytes<'b>(&'b self) -> &'b [u8] {
-        // This is safe because the lifetime `'b` can't outlive the lifetime of
-        // this `Blob`.
-        self.bytes
+        self.mmap_slice.as_slice()
     }
 
     /// Returns the length of `Blob`.
     pub fn len(&self) -> usize {
-        self.bytes.len()
+        self.mmap_slice.len()
     }
 
     /// Returns the time at which the blob was stored.
@@ -177,11 +189,8 @@ impl Blob {
     pub fn prefetch(&self) -> io::Result<()> {
         // TODO: benchmark at what size it makes sense to use this.
         if self.len() > PAGE_SIZE {
-            madvise(
-                self.bytes.as_ptr() as *mut _,
-                self.bytes.len(),
-                libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-            )
+            self.mmap_slice
+                .madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)
         } else {
             Ok(())
         }
@@ -191,7 +200,7 @@ impl Blob {
 impl fmt::Debug for Blob {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Blob")
-            .field("bytes", &self.bytes)
+            .field("bytes", &self.bytes())
             .field("created", &self.created)
             .finish()
     }
@@ -200,28 +209,20 @@ impl fmt::Debug for Blob {
 /// A Binary Large OBject (BLOB) that is **not** committed to [`Storage`].
 #[derive(Clone)]
 pub struct UncommittedBlob {
-    /// Offset into the data file.
+    mmap_slice: MmapSlice<u8>,
+    /// Offset in the data file.
     offset: u64,
-    /// Length of the blob.
-    length: u32,
-    /// Mmapped address of the blob in-memory.
-    address: NonNull<u8>,
-    /// Ensures that `mmap`ed data in `Data` doesn't get freed before this
-    /// `UncommittedBlob`, as that would invalidate the `address` field.
-    lifetime: MmapLifetime,
 }
 
 impl UncommittedBlob {
     /// Returns the bytes that make up the `UncommittedBlob`.
     pub fn bytes<'b>(&'b self) -> &'b [u8] {
-        // Safety: this is safe because the lifetime `'b` can't outlive the
-        // lifetime of this `UncommittedBlob`.
-        unsafe { slice::from_raw_parts(self.address.as_ptr(), self.length as usize) }
+        self.mmap_slice.as_slice()
     }
 
     /// Returns the length of `UncommittedBlob`.
     pub fn len(&self) -> usize {
-        self.length as usize
+        self.mmap_slice.len()
     }
 
     /// Prefetch the bytes that make up this `UncommittedBlob`.
@@ -232,20 +233,13 @@ impl UncommittedBlob {
     pub fn prefetch(&self) -> io::Result<()> {
         // TODO: benchmark at what size it makes sense to use this.
         if self.len() > PAGE_SIZE {
-            madvise(
-                self.address.as_ptr() as *mut _,
-                self.length as usize,
-                libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-            )
+            self.mmap_slice
+                .madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)
         } else {
             Ok(())
         }
     }
 }
-
-// Safety: the `lifetime` field ensures the `address` remains valid.
-unsafe impl Send for UncommittedBlob {}
-unsafe impl Sync for UncommittedBlob {}
 
 impl fmt::Debug for UncommittedBlob {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
@@ -311,18 +305,12 @@ impl Storage {
             .filter_map(|(index, entry)| {
                 let res = match entry.modified_time() {
                     ModifiedTime::Created(time) => data
-                        .address_for(entry.offset(), entry.length())
-                        .map(|(address, lifetime)| {
-                            // Safety: this is safe because we have `lifetime`
-                            // which ensures the bytes live until its dropped.
-                            let bytes = unsafe {
-                                slice::from_raw_parts(address.as_ptr(), entry.length() as usize)
-                            };
+                        .slice(entry.offset(), entry.length() as usize)
+                        .map(|mmap_slice| {
                             length += 1;
                             BlobEntry::Stored(Blob {
-                                bytes,
+                                mmap_slice,
                                 created: time,
-                                lifetime,
                             })
                         })
                         .ok_or_else(|| {
@@ -351,8 +339,13 @@ impl Storage {
     }
 
     /// Returns the number of bytes of data stored.
+    ///
+    /// # Notes
+    ///
+    /// While `Storage` is opened this will **not** match the file size of the
+    /// data file.
     pub fn data_size(&self) -> u64 {
-        self.data.file_length()
+        self.data.used_bytes()
     }
 
     /// Returns the size of the index file in bytes.
@@ -372,10 +365,16 @@ impl Storage {
             .map(|(_, blob_entry)| blob_entry.clone())
     }
 
-    /// Returns `true` if the storage contains a blob corresponding to `key`,
-    /// `false` otherwise.
+    /// Returns `true` if the storage contains (either stored or removed) a blob
+    /// corresponding to `key`, `false` otherwise.
     pub fn contains(&self, key: &Key) -> bool {
         self.blobs.contains_key(key)
+    }
+
+    /// Returns `true` if a blob corresponding to `key` is stored in the
+    /// storage, `false` otherwise.
+    pub fn is_stored(&self, key: &Key) -> bool {
+        matches!(self.blobs.get(key), Some((.., BlobEntry::Stored(..))))
     }
 
     /// Lookup an uncommitted blob.
@@ -388,7 +387,7 @@ impl Storage {
         self.index.entries().map(|slice| Keys { slice })
     }
 
-    /// Add `blob` to the database.
+    /// Add `blob` to the storage.
     ///
     /// Only after the returned [query] is [committed] is the blob stored in the
     /// database.
@@ -421,15 +420,9 @@ impl Storage {
         // will be written (or not), but its not *in* the database as the index
         // defines what is in the database.
         match self.data.add_blob(blob) {
-            Ok((offset, address, lifetime)) => {
-                let uncommitted_blob = UncommittedBlob {
-                    offset,
-                    length: blob.len() as u32,
-                    address,
-                    lifetime,
-                };
+            Ok((mmap_slice, offset)) => {
+                let uncommitted_blob = UncommittedBlob { mmap_slice, offset };
                 self.uncommitted.insert(key.clone(), (1, uncommitted_blob));
-
                 AddResult::Ok(StoreBlob { key })
             }
             Err(err) => AddResult::Err(err),
@@ -495,20 +488,11 @@ impl Storage {
         // First add the blob to the data file. If something happens the blob
         // will be written (or not), but its not *in* the database as the index
         // defines what is in the database.
-        let (offset, address, lifetime) = self.data.add_blob(blob)?;
-        let uncommitted_blob = UncommittedBlob {
-            offset,
-            length: blob.len() as u32,
-            address,
-            lifetime,
-        };
+        let (mmap_slice, offset) = self.data.add_blob(blob)?;
+        let uncommitted_blob = UncommittedBlob { mmap_slice, offset };
         let query = StoreBlob { key: key.clone() };
-        let (entry_index, blob) = query.create_entry(
-            &mut self.data,
-            &mut self.index,
-            created_at,
-            uncommitted_blob,
-        )?;
+        let (entry_index, blob) =
+            query.create_entry(&mut self.index, created_at, uncommitted_blob)?;
         self.blobs
             .insert(key, (entry_index, BlobEntry::Stored(blob)));
         self.length += 1;
@@ -607,6 +591,8 @@ pub trait Query {
 /// [store a blob]: Storage::add_blob
 #[derive(Debug)]
 pub struct StoreBlob {
+    // TODO: maybe add `slice: MmapSlice<u8>`? to get access to the complete
+    // value, useful to support streaming.
     key: Key,
 }
 
@@ -617,17 +603,16 @@ impl StoreBlob {
     /// disk.
     fn create_entry(
         self,
-        data: &mut Data,
         index: &mut Index,
         created_at: SystemTime,
         blob: UncommittedBlob,
     ) -> io::Result<(EntryIndex, Blob)> {
         // Ensure the data is synced to disk.
-        data.sync(blob.offset, blob.length)?;
+        blob.mmap_slice.sync()?;
 
         // The data is already stored so we can add the blob to the
         // index.
-        let index_entry = Entry::new(self.key, blob.offset, blob.length, created_at);
+        let index_entry = Entry::new(self.key, blob.offset, blob.len() as u32, created_at);
         let entry_index = index.add_entry(&index_entry)?;
 
         // Now that the data and index entry are stored we can insert
@@ -635,13 +620,8 @@ impl StoreBlob {
         Ok((
             entry_index,
             Blob {
-                // Safety: `Data`'s `MmapArea`s outlive `blobs` in `Storage`
-                // because of the `lifetime` added below.
-                bytes: unsafe {
-                    slice::from_raw_parts(blob.address.as_ptr(), blob.length as usize)
-                },
+                mmap_slice: blob.mmap_slice,
                 created: created_at,
-                lifetime: blob.lifetime,
             },
         ))
     }
@@ -681,10 +661,10 @@ impl Query for StoreBlob {
         debug_assert_eq!(
             storage
                 .data
-                .address_for(uncommitted_blob.offset, uncommitted_blob.length)
+                .slice(uncommitted_blob.offset, uncommitted_blob.mmap_slice.length)
                 .unwrap()
-                .0,
-            uncommitted_blob.address
+                .as_slice(),
+            uncommitted_blob.mmap_slice.as_slice()
         );
 
         use hash_map::Entry::*;
@@ -699,12 +679,8 @@ impl Query for StoreBlob {
                 }
                 entry @ (_, BlobEntry::Removed(_)) => {
                     // First add our new index entry.
-                    let (entry_index, blob) = self.create_entry(
-                        &mut storage.data,
-                        &mut storage.index,
-                        created_at,
-                        uncommitted_blob,
-                    )?;
+                    let (entry_index, blob) =
+                        self.create_entry(&mut storage.index, created_at, uncommitted_blob)?;
                     let (old_entry_index, _) =
                         replace(entry, (entry_index, BlobEntry::Stored(blob)));
                     storage.length += 1;
@@ -717,12 +693,8 @@ impl Query for StoreBlob {
                 }
             },
             Vacant(entry) => {
-                let (entry_index, blob) = self.create_entry(
-                    &mut storage.data,
-                    &mut storage.index,
-                    created_at,
-                    uncommitted_blob,
-                )?;
+                let (entry_index, blob) =
+                    self.create_entry(&mut storage.index, created_at, uncommitted_blob)?;
                 entry.insert((entry_index, BlobEntry::Stored(blob)));
                 storage.length += 1;
                 Ok(created_at)
@@ -810,253 +782,26 @@ struct Data {
     ///
     /// Note: the seek position is unlikely to be correct after opening.
     file: File,
-    /// Current length of the file and all `mmap`ed areas.
-    length: u64,
-    /// Number of bytes synced to disk.
-    synced_length: u64,
-    /// `mmap`ed areas.
+    /// Number of bytes used in the file.
+    used_bytes: u64,
+    /// Number of bytes `fallocate`d in the file and `mmap`-ed in `areas`.
+    ///
+    /// # Safety
+    ///
+    /// Must always be page-aligned!
+    mmaped_bytes: u64,
+    /// Non-overlapping memory mapped (`mmap(2)`-ed) areas.
+    ///
     /// See `check` for notes about safety.
     areas: Vec<MmapAreaControl>,
 }
 
-/// The size of a single page, used in probing `mmap`ing memory.
-// TODO: ensure this is correct on all architectures. Tested in
-// `data::page_size` test in the tests module.
-pub const PAGE_SIZE: usize = 1 << 12; // 4096.
-const PAGE_BITS: usize = 12;
-
-/// Control structure for a `mmap` area, see [`MmapArea`].
-///
-/// This has mutable access to all fields, except for the `ref_count`, of the
-/// `MmapArea` it points to, as only a single `MmapAreaControl` may control the
-/// `MmapArea`. However operations on the `ref_count` must still use atomic
-/// operations, as `MmapLifetime` also has readable access to it.
-struct MmapAreaControl {
-    ptr: NonNull<UnsafeCell<MmapArea>>,
-}
-
-// Safety: the `mmap` allocated area can be safely accessed from different
-// threads.
-unsafe impl Send for MmapAreaControl {}
-unsafe impl Sync for MmapAreaControl {}
-
-impl MmapAreaControl {
-    /// Create a new `MmapArea`, with a single `MmapAreaControl` pointing to it
-    /// and zero or more `MmapLifetime`.
-    fn new(
-        mmap_address: NonNull<libc::c_void>,
-        mmap_length: libc::size_t,
-        offset: u64,
-        length: libc::size_t,
-    ) -> MmapAreaControl {
-        let ptr = Box::new(UnsafeCell::new(MmapArea {
-            mmap_address,
-            mmap_length,
-            offset,
-            length,
-            ref_count: AtomicUsize::new(1),
-        }));
-
-        MmapAreaControl {
-            ptr: NonNull::from(Box::leak(ptr)),
-        }
-    }
-
-    /// Create a new lifetime structure for the `MmapArea`.
-    fn create_lifetime(&self) -> MmapLifetime {
-        // See `Arc::Clone` why relaxed ordering is sufficient here.
-        self.deref().ref_count.fetch_add(1, Ordering::Relaxed);
-        MmapLifetime {
-            ptr: self.ptr.cast(),
-        }
-    }
-}
-
-impl Deref for MmapAreaControl {
-    type Target = MmapArea;
-
-    fn deref(&self) -> &Self::Target {
-        // Safety: see docs of `MmapAreaControl`.
-        unsafe { &*self.ptr.as_ref().get() }
-    }
-}
-
-impl DerefMut for MmapAreaControl {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        // Safety: see docs of `MmapAreaControl`.
-        unsafe { &mut *self.ptr.as_mut().get() }
-    }
-}
-
-impl fmt::Debug for MmapAreaControl {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.deref().fmt(f)
-    }
-}
-
-impl Drop for MmapAreaControl {
-    fn drop(&mut self) {
-        unsafe {
-            // See `Arc::drop` to see why this is safe.
-            if self.deref().ref_count.fetch_sub(1, Ordering::Release) != 1 {
-                return;
-            }
-            atomic::fence(Ordering::Acquire);
-            drop(Box::from_raw(self.ptr.as_ptr()));
-        }
-    }
-}
-
-/// Lifetime reference to ensure `MmapArea` outlives any `Blob`s that point to
-/// them.
-struct MmapLifetime {
-    ptr: NonNull<MmapArea>,
-}
-
-impl Drop for MmapLifetime {
-    fn drop(&mut self) {
-        unsafe {
-            // See `MmapAreaControl`.
-            if self.ptr.as_ref().ref_count.fetch_sub(1, Ordering::Release) != 1 {
-                return;
-            }
-            atomic::fence(Ordering::Acquire);
-            drop(Box::from_raw(self.ptr.as_ptr()));
-        }
-    }
-}
-
-impl Clone for MmapLifetime {
-    fn clone(&self) -> MmapLifetime {
-        // See `Arc::Clone` why relaxed ordering is sufficient here.
-        unsafe { self.ptr.as_ref().ref_count.fetch_add(1, Ordering::Relaxed) };
-        MmapLifetime { ptr: self.ptr }
-    }
-}
-
-// Safety: the `mmap` allocated area can be safely accessed from different
-// threads.
-unsafe impl Send for MmapLifetime {}
-unsafe impl Sync for MmapLifetime {}
-
-/// A `mmap`ed area.
-///
-/// In this struct there are two kinds of values: used in the call to `mmap` and
-/// the values used in respect to the `Data.file`.
-/// * `mmap_address` and `mmap_length` are the values used in the call to
-///   `mmap(2)` and can be used to `unmap(2)` it.
-/// * `offset` and `length` are relative to the `Data.file`.
-#[derive(Debug)]
-struct MmapArea {
-    /// Mmap address. Safety: must be the `mmap` returned address.
-    mmap_address: NonNull<libc::c_void>,
-    /// Mmap allocation length. Safety: must be length used in `mmap`.
-    mmap_length: libc::size_t,
-
-    /// Absolute offset in the file. NOTE: **not** the offset used in the call
-    /// to `mmap`, as that must be page aligned.
-    offset: u64,
-    /// Length actually used of the mmap allocation, relative to `offset`.
-    /// `mmap_length` might be larger due to the page alignment requirement for
-    /// the offset.
-    length: libc::size_t,
-
-    /// Reference count, shared between one `MmapAreaControl` and zero or more
-    /// `MmapLifetime`s in `Blob`s. Only once this is zero this should be
-    /// dropped.
-    ref_count: AtomicUsize,
-}
-
-impl MmapArea {
-    /// Returns `true` if the blob at `offset` with `length` is in this area.
-    fn in_area(&self, offset: u64, length: u32) -> bool {
-        let area_offset = self.offset as u64;
-        area_offset <= offset && (offset + length as u64) <= (area_offset + self.length as u64)
-    }
-
-    /// Return a pointer to the `mmap`ed area at `offset`.
-    ///
-    /// # Safety
-    ///
-    /// `offset` must be: `MmapArea.offset > offset < (MmapArea.offset +
-    /// MmapArea.length)`
-    fn offset(&self, offset: u64) -> NonNull<u8> {
-        // The offset in the `mmap`ed area.
-        let relative_offset = offset - self.offset;
-
-        // The ensure that the offset into the file is page aligned we might
-        // having overlapping bytes at the start of this area, we need to ignore
-        // those.
-        let ignore_bytes = self.mmap_length - self.length;
-
-        let address = unsafe {
-            self.mmap_address
-                .as_ptr()
-                .add(ignore_bytes + relative_offset as usize)
-        };
-        NonNull::new(address as *mut u8).unwrap()
-    }
-
-    /// Attempts to grow the `mmap`ed area by `length` bytes. Returns `Ok(None)`
-    /// if the area can't grow (e.g. if the page after this area is already
-    /// being used). Returns `Ok(Some(adress))`, where address is the starting
-    /// address at which the area is grown, if the area was successfully grown.
-    fn try_grow_by(
-        &mut self,
-        length: libc::size_t,
-        fd: libc::c_int,
-    ) -> io::Result<Option<NonNull<u8>>> {
-        let can_grow = if needs_next_page(self.mmap_length, length) {
-            // If we need another page we need to reserve it to ensure that
-            // we're not overwriting a mapping that we don't own.
-            reserve_next_page(&self)?
-        } else {
-            // Can grow inside the same page.
-            true
-        };
-
-        if can_grow {
-            // If we successfully reserved the next page, or we can grow
-            // within the next page, it is safe to overwrite our own mapping
-            // using `MAP_FIXED`.
-            let new_length = self.mmap_length + length;
-
-            let aligned_offset = if is_page_aligned(self.offset as usize) {
-                self.offset
-            } else {
-                prev_page_aligned(self.offset as usize) as u64
-            };
-            let res = mmap(
-                self.mmap_address.as_ptr(),
-                new_length,
-                libc::PROT_READ,
-                libc::MAP_PRIVATE | libc::MAP_FIXED, // Force the same address.
-                fd,
-                aligned_offset as libc::off_t,
-            );
-
-            if let Ok(new_address) = res {
-                // Address and offset should remain unchanged.
-                assert_eq!(
-                    new_address,
-                    self.mmap_address.as_ptr(),
-                    "remapping the mmap area changed the address"
-                );
-                // Update `mmap` and effective length.
-                self.mmap_length = new_length;
-                self.length += length;
-                // The blob is located in the last `length` bytes.
-                let offset = self.offset as u64 + (self.length - length) as u64;
-                let blob_ptr = self.offset(offset);
-                return Ok(Some(blob_ptr));
-            }
-        }
-
-        Ok(None)
-    }
-}
-
 impl Data {
+    /// Protections used in calls to `mmap(2)`.
+    const PROTECTIONS: libc::c_int = libc::PROT_READ | libc::PROT_WRITE;
+    /// Flags used in calls to `mmap(2)`.
+    const FLAGS: libc::c_int = libc::MAP_SHARED;
+
     /// Open a `Data` file.
     fn open<P: AsRef<Path>>(path: P) -> io::Result<Data> {
         let path = path.as_ref();
@@ -1069,20 +814,19 @@ impl Data {
             .open(path)
             .map(|file| Data {
                 file,
-                length: 0,
-                synced_length: 0,
+                used_bytes: 0,
+                mmaped_bytes: 0,
                 areas: Vec::new(),
             })?;
         lock(&mut data.file)?;
 
         let metadata = data.file.metadata()?;
-        let mut length = metadata.len() as libc::size_t;
-        data.synced_length = data.length;
-        if length == 0 {
+        data.used_bytes = metadata.len();
+        if data.used_bytes == 0 {
             // New file so we need to add our magic.
-            trace!("new data file, writing magic");
+            trace!("new data file, writing magic: file={:?}", data.file);
             data.file.write_all(&DATA_MAGIC)?;
-            length = DATA_MAGIC.len();
+            data.used_bytes = DATA_MAGIC.len() as u64;
         } else {
             // Existing file; we'll check if it has the magic header.
             let mut magic = [0; DATA_MAGIC.len()];
@@ -1095,126 +839,109 @@ impl Data {
             }
         }
 
-        data.new_area(length)?;
+        data.fallocate(data.used_bytes as usize)?;
         data.check();
         Ok(data)
     }
 
-    /// Returns the total file length.
-    fn file_length(&self) -> u64 {
-        self.length
+    /// Returns the used bytes of the file.
+    fn used_bytes(&self) -> u64 {
+        self.used_bytes
     }
 
-    /// Add `blob` at the end of the data log.
-    /// Returns the stored blob's offset in the data file and its `mmap`ed
-    /// address.
+    /// Add `blob` at the end of the data file.
+    ///
+    /// Returns the blob as `mmap(2)`-ed memory, backed by the data file, and
+    /// the offset in the data file where the blob starts.
     ///
     /// # Notes
     ///
-    /// The blob is not synced to disk, call [`sync`] to ensure that!
-    /// Can't store an empty blob!
+    /// The blob is not synced to disk, call [`sync`] on the returned slice to
+    /// ensure that! Can't store an empty blob!
     ///
-    /// [`sync`]: Data::sync
-    fn add_blob(&mut self, blob: &[u8]) -> io::Result<(u64, NonNull<u8>, MmapLifetime)> {
-        assert!(!blob.is_empty(), "tried to store an empty blob");
-        // First add the blob to the file.
-        self.file.write_all(blob)?;
-
-        // Next grow our `mmap`ed area(s).
-        let offset = self.length;
-        let (address, lifetime) = self.grow_by(blob.len())?;
-        self.check();
-        Ok((offset as u64, address, lifetime))
+    /// [`sync`]: MmapSlice::sync
+    fn add_blob(&mut self, blob: &[u8]) -> io::Result<(MmapSlice<u8>, u64)> {
+        let offset = self.used_bytes;
+        let mut slice = self.reserve(blob.len())?;
+        slice.copy_from_slice(0, blob);
+        // Let the OS we want to sync it to disk at a later stage.
+        slice.start_sync()?;
+        // Safety: `new_area` allocate `mmap` areas with `PROT_READ`.
+        unsafe { Ok((slice.assume_init().immutable(), offset)) }
     }
 
-    /// Sync the file to disk up to at least `offset` bytes.
-    fn sync(&mut self, offset: u64, length: u32) -> io::Result<()> {
-        if self.synced_length >= (offset + length as u64) {
-            // Already synced.
-            Ok(())
-        } else {
-            trace!("syncing data file to disk");
-            self.file
-                .sync_all()
-                .map(|()| self.synced_length = self.length)
+    /// Reserve `length` bytes to write into.
+    ///
+    /// Returns a `mmap`-ed memory area that is backed by the data file.
+    fn reserve(&mut self, length: usize) -> io::Result<MmapSliceMut<MaybeUninit<u8>>> {
+        if self.used_bytes + length as u64 > self.mmaped_bytes {
+            // Don't have enough space, allocate some more.
+            self.fallocate(length)?;
         }
+
+        // Safety: we ensure above that we have space in the last area, so this
+        // `unwrap` is safe.
+        let area = self.areas.last_mut().unwrap();
+        let in_area_offset = self.used_bytes - area.file_offset();
+        self.used_bytes += length as u64;
+        unsafe { Ok(area.slice_mut_unchecked(in_area_offset as usize, length)) }
     }
 
-    /// Grows the `mmap`ed data by `length` bytes.
+    /// Allocate a new area of `length` bytes in the data file and add the newly
+    /// allocated space to `mmap`-ed areas.
     ///
-    /// This either grows the last `mmap`ed area, or allocates a new one.
-    /// Returns the starting address at which the area is grown, i.e. where the
-    /// blob is mmaped into memory.
-    fn grow_by(&mut self, length: libc::size_t) -> io::Result<(NonNull<u8>, MmapLifetime)> {
+    /// `length` gets increase (if needed) to align to [`DATA_PRE_ALLOC_BYTES`].
+    fn fallocate(&mut self, length: usize) -> io::Result<()> {
+        // Always allocate at least `DATA_PRE_ALLOC_BYTES` bytes.
+        let length = min_fallocate_size(length);
+
+        // Allocate more space on disk.
+        let new_file_length = self.mmaped_bytes + length as u64;
+        trace!(
+            "growing data file: file={:?}, old_length = {}, new_length={}",
+            self.file,
+            self.mmaped_bytes,
+            new_file_length
+        );
+        fallocate(self.file.as_raw_fd(), new_file_length as libc::off_t)?;
+
         // Try to grow the last `mmap`ed area.
         if let Some(area) = self.areas.last_mut() {
-            if let Some(address) = area.try_grow_by(length, self.file.as_raw_fd())? {
-                // Update total `Data` length .
-                self.length += length as u64;
-                return Ok((address, area.create_lifetime()));
+            if area.try_grow_by(length, Self::PROTECTIONS, Self::FLAGS, &self.file)? {
+                // Success.
+                self.mmaped_bytes = new_file_length;
+                return Ok(());
             }
         }
-
-        // If we've failed to grow the last `mmap`ed area, or didn't yet have
-        // one, we'll allocate a new area.
-        self.new_area(length)
+        // Mark the unused bytes from the last area as used. We can't use the
+        // bytes as the blob is too large to fit into the leftover `mmap` area.
+        // This space can be reclaimed later when compacting.
+        // Note: we need to use `max` here as the first call (in `new`)
+        // `mmap_bytes` will be 0 and `used_bytes` >= `INDEX_MAGIC.len()`.
+        self.used_bytes = max(self.mmaped_bytes, self.used_bytes);
+        // Safety: `fallocate_size` ensures that the length is page aligned.
+        unsafe { self.new_area(length) }
     }
 
-    /// Create a new `mmap` area of `length` bytes, using the offset from the
-    /// last mmap area (or 0).
+    /// Create a new `mmap` area.
     ///
-    /// Returns the starting address of the added blob. Note that this can
-    /// different from the address of the `mmap`ed area (last
-    /// `MmapArea.address`), as the blob offset might not be page aligned.
-    fn new_area(&mut self, length: libc::size_t) -> io::Result<(NonNull<u8>, MmapLifetime)> {
-        // Get the file offset from the last `mmap`ed area.
-        let offset = self
-            .areas
-            .last()
-            .map_or(0, |area| area.offset + area.length as u64);
-
-        // Offset must be page aligned. This means we can have overlapping
-        // sections in the entire mmaped area, but that is ok.
-        let (aligned_offset, offset_alignment_diff) = if is_page_aligned(offset as usize) {
-            // Already page aligned, neat! No overlapping areas.
-            (offset, 0)
-        } else {
-            // Offset is not page aligned, so we mmap the previous page again to
-            // ensure the blob can be read from continuous memory.
-            let aligned_offset = prev_page_aligned(offset as usize) as u64;
-            let offset_alignment_diff = offset - aligned_offset;
-            (aligned_offset, offset_alignment_diff as usize)
-        };
-
-        // Account for the overlapping area to page align the offset.
-        let aligned_length = length + offset_alignment_diff;
-
-        let address = mmap(
-            ptr::null_mut(),
-            aligned_length,
-            libc::PROT_READ,
-            libc::MAP_PRIVATE,
-            self.file.as_raw_fd(),
-            aligned_offset as libc::off_t,
+    /// Adds this area to `self.area`.
+    ///
+    /// # Safety
+    ///
+    /// The data file must be atleast `self.mmaped_bytes + length` bytes long.
+    /// `length` and `self.mmaped_bytes` must be page aligned.
+    unsafe fn new_area(&mut self, length: libc::size_t) -> io::Result<()> {
+        let area = MmapAreaControl::new(
+            length,
+            Self::PROTECTIONS,
+            Self::FLAGS,
+            &self.file,
+            self.mmaped_bytes as libc::off_t,
         )?;
-
-        // Inform the OS that our access pattern are likely to be random, this
-        // way it doesn't load pages we won't need. We can use `Blob::prefetch`
-        // to inform the OS when we do need pages.
-        if let Err(err) = madvise(address, aligned_length, libc::MADV_RANDOM) {
-            warn!("madvise failed, continuing: {}", err);
-        }
-
-        // Safety: `mmap` doesn't return a null address.
-        let address = NonNull::new(address).unwrap();
-        let area = MmapAreaControl::new(address, aligned_length, offset, length);
-        let blob_address = area.offset(offset as u64);
-        let lifetime = area.create_lifetime();
         self.areas.push(area);
-
-        // Not counting the overlapping length!
-        self.length += length as u64;
-        Ok((blob_address, lifetime))
+        self.mmaped_bytes += length as u64;
+        Ok(())
     }
 
     /// Returns the address for the blob at `offset`, with `length`. Or `None`
@@ -1223,15 +950,14 @@ impl Data {
     /// # Notes
     ///
     /// The returned address lifetime is tied to the `Data` struct.
-    fn address_for(&self, offset: u64, length: u32) -> Option<(NonNull<u8>, MmapLifetime)> {
+    fn slice(&self, offset: u64, length: usize) -> Option<MmapSlice<u8>> {
         debug_assert!(
             offset >= DATA_MAGIC.len() as u64,
             "offset inside magic header"
         );
         self.areas
             .iter()
-            .find(|area| area.in_area(offset, length))
-            .map(|area| (area.offset(offset), area.create_lifetime()))
+            .find_map(|area| area.slice(offset, length))
     }
 
     /// Run all safety checks.
@@ -1255,113 +981,50 @@ impl Data {
         if cfg!(debug_assertions) {
             let mut total_length: u64 = 0;
             let mut last_offset: u64 = 0;
-            for area in &self.areas {
+            for control in &self.areas {
+                let area = control.area();
                 assert!(
-                    area.mmap_address.as_ptr() as usize % PAGE_SIZE == 0,
+                    is_page_aligned(area.mmap_address.as_ptr() as usize),
+                    //area.mmap_address.as_ptr() as usize % PAGE_SIZE == 0,
                     "incorrect mmap address alignment"
                 );
-                assert!(area.offset <= DATA_MAGIC.len() as u64, "incorrect offset");
                 assert!(
-                    area.offset >= last_offset,
+                    area.mmap_offset as u64 <= DATA_MAGIC.len() as u64,
+                    "incorrect offset"
+                );
+                assert!(
+                    area.mmap_offset as u64 >= last_offset,
                     "mmaped areas not sorted by offset"
                 );
                 assert_eq!(
-                    area.offset as u64, total_length,
+                    area.mmap_offset as u64, total_length,
                     "incorrect offset for mmap area"
                 );
-                assert!(
-                    area.length <= area.mmap_length,
-                    "mmap area smaller the MmapArea.length"
-                );
-                last_offset = area.offset;
-                total_length += area.length as u64;
+                last_offset = area.mmap_offset as u64;
+                total_length += area.mmap_length as u64;
             }
-            assert_eq!(self.length, total_length, "incorrect total length");
+            assert!(total_length >= self.used_bytes, "incorrect used_bytes");
         }
     }
 }
 
-/// Returns `true` if for growing by `grow_by_length` bytes we need another
-/// page.
-fn needs_next_page(area_length: libc::size_t, grow_by_length: libc::size_t) -> bool {
-    // The number of bytes used in last page of the mmap area.
-    let used_last_page = area_length % PAGE_SIZE;
-    // If our last page is fully used (0 bytes used in last page) or the blob
-    // doesn't fit in this last page we need another page for the blob.
-    used_last_page == 0 || (PAGE_SIZE - used_last_page) < grow_by_length
+/// Returns the size for `length` to allocate. Ensure the length is aligned to
+/// `DATA_PRE_ALLOC_BYTES`.
+const fn min_fallocate_size(length: usize) -> usize {
+    length + (DATA_PRE_ALLOC_BYTES - (length % DATA_PRE_ALLOC_BYTES))
 }
 
-/// Attempts to reverse the page after `area`. Returns `true` if successful,
-/// false or an error otherwise.
-///
-/// If this return `true` a mapping of a single page exists at the next page
-/// aligned address after `area`, which can be safely overwritten.
-fn reserve_next_page(area: &MmapArea) -> io::Result<bool> {
-    // The address of the next page to reserve, aligned to the page size.
-    let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
-    let reserve_address = if is_page_aligned(end_address) {
-        // If end_address is already page aligned it means we filled the entire
-        // previous page.
-        end_address as *mut libc::c_void
-    } else {
-        // Otherwise we need to find the end of this page, which is the start of
-        // the page we want to reserve.
-        next_page_aligned(end_address) as *mut libc::c_void
-    };
-    debug_assert!(is_page_aligned(reserve_address as usize));
-
-    let actual_address = mmap(
-        // Hint to the OS we want our area here at this address, if possible
-        // most OSes will grant it to us or return a different address if not.
-        reserve_address,
-        PAGE_SIZE,
-        libc::PROT_NONE,
-        libc::MAP_PRIVATE | libc::MAP_ANON,
-        -1,
-        0,
-    )?;
-
-    if actual_address == reserve_address {
-        // We've created a mapping at the desired address so our reservation was
-        // successful. We don't unmap the area as the caller will overwrite it.
-        // Otherwise we have a data race between unmapping and the caller
-        // overwriting the area, while another thread is also using `mmap`.
-        Ok(true)
-    } else {
-        // Couldn't reserve the page, unmap the mapping we created as we're not
-        // going to use it.
-        munmap(actual_address, PAGE_SIZE).map(|()| false)
-    }
-}
-
-/// Returns true if `address` is page aligned.
-const fn is_page_aligned(address: usize) -> bool {
-    address.trailing_zeros() >= PAGE_BITS as u32
-}
-
-/// Returns an aligned address to the next page relative to `address`.
-const fn next_page_aligned(address: usize) -> usize {
-    (address + PAGE_SIZE) & !((1 << PAGE_BITS) - 1)
-}
-
-/// Returns an aligned address to the previous page relative to `address`.
-/// Used in determining the `offset` used in calls to `mmap(2)`.
-fn prev_page_aligned(address: usize) -> usize {
-    address.saturating_sub(PAGE_SIZE) & !((1 << PAGE_BITS) - 1)
-}
-
-impl Drop for MmapArea {
+impl Drop for Data {
     fn drop(&mut self) {
-        debug_assert!(self.ref_count.load(Ordering::Relaxed) == 0);
-        // Safety: both `address` and `length` are used in the call to `mmap`.
-        if let Err(err) = munmap(self.mmap_address.as_ptr(), self.mmap_length) {
-            // We can't really handle the error properly here so we'll log it
-            // and if we're testing (and not panicking) we'll panic on it.
-            error!("error unmapping data: {}", err);
-            #[cfg(test)]
-            if !thread::panicking() {
-                panic!("error unmapping data: {}", err);
-            }
+        // Shrink the file back to the actual used bytes.
+        // NOTE: this doesn't happen in case of a crash and that is OK. We'll
+        // end up with a gap of unused bytes, but that will be cleaned-up by the
+        // compacting phase.
+        if let Err(err) = ftruncate(self.file.as_raw_fd(), self.used_bytes as libc::off_t) {
+            error!(
+                "failed to truncate file: {}: file={:?}, current_length={}, actual_length={}",
+                err, self.file, self.mmaped_bytes, self.used_bytes
+            );
         }
     }
 }
@@ -1373,6 +1036,9 @@ struct Index {
     /// append-only mode for adding entries (`add_entry`).
     file: File,
     /// Current length of the file.
+    ///
+    /// Must always be number of entries * `size_of::<Entry>()` +
+    /// `INDEX_MAGIC.len()`. See [`len`] method.
     length: u64,
 }
 
@@ -1404,13 +1070,19 @@ impl Index {
             file.write_all(&INDEX_MAGIC)?;
             length += INDEX_MAGIC.len() as u64;
         } else {
-            // Existing file; we'll check if it has the magic header.
+            // Existing file; we'll check if it has the magic header and correct
+            // length.
             let mut magic = [0; INDEX_MAGIC.len()];
             let read_bytes = file.read(&mut magic)?;
             if read_bytes != INDEX_MAGIC.len() || magic != INDEX_MAGIC {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "missing magic header in index file",
+                ));
+            } else if (length as usize - INDEX_MAGIC.len()) % size_of::<Entry>() != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "incorrect index file size",
                 ));
             }
         }
@@ -1423,55 +1095,32 @@ impl Index {
         self.length
     }
 
+    /// Returns the number of entries in the index.
+    fn len(&self) -> usize {
+        (self.length as usize - INDEX_MAGIC.len()) / size_of::<Entry>()
+    }
+
     /// Returns an iterator for all entries remaining in the `Index`. If the
     /// `Index` was just `open`ed this means all entries in the entire index
     /// file.
-    fn entries(&mut self) -> io::Result<MmapSlice<Entry>> {
-        let mmap_length = self.length as libc::size_t;
-        let indices_length = mmap_length - INDEX_MAGIC.len();
-        if indices_length == 0 {
-            return Ok(MmapSlice {
-                address: ptr::null_mut(),
-                length: 0,
-                offset: 0,
-                slice: PhantomData,
-            });
-        }
-
-        if indices_length % size_of::<Entry>() != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "incorrect index file size",
-            ));
-        }
-
-        let mmap_address = mmap(
-            ptr::null_mut(),
-            mmap_length,
+    fn entries(&mut self) -> io::Result<MmapSliceOwned<Entry>> {
+        let slice = MmapSliceOwned::new(
+            self.len(),
             libc::PROT_READ,
             libc::MAP_PRIVATE,
-            self.file.as_raw_fd(),
-            0,
+            &self.file,
+            INDEX_MAGIC.len(),
         )?;
 
-        // For performance let the OS known we're going to read the entries
-        // so it can prefetch the pages from disk.
+        // For performance let the OS known we're going to read the entries so
+        // it can prefetch the pages from disk.
         // Note that we don't care about the result as its just an advise to the
         // OS, if t can't comply we'll continue on.
-        if let Err(err) = madvise(
-            mmap_address,
-            mmap_length,
-            libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED,
-        ) {
+        if let Err(err) = slice.madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED) {
             warn!("madvise failed, continuing: {}", err);
         }
 
-        Ok(MmapSlice {
-            address: mmap_address,
-            length: mmap_length,
-            offset: INDEX_MAGIC.len(),
-            slice: PhantomData,
-        })
+        Ok(slice)
     }
 
     /// Add a new `entry` to the `Index`.
@@ -1542,149 +1191,36 @@ impl Index {
     }
 }
 
-/// A slice backed by `mmap(2)`.
-struct MmapSlice<T> {
-    /// Mmap address. Safety: must be the `mmap` returned address, may be null
-    /// in which case the address is not unmapped. If null `length` must be 0.
-    address: *mut libc::c_void,
-    /// Mmap allocation length. Safety: must be length used in `mmap`.
-    length: libc::size_t,
-    /// Offset from `address` to start the slice returned by `Deref`.
-    offset: usize,
-    slice: PhantomData<[T]>,
-}
-
-impl<T> Deref for MmapSlice<T> {
-    type Target = [T];
-
-    fn deref(&self) -> &Self::Target {
-        // Mmap needs to be page aligned, so we allow an offset to support
-        // arbitrary ranges.
-        let address = unsafe { self.address.add(self.offset) };
-        let length = self.length - self.offset;
-        debug_assert!(length % size_of::<T>() == 0, "length incorrect");
-        unsafe { slice::from_raw_parts(address as *const _, length / size_of::<T>()) }
-    }
-}
-
-impl MmapSlice<Entry> {
+impl MmapSliceOwned<Entry> {
     /// Returns an iterator over the `Entry`s and its index into the [`Index`]
     /// file.
     fn iter(
         &self,
     ) -> impl Iterator<Item = (EntryIndex, &Entry)> + ExactSizeIterator + FusedIterator {
-        self.deref()
+        self.as_slice()
             .iter()
             .enumerate()
             .map(|(idx, entry)| (EntryIndex(idx), entry))
     }
 }
 
-impl<T> Drop for MmapSlice<T> {
-    fn drop(&mut self) {
-        // If the index file was empty `address` will be null as we can't create
-        // a mmap with length 0.
-        if !self.address.is_null() {
-            // Safety: both `address` and `length` are used in the call to `mmap`.
-            if let Err(err) = munmap(self.address, self.length) {
-                // We can't really handle the error properly here so we'll log
-                // it and if we're testing (and not panicking) we'll panic on
-                // it.
-                error!("error unmapping data: {}", err);
-                if !thread::panicking() {
-                    #[cfg(test)]
-                    panic!("error unmapping data: {}", err);
-                }
-            }
-        } else {
-            debug_assert!(self.length == 0);
-        }
-    }
-}
-
 /// Iterator of the [`Key`]s in the [`Storage`].
 pub struct Keys {
-    slice: MmapSlice<Entry>,
+    slice: MmapSliceOwned<Entry>,
 }
 
 impl fmt::Debug for Keys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.slice.deref().fmt(f)
+        self.slice.as_slice().fmt(f)
     }
 }
-
-// Safety: the `mmap` allocated area can be safely accessed from different
-// threads.
-unsafe impl Send for Keys {}
-unsafe impl Sync for Keys {}
 
 impl<'a> IntoIterator for &'a Keys {
     type Item = &'a Key;
     type IntoIter = impl Iterator<Item = Self::Item> + ExactSizeIterator + FusedIterator;
 
     fn into_iter(self) -> Self::IntoIter {
-        self.slice.deref().iter().map(|entry| &entry.key)
-    }
-}
-
-fn mmap(
-    addr: *mut libc::c_void,
-    len: libc::size_t,
-    protection: libc::c_int,
-    flags: libc::c_int,
-    fd: libc::c_int,
-    offset: libc::off_t,
-) -> io::Result<*mut libc::c_void> {
-    assert!(len > 0);
-    assert!(is_page_aligned(addr as usize)); // Null is also page aligned.
-    assert!(is_page_aligned(offset as usize)); // 0 is also page aligned.
-    let addr = unsafe { libc::mmap(addr, len, protection, flags, fd, offset) };
-    if addr == libc::MAP_FAILED {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(addr)
-    }
-}
-
-fn munmap(addr: *mut libc::c_void, len: libc::size_t) -> io::Result<()> {
-    assert!(len != 0);
-    assert!(!addr.is_null());
-    assert!(is_page_aligned(addr as usize));
-    if unsafe { libc::munmap(addr, len) } != 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-fn madvise(addr: *mut libc::c_void, len: libc::size_t, advice: libc::c_int) -> io::Result<()> {
-    debug_assert!(len != 0);
-    if unsafe { libc::madvise(addr, len, advice) != 0 } {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-/// Lock `file` using `flock(2)`.
-///
-/// # Notes
-///
-/// Once the `file` is dropped it's automatically unlocked.
-fn lock(file: &mut File) -> io::Result<()> {
-    trace!("locking file: file={:?}", file);
-    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() == io::ErrorKind::WouldBlock {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "database already in used",
-            ))
-        } else {
-            Err(err)
-        }
-    } else {
-        Ok(())
+        self.slice.as_slice().iter().map(|entry| &entry.key)
     }
 }
 
@@ -1942,4 +1478,722 @@ impl fmt::Debug for DateTime {
             .field("is_invalid", &self.is_invalid())
             .finish()
     }
+}
+
+/// Control structure for a `mmap` area, see [`MmapArea`].
+///
+/// TODO: update below.
+/// This has mutable access to all fields, except for the `ref_count`, of the
+/// `MmapArea` it points to, as only a single `MmapAreaControl` may control the
+/// `MmapArea`. However operations on the `ref_count` must still use atomic
+/// operations, as `MmapLifetime` also has readable access to it.
+#[derive(Debug)]
+struct MmapAreaControl {
+    ptr: NonNull<MmapArea>,
+}
+
+/// Lifetime reference to ensure `MmapArea` outlives anything that point to
+/// it.
+///
+/// This lifetime only has access to `MmapArea.ref_count` (using atomics) and
+/// must drop it once the count is zero (see the `Drop` impl).
+#[derive(Debug)]
+pub(crate) struct MmapLifetime {
+    ptr: NonNull<MmapArea>,
+}
+
+impl MmapAreaControl {
+    /// Create a new `MmapAreaControl`.
+    fn new(
+        length: libc::size_t,
+        protection: libc::c_int,
+        flags: libc::c_int,
+        file: &File,
+        offset: libc::off_t,
+    ) -> io::Result<MmapAreaControl> {
+        trace!(
+            "allocating new `mmap`-area: file={:?}, offset={}, length={}",
+            file,
+            offset,
+            length
+        );
+        let fd = file.as_raw_fd();
+        mmap(ptr::null_mut(), length, protection, flags, fd, offset).map(|mmap_address| {
+            let area = Box::new(MmapArea {
+                mmap_address,
+                mmap_length: length,
+                mmap_offset: offset,
+                ref_count: AtomicUsize::new(1),
+            });
+            MmapAreaControl {
+                ptr: NonNull::from(Box::leak(area)),
+            }
+        })
+    }
+
+    /// Attempts to grow the `mmap`ed area by `grow_by_length` bytes. Returns
+    /// `Ok(false)` if the area can't grow (e.g. if the page after this area is
+    /// already being used). Returns `Ok(true)` if the area was successfully
+    /// grown. And an error if one is hit.
+    ///
+    /// # Safety
+    ///
+    /// `file` must be the same after as the `MmapAreaControl` was created with.
+    fn try_grow_by(
+        &mut self,
+        grow_by_length: libc::size_t,
+        protection: libc::c_int,
+        flags: libc::c_int,
+        file: &File,
+    ) -> io::Result<bool> {
+        let area = self.area();
+        if !needs_next_page(area.mmap_length, grow_by_length) {
+            // Can grow inside the same page.
+            return Ok(true);
+        }
+
+        // If we need another page we need to reserve it to ensure that we're
+        // not overwriting a mapping that we don't own.
+        match reserve_next_pages(area, grow_by_length) {
+            Ok(true) => {}
+            // Failed to reserve or an error, can't grow.
+            other => return other,
+        }
+
+        // We successfully reserved up to `grow_by_length % PAGE_SIZE` pages. So
+        // it is safe to overwrite our own mapping using `MAP_FIXED`.
+        let new_length = area.mmap_length + grow_by_length;
+        let fd = file.as_raw_fd();
+        // FIXME: use `mremap(2)` on Linux.
+        let new_address = mmap(
+            area.mmap_address.as_ptr(),
+            new_length,
+            protection,
+            flags | libc::MAP_FIXED, // Force the same address.
+            fd,
+            area.mmap_offset,
+        )?;
+
+        // Address and offset should remain unchanged.
+        assert_eq!(
+            new_address.as_ptr(),
+            area.mmap_address.as_ptr(),
+            "remapping the mmap area changed the address"
+        );
+        // Update `mmap`-ed length.
+        // Safety: Only `MmapAreaControl` has access to `MmapArea`'s field other
+        // than the `ref_count`, so this shouldn't cause a data race.
+        // FIXME: I think we might need an `UnsafeCell` around `mmap_length` for
+        // this.
+        unsafe {
+            self.ptr.as_mut().mmap_length = new_length;
+        }
+        Ok(true)
+    }
+
+    /// Returns the length of the `mmap` area.
+    fn len(&self) -> usize {
+        self.area().mmap_length
+    }
+
+    /// Returns the offset in the file of the `mmap` area.
+    fn file_offset(&self) -> u64 {
+        self.area().mmap_offset as u64
+    }
+
+    /// Returns the slice starting at `file_offset` containing `length`
+    /// elements, if in this area. Otherwise this returns `None`.
+    fn slice<T>(&self, file_offset: u64, length: usize) -> Option<MmapSlice<T>> {
+        let area = self.area();
+        let area_offset = area.mmap_offset as u64;
+        if file_offset >= area_offset {
+            let in_area_offset = (file_offset - area_offset) as usize;
+            if area.mmap_length >= length + in_area_offset {
+                // Safety: just checked if the slice is in the area.
+                return Some(unsafe { self.slice_unchecked(in_area_offset, length) });
+            }
+        }
+        None
+    }
+
+    /// Create a new [`MmapSlice`]. Starting at `offset` (**in bytes, relative
+    /// to this area**) and `length` elements.
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure that the area is long enough to create the slice.
+    unsafe fn slice_unchecked<T>(&self, offset: usize, length: usize) -> MmapSlice<T> {
+        assert!(offset <= self.len());
+        assert!(self.len() - offset >= length * size_of::<T>());
+
+        // Safety: we're ensured the pointer is null-null, so
+        // `NonNull::new_unchecked` is safe. The caller must ensure the offset
+        // and length are correct (see assertion above).
+        let address =
+            NonNull::new_unchecked(self.area().mmap_address.cast::<u8>().as_ptr().add(offset))
+                .cast::<T>();
+        let lifetime = self.create_lifetime();
+        MmapSlice {
+            address,
+            length,
+            lifetime,
+        }
+    }
+
+    /// Same as [`slice_unchecked`], but returns a mutable slice ([`MmapSliceMut`]).
+    ///
+    /// # Safety
+    ///
+    /// See [`slice_unchecked`] for all safety requirements.
+    unsafe fn slice_mut_unchecked<T>(&self, offset: usize, length: usize) -> MmapSliceMut<T> {
+        assert!(offset <= self.len());
+        assert!(self.len() - offset >= length * size_of::<T>());
+
+        // Safety: see `slice_unchecked`.
+        let address =
+            NonNull::new_unchecked(self.area().mmap_address.cast::<u8>().as_ptr().add(offset))
+                .cast::<T>();
+        let lifetime = self.create_lifetime();
+        MmapSliceMut {
+            address,
+            length,
+            lifetime,
+        }
+    }
+
+    /// Create a new lifetime structure for the `MmapArea`.
+    fn create_lifetime(&self) -> MmapLifetime {
+        // See `Arc::Clone` why relaxed ordering is sufficient here.
+        self.area().ref_count.fetch_add(1, Ordering::Relaxed);
+        MmapLifetime {
+            ptr: self.ptr.cast(),
+        }
+    }
+}
+
+/// Returns `true` if for growing by `grow_by_length` bytes we need another
+/// page.
+const fn needs_next_page(area_length: libc::size_t, grow_by_length: libc::size_t) -> bool {
+    // The number of bytes used in last page of the mmap area.
+    let used_last_page = area_length % PAGE_SIZE;
+    // If our last page is fully used (0 bytes used in last page) or the blob
+    // doesn't fit in this last page we need another page for the blob.
+    used_last_page == 0 || (PAGE_SIZE - used_last_page) < grow_by_length
+}
+
+/// Attempts to reverse the pages after `area`.
+///
+/// Returns `true` if successful,
+/// false if we couldn't reserve the area or an error otherwise.
+///
+/// If this returns `true` a mapping of enough pages (to accommodate `size`)
+/// exists at the next page aligned address after `area`, which can be safely
+/// overwritten.
+fn reserve_next_pages(area: &MmapArea, size: libc::size_t) -> io::Result<bool> {
+    // The address of the next page to reserve, aligned to the page size.
+    let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
+    let reserve_address = if is_page_aligned(end_address) {
+        // If end_address is already page aligned it means we filled the entire
+        // previous page.
+        end_address as *mut libc::c_void
+    } else {
+        // Otherwise we need to find the end of this page, which is the start of
+        // the page we want to reserve.
+        next_page_aligned(end_address) as *mut libc::c_void
+    };
+    debug_assert!(is_page_aligned(reserve_address as usize));
+
+    let actual_address = mmap(
+        // Hint to the OS we want our area here at this address, if possible
+        // most OSes will grant it to us or return a different address if not.
+        reserve_address,
+        size,
+        libc::PROT_NONE,
+        libc::MAP_PRIVATE | libc::MAP_ANON,
+        -1,
+        0,
+    )?;
+
+    if actual_address.as_ptr() == reserve_address {
+        // We've created a mapping at the desired address so our reservation was
+        // successful. We don't unmap the area as the caller will overwrite it.
+        // Otherwise we have a data race between unmapping and the caller
+        // overwriting the area, while another thread is also using `mmap`.
+        Ok(true)
+    } else {
+        // Couldn't reserve the pages, unmap the mapping we created as we're not
+        // going to use them.
+        munmap(actual_address.as_ptr(), PAGE_SIZE).map(|()| false)
+    }
+}
+
+/// Code shared between `MmapAreaControl` and `MmapLifetime`.
+macro_rules! mmap_lifetime {
+    ( $( $name: ident ),+ ) => {
+        $(
+        impl $name {
+            /// Get a reference to the `MmapArea`.
+            fn area<'a>(&'a self) -> &'a MmapArea {
+                // Safety: the `MmapArea` must be alive at least as long as this
+                // `MmapLifetime` (its the whole point of this type).
+                unsafe { self.ptr.as_ref() }
+            }
+        }
+
+        impl Clone for $name {
+            fn clone(&self) -> $name {
+                // See `Arc::Clone` why relaxed ordering is sufficient here.
+                self.area().ref_count.fetch_add(1, Ordering::Relaxed);
+                $name { ptr: self.ptr }
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // See `Arc::drop` to see why this is safe.
+                if self.area().ref_count.fetch_sub(1, Ordering::Release) != 1 {
+                    return;
+                }
+                atomic::fence(Ordering::Acquire);
+
+                // Safety: `MmapArea` was allocated using `Box`, see
+                // `MmapArea::new`. We checked the `ref_count` field above so
+                // we're also ensured we're the last one with access.
+                unsafe { drop(Box::from_raw(self.ptr.as_ptr())) }
+            }
+        }
+
+        // Safety: the `mmap` allocated area can be safely accessed from
+        // different threads.
+        unsafe impl Send for $name {}
+        unsafe impl Sync for $name {}
+        )+
+    };
+}
+
+mmap_lifetime!(MmapAreaControl, MmapLifetime);
+
+/// A `mmap`ed area.
+///
+/// In this struct there are two kinds of values: used in the call to `mmap` and
+/// the values used in respect to the `Data.file`.
+/// * `mmap_address` and `mmap_length` are the values used in the call to
+///   `mmap(2)` and can be used to `unmap(2)` it.
+/// * `offset` and `length` are relative to the `Data.file`.
+#[derive(Debug)]
+pub struct MmapArea {
+    /// Mmap address. Safety: must be the `mmap` returned address.
+    mmap_address: NonNull<libc::c_void>,
+    /// Mmap allocation length. Safety: must be length used in `mmap`.
+    mmap_length: libc::size_t,
+    /// Offset in the file.
+    mmap_offset: libc::off_t,
+    /// Reference count, shared between one or more `MmapLifetime`s. Only once
+    /// this is zero this should be dropped.
+    ref_count: AtomicUsize,
+}
+
+impl Drop for MmapArea {
+    fn drop(&mut self) {
+        assert!(self.ref_count.load(Ordering::Relaxed) == 0);
+        // Safety: both `mmap_address` and `mmap_length` are used in the call to
+        // `mmap(2)`, so its safe to use in the call to `munmap`.
+        if let Err(err) = munmap(self.mmap_address.as_ptr(), self.mmap_length) {
+            // We can't really handle the error properly here so we'll log it
+            // and if we're testing (and not panicking) we'll panic on it.
+            error!("error unmapping data: {}", err);
+            #[cfg(test)]
+            if !thread::panicking() {
+                panic!("error unmapping data: {}", err);
+            }
+        }
+    }
+}
+
+/// A slice backed by `mmap(2)`.
+#[derive(Debug)]
+struct MmapSliceOwned<T> {
+    /// Mmap address. Safety: must be the `mmap` returned address. May be
+    /// dangling if `mmap_length` is 0, in which case the address is not
+    /// unmapped.
+    mmap_address: NonNull<libc::c_void>,
+    /// Mmap allocation length. Safety: must be length used in `mmap`.
+    mmap_length: libc::size_t,
+    /// Offset from `address` to start the slice.
+    offset: usize,
+    slice: PhantomData<[T]>,
+}
+
+impl<T> MmapSliceOwned<T> {
+    /// Returns an empty slice.
+    const fn empty() -> MmapSliceOwned<T> {
+        MmapSliceOwned {
+            mmap_address: NonNull::dangling(),
+            mmap_length: 0,
+            offset: 0,
+            slice: PhantomData,
+        }
+    }
+
+    /// Length is the number of elements, not bytes.
+    fn new(
+        length: usize,
+        protection: libc::c_int,
+        flags: libc::c_int,
+        file: &File,
+        offset: usize,
+    ) -> io::Result<MmapSliceOwned<T>> {
+        if length == 0 {
+            return Ok(MmapSliceOwned::empty());
+        }
+
+        // Mmap offset needs to be page aligned.
+        let mmap_offset = prev_page_aligned(offset as usize) as libc::off_t;
+        let mmap_length = offset - mmap_offset as usize + (length * size_of::<T>());
+        let offset: usize = offset - mmap_offset as usize;
+        let mmap_address = mmap(
+            ptr::null_mut(),
+            mmap_length,
+            protection,
+            flags,
+            file.as_raw_fd(),
+            mmap_offset,
+        )?;
+
+        Ok(MmapSliceOwned {
+            mmap_address,
+            mmap_length,
+            offset,
+            slice: PhantomData,
+        })
+    }
+
+    /// Returns the length of the slice.
+    fn len(&self) -> usize {
+        (self.mmap_length - self.offset) / size_of::<T>()
+    }
+
+    /// Call `madvise`
+    fn madvise(&self, advise: libc::c_int) -> io::Result<()> {
+        // Checking `mmap_length` alone here is fine because if the `length`
+        // passed to `new` is 0 `mmap_length` will also be set to 0.
+        if self.mmap_length == 0 {
+            Ok(())
+        } else {
+            madvise(
+                self.mmap_address.as_ptr() as *mut _,
+                self.mmap_length as usize,
+                advise,
+            )
+        }
+    }
+
+    /// Turns the this `MmapSlice` into a Rust slice.
+    fn as_slice(&self) -> &[T] {
+        // Mmap needs to be page aligned, so we allow an offset to support
+        // arbitrary ranges.
+        let address = unsafe {
+            self.mmap_address
+                .cast::<u8>()
+                .as_ptr()
+                .add(self.offset)
+                .cast::<T>()
+        };
+        // Note: this works with `NonNull::dangling` pointers if `mmap_length`
+        // is 0.
+        unsafe { slice::from_raw_parts(address.cast(), self.len()) }
+    }
+}
+
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl<T: Send> Send for MmapSliceOwned<T> {}
+unsafe impl<T: Sync> Sync for MmapSliceOwned<T> {}
+
+impl<T> Drop for MmapSliceOwned<T> {
+    fn drop(&mut self) {
+        if self.mmap_length != 0 {
+            // Safety: both `address` and `length` are used in the call to `mmap`.
+            if let Err(err) = munmap(self.mmap_address.as_ptr(), self.mmap_length) {
+                // We can't really handle the error properly here so we'll log
+                // it and if we're testing (and not panicking) we'll panic on
+                // it.
+                error!("error unmapping data: {}", err);
+                #[cfg(test)]
+                if !thread::panicking() {
+                    #[cfg(test)]
+                    panic!("error unmapping data: {}", err);
+                }
+            }
+        }
+    }
+}
+
+/// A slice backed by `mmap(2)`.
+///
+/// The `mmap`-ed memory is managed by [`MmapAreaControl`], but this has a
+/// separate lifetime to it.
+#[derive(Debug, Clone)]
+struct MmapSlice<T> {
+    address: NonNull<T>,
+    length: usize,
+    lifetime: MmapLifetime,
+}
+
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl<T: Send> Send for MmapSlice<T> {}
+unsafe impl<T: Sync> Sync for MmapSlice<T> {}
+
+impl<T> MmapSlice<T> {
+    /// Returns the length of the slice.
+    fn len(&self) -> usize {
+        self.length
+    }
+
+    /// Turns the this `MmapSlice` into a Rust slice.
+    fn as_slice(&self) -> &[T] {
+        check_address(self.address.as_ptr(), self.length);
+        unsafe { slice::from_raw_parts(self.address.as_ptr(), self.length) }
+    }
+
+    /// Call `madvise`
+    fn madvise(&self, advise: libc::c_int) -> io::Result<()> {
+        madvise(
+            // Not required to be page aligned.
+            self.address.as_ptr() as *mut _,
+            self.length as usize,
+            advise,
+        )
+    }
+
+    /// Call `msync(2)` with `MS_SYNC`. Blocks until syncing is complete.
+    fn sync(&self) -> io::Result<()> {
+        unaligned_msync(self.address.as_ptr() as *mut _, self.length, libc::MS_SYNC)
+    }
+}
+
+/// A slice backed by `mmap(2)`.
+///
+/// The `mmap`-ed memory is managed by [`MmapAreaControl`], but this has a
+/// separate lifetime to it.
+#[derive(Debug)]
+struct MmapSliceMut<T> {
+    address: NonNull<T>,
+    length: usize,
+    lifetime: MmapLifetime,
+}
+
+// Safety: the `mmap` allocated area can be safely accessed from different
+// threads.
+unsafe impl<T: Send> Send for MmapSliceMut<T> {}
+unsafe impl<T: Sync> Sync for MmapSliceMut<T> {}
+
+impl<T> MmapSliceMut<T> {
+    /// Changes the mutable slice into an immutable one.
+    ///
+    /// # Safety
+    ///
+    /// Caller must ensure the underlying `mmap` area is created with
+    /// `PROT_READ`.
+    unsafe fn immutable(self) -> MmapSlice<T> {
+        MmapSlice {
+            address: self.address,
+            length: self.length,
+            lifetime: self.lifetime,
+        }
+    }
+
+    /// Call `msync(2)` with `MS_ASYNC`. Returns immediately.
+    fn start_sync(&self) -> io::Result<()> {
+        unaligned_msync(self.address.as_ptr() as *mut _, self.length, libc::MS_ASYNC)
+    }
+}
+
+impl<T> MmapSliceMut<MaybeUninit<T>> {
+    /// See [`MaybeUninit::assume_init`].
+    unsafe fn assume_init(self) -> MmapSliceMut<T> {
+        MmapSliceMut {
+            address: self.address.cast(),
+            length: self.length,
+            lifetime: self.lifetime,
+        }
+    }
+
+    /// Copy from `src` into this slice, starting at `offset` (in elements).
+    ///
+    /// # Panics
+    ///
+    /// Panics if
+    ///  * `offset` is larger then this slice.
+    ///  * `src` + offset is longer than the slice.
+    fn copy_from_slice(&mut self, offset: usize, src: &[T])
+    where
+        T: Copy,
+    {
+        check_address(self.address.as_ptr(), self.length);
+        // Safety: we check if we own the memory after the offset.
+        assert!(self.length >= offset);
+        let dst_address = unsafe { self.address.as_ptr().add(offset) };
+        assert!(src.len() <= self.length - offset);
+        // Safety: src is available for reading, dst for writing and we checked
+        // the length above.
+        unsafe {
+            ptr::copy_nonoverlapping(src.as_ptr(), dst_address as *mut _, src.len());
+        }
+    }
+}
+
+/// Check the `address` and `length` before creating a slice from it.
+fn check_address<T>(address: *const T, length: usize) {
+    assert!(length % size_of::<T>() == 0, "length incorrect");
+    assert!(
+        address as usize % align_of::<T>() == 0,
+        "alignment incorrect"
+    );
+}
+
+/// Returns true if `address` is page aligned.
+const fn is_page_aligned(address: usize) -> bool {
+    address.trailing_zeros() >= PAGE_BITS as u32
+}
+
+/// Returns the page-aligned address of the `address`. The returned address will
+/// always be <= then `address`.
+const fn prev_page_aligned(address: usize) -> usize {
+    address & !((1 << PAGE_BITS) - 1)
+}
+
+/// Returns an aligned address to the next page relative to `address`.
+const fn next_page_aligned(address: usize) -> usize {
+    (address + PAGE_SIZE) & !((1 << PAGE_BITS) - 1)
+}
+
+/// `mmap(2)` system call.
+fn mmap(
+    addr: *mut libc::c_void,
+    len: libc::size_t,
+    protection: libc::c_int,
+    flags: libc::c_int,
+    fd: libc::c_int,
+    offset: libc::off_t,
+) -> io::Result<NonNull<libc::c_void>> {
+    debug_assert!(len > 0);
+    debug_assert!(is_page_aligned(addr as usize)); // Null is also page aligned.
+    debug_assert!(is_page_aligned(offset as usize)); // 0 is also page aligned.
+    let addr = unsafe { libc::mmap(addr, len, protection, flags, fd, offset) };
+    if addr == libc::MAP_FAILED {
+        Err(io::Error::last_os_error())
+    } else {
+        // Safety: if `mmap(2)` doesn't return `MAP_FAILED` the address will
+        // always be non null.
+        Ok(unsafe { NonNull::new_unchecked(addr) })
+    }
+}
+
+/// `munmap(2)` system call.
+fn munmap(addr: *mut libc::c_void, len: libc::size_t) -> io::Result<()> {
+    debug_assert!(len != 0);
+    debug_assert!(!addr.is_null());
+    debug_assert!(is_page_aligned(addr as usize));
+    if unsafe { libc::munmap(addr, len) } != 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// `madvise(2)` system call.
+fn madvise(addr: *mut libc::c_void, len: libc::size_t, advise: libc::c_int) -> io::Result<()> {
+    debug_assert!(len != 0);
+    if unsafe { libc::madvise(addr, len, advise) != 0 } {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Aligns `address` and corrects `length` before a call to [`msync`].
+fn unaligned_msync(
+    address: *mut libc::c_void,
+    length: libc::size_t,
+    flags: libc::c_int,
+) -> io::Result<()> {
+    let address = address as usize;
+    let aligned_address = prev_page_aligned(address);
+    let total_length = address - aligned_address + length;
+    msync(aligned_address as *mut _, total_length, flags)
+}
+
+/// `msync(2)` system call.
+fn msync(addr: *mut libc::c_void, len: libc::size_t, flags: libc::c_int) -> io::Result<()> {
+    debug_assert!(len != 0);
+    debug_assert!(!addr.is_null());
+    debug_assert!(is_page_aligned(addr as usize));
+    if unsafe { libc::msync(addr, len, flags) } != 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Lock `file` using `flock(2)`.
+///
+/// # Notes
+///
+/// Once the `file` is dropped it's automatically unlocked.
+fn lock(file: &mut File) -> io::Result<()> {
+    trace!("locking file: file={:?}", file);
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        let err = io::Error::last_os_error();
+        if err.kind() == io::ErrorKind::WouldBlock {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "database already in used",
+            ))
+        } else {
+            Err(err)
+        }
+    } else {
+        Ok(())
+    }
+}
+
+/// `fallocate(2)` system call.
+/// Allocate more space in the file (`fd`). The file will be expanded to
+/// `new_len`.
+// TODO: is this needed?
+// `len` must be page aligned because
+// most file system implementations will allocate a larger area then needed
+// other.
+#[cfg(any(target_os = "android", target_os = "linux",))]
+fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
+    assert!(new_len > 0);
+    // TODO: do need page alignment?
+    //assert!(is_page_aligned(len as usize));
+    if unsafe { libc::fallocate(fd, 0, 0, len) } == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Emulated `fallocate(2)` system call.
+#[cfg(any(target_os = "ios", target_os = "macos",))]
+fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
+    // `ftruncate(2)` can actually grow the file. Alternatively we could use
+    // `fcntl(2)` with `F_PREALLOCATE`, however that doesn't seem to increase
+    // the file size correctly, possibly in the metadata or something. In any
+    // case the result is that any access to the `mmap`-ed memory in this newly
+    // created area will cause `SIGBUS`.
+    ftruncate(fd, new_len)
+}
+
+/// `ftruncate(2)` system call.
+fn ftruncate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
+    return if unsafe { libc::ftruncate(fd, new_len) } == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    };
 }
