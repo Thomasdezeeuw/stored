@@ -288,6 +288,32 @@ pub struct KeyCalculator<IO> {
     io: IO,
 }
 
+impl KeyCalculator<()> {
+    /// Create a new [`KeyCalculator`] which is not backed by I/O.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use stored::key::{Key, KeyCalculator};
+    ///
+    /// let blob = b"Hello world";
+    ///
+    /// let mut calculator = KeyCalculator::new();
+    /// calculator.add_bytes(&blob[..6]);
+    /// calculator.add_bytes(&blob[6..]);
+    /// let key = calculator.finish();
+    /// assert_eq!(key, Key::for_blob(blob));
+    /// ```
+    pub fn new() -> KeyCalculator<()> {
+        Key::calculator(())
+    }
+
+    /// Add blob bytes to the calculation.
+    pub fn add_bytes(&mut self, bytes: &[u8]) {
+        self.digest.update(&bytes);
+    }
+}
+
 impl<IO> KeyCalculator<IO> {
     /// Finish the calculation returning the [`Key`] for all read/written bytes.
     pub fn finish(self) -> Key {
@@ -298,7 +324,7 @@ impl<IO> KeyCalculator<IO> {
     fn update_digest(&mut self, bytes: &[u8]) {
         if self.skip_left == 0 {
             // No more bytes to skip.
-            self.digest.update(&bytes[self.skip_left..]);
+            self.digest.update(&bytes);
         } else if bytes.len() <= self.skip_left {
             // Need to skip all bytes.
             self.skip_left -= bytes.len();
