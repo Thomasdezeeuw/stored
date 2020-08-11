@@ -5,6 +5,7 @@ use http::header::{CONNECTION, CONTENT_LENGTH, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use log::LevelFilter;
 
+use crate::util::copy_database;
 use crate::util::http::{body, date_header, header};
 
 const FILTER: LevelFilter = LevelFilter::Warn;
@@ -73,7 +74,7 @@ fn syncing_blobs() {
 
     const DB_PORTS: &[u16] = &[10011, 10012, 10013];
     const DB_PATHS: &[&str] = &[
-        "", // NOTE: node 1's database mustn't be removed.
+        "/tmp/stored/sync_blob_tests_1.db",
         "/tmp/stored/sync_blob_tests_2.db",
         "/tmp/stored/sync_blob_tests_3.db",
     ];
@@ -85,14 +86,17 @@ fn syncing_blobs() {
 
     start_stored_fn!(
         &[CONF_PATHS[0], CONF_PATHS[1], CONF_PATHS[2]],
+        // Note: database 0 must not be removed.
         &[DB_PATHS[1], DB_PATHS[2]],
         FILTER
     );
 
+    copy_database("tests/data/stored_sync_blobs.db", DB_PATHS[0]);
+
     let _p = start_stored();
 
     // Give the nodes some time to sync up.
-    sleep(Duration::from_secs(10));
+    sleep(Duration::from_secs(5));
 
     // The blobs stored in the database of node 1.
     let tests: &[(&str, &[u8], &str, &str)] = &[

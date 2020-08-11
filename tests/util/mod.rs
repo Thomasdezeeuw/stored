@@ -2,12 +2,13 @@
 
 use std::future::Future;
 use std::io::{self, Read};
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex, Once};
-use std::task;
 use std::thread::{self, sleep};
 use std::time::Duration;
+use std::{fs, task};
 
 use futures_util::task::noop_waker;
 use log::LevelFilter;
@@ -305,6 +306,13 @@ pub struct ChildCommand {
 
 impl Drop for ChildCommand {
     fn drop(&mut self) {
+        // Try nicely first.
+        unsafe {
+            let _ = libc::kill(self.inner.id() as libc::pid_t, libc::SIGTERM);
+        }
+        sleep(Duration::from_millis(500));
+        self.inner.try_wait().expect("can't wait on child process");
+
         let _ = self.inner.kill();
         self.inner.wait().expect("can't wait on child process");
     }
@@ -324,6 +332,28 @@ where
         if std::thread::panicking() {
             (self.0)();
         }
+    }
+}
+
+pub fn copy_database(src: &str, dst: &str) {
+    let mut src_path = PathBuf::new();
+    src_path.push(src);
+    let mut dst_path = PathBuf::new();
+    dst_path.push(dst);
+
+    dbg!(&src_path);
+    dbg!(&dst_path);
+
+    fs::create_dir_all(&dst_path).expect("failed to create directory");
+    let files = &["index", "data"];
+    for file in files {
+        src_path.push(file);
+        dst_path.push(file);
+        dbg!(&src_path);
+        dbg!(&dst_path);
+        fs::copy(&src_path, &dst_path).expect("failed to copy file");
+        src_path.pop();
+        dst_path.pop();
     }
 }
 

@@ -1,5 +1,4 @@
-# Note: this should be read-only, don't send DELETE/POST requests.
-path = "tests/data/stored_sync_blobs.db"
+path = "/tmp/stored/sync_blob_tests_1.db"
 
 [http]
 address = "127.0.0.1:10011"
