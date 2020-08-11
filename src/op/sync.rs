@@ -234,7 +234,7 @@ fn partition(keys: &[Key], n: usize) -> Vec<Vec<Key>> {
         size += 1;
     }
 
-    let mut iter = keys.into_iter().cloned();
+    let mut iter = keys.iter().cloned();
     (0..n).map(|_| (&mut iter).take(size).collect()).collect()
 }
 
@@ -295,7 +295,7 @@ impl SyncingPeer {
     ) -> Option<SyncingPeer> {
         let args = (db_ref.clone(), peer_address);
         let supervisor = Supervisor {
-            db_ref: db_ref.clone(),
+            db_ref,
             peer_address,
             restarts_left: MAX_RESTARTS,
         };

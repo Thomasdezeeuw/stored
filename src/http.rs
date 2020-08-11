@@ -60,9 +60,8 @@ pub fn setup(
     peers: Peers,
     delay_start: bool,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
-    let peers2 = peers.clone();
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
-        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers2.clone()));
+        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
     let http_listener =
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
     // The returned closure is copied for each worker thread started, but we
@@ -356,10 +355,7 @@ impl Request {
 
     /// Returns `true` if the "Content-Length" header is > 0.
     pub fn has_body(&self) -> bool {
-        match self.length {
-            Some(n) if n > 0 => true,
-            _ => false,
-        }
+        matches!(self.length, Some(n) if n > 0)
     }
 
     fn reset(&mut self) {
@@ -425,10 +421,7 @@ pub enum Method {
 impl Method {
     /// Returns `true` if `self` is a HEAD method.
     fn is_head(self) -> bool {
-        match self {
-            Method::Head => true,
-            _ => false,
-        }
+        matches!(self, Method::Head)
     }
 }
 

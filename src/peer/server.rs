@@ -254,7 +254,7 @@ async fn retrieve_keys<M>(
 
         if first {
             // NOTE: writing to buffer never fails.
-            wbuf.write(&u64::to_be_bytes(length as u64)).unwrap();
+            let _ = wbuf.write(&u64::to_be_bytes(length as u64)).unwrap();
             first = false;
         }
 

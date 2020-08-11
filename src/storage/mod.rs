@@ -2191,9 +2191,9 @@ fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
 
 /// `ftruncate(2)` system call.
 fn ftruncate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
-    return if unsafe { libc::ftruncate(fd, new_len) } == -1 {
+    if unsafe { libc::ftruncate(fd, new_len) } == -1 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
-    };
+    }
 }
