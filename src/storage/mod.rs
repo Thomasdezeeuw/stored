@@ -2078,7 +2078,7 @@ fn mmap(
     fd: libc::c_int,
     offset: libc::off_t,
 ) -> io::Result<NonNull<libc::c_void>> {
-    debug_assert!(len > 0);
+    debug_assert!(len != 0);
     debug_assert!(is_page_aligned(addr as usize)); // Null is also page aligned.
     debug_assert!(is_page_aligned(offset as usize)); // 0 is also page aligned.
     let addr = unsafe { libc::mmap(addr, len, protection, flags, fd, offset) };
@@ -2160,18 +2160,10 @@ fn lock(file: &mut File) -> io::Result<()> {
 }
 
 /// `fallocate(2)` system call.
-/// Allocate more space in the file (`fd`). The file will be expanded to
-/// `new_len`.
-// TODO: is this needed?
-// `len` must be page aligned because
-// most file system implementations will allocate a larger area then needed
-// other.
 #[cfg(any(target_os = "android", target_os = "linux",))]
 fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
-    assert!(new_len > 0);
-    // TODO: do need page alignment?
-    //assert!(is_page_aligned(len as usize));
-    if unsafe { libc::fallocate(fd, 0, 0, len) } == -1 {
+    // Allocates more disk space (mode = 0), starting at offset 0.
+    if unsafe { libc::fallocate(fd, 0, 0, new_len) } == -1 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
