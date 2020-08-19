@@ -1,4 +1,4 @@
-//! Module with the database actor.
+//! Database actor.
 //!
 //! The [`db::actor`] is the main type, which accepts [`db::Message`]s and is
 //! supervised by [`db::Supervisor`]. The actor can be started by using the

@@ -1,5 +1,4 @@
-//! Collection of functions and types used by the CLI programs: store, retrieve
-//! and remove.
+//! Collection of functions and types used by the CLI programs.
 
 use std::{env, fmt, io};
 

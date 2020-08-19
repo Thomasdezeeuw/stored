@@ -1,4 +1,4 @@
-//! Module with the type related to peer interaction.
+//! Types, functions and actors related to peer interaction.
 
 use std::fmt;
 use std::future::Future;

@@ -1,4 +1,4 @@
-//! Module with the `Storage` handle to a database.
+//! Handle to the storage file.
 //!
 //! # Design
 //!

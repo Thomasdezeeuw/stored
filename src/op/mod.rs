@@ -1,4 +1,4 @@
-//! Module with functions for the supported operations.
+//! Supported Stored operations.
 
 use std::future::Future;
 use std::pin::Pin;

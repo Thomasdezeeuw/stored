@@ -1,4 +1,4 @@
-//! Configuration file parsing.
+//! Stored's configuration.
 //!
 //! Main type is [`Config`].
 

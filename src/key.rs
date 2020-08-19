@@ -1,4 +1,4 @@
-//! Module with the `Key` type.
+//! Blob's key.
 
 use std::error::Error;
 use std::fmt;

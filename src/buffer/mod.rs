@@ -1,4 +1,4 @@
-//! Module with the `Buffer` type.
+//! I/O buffer and related types.
 //!
 //! The main type is [`Buffer`], which is to be used as buffer for reading.
 //! After reading a request into the `Buffer` it can be

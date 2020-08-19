@@ -1,4 +1,4 @@
-//! Module with the error and related type.
+//! Stored's error and result types.
 
 use std::{error, fmt, io};
 

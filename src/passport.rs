@@ -1,4 +1,4 @@
-//! Module with the request passport.
+//! Request passport.
 //!
 //! A request passport is used to track the request progress and timing.
 

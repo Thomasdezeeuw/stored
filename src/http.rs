@@ -1,4 +1,4 @@
-//! Module with the server's HTTP/1.1 implementation.
+//! HTTP/1.1 server implementation.
 //!
 //! The [`http::actor`] is the main type, its started by [`tcp::Server`] and is
 //! supervised by [`http::supervisor`]. Adding the HTTP actor to the runtime is
