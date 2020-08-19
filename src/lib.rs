@@ -1,4 +1,5 @@
 #![feature(
+    array_value_iter,
     bool_to_option,
     exact_size_is_empty,
     hash_set_entry,
@@ -16,6 +17,7 @@ pub mod error;
 pub mod http;
 pub mod key;
 pub mod op;
+pub mod passport;
 pub mod peer;
 pub mod storage;
 pub mod util;
