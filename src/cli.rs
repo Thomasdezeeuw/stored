@@ -42,3 +42,6 @@ pub fn first_arg() -> Option<String> {
         .nth(1)
         .and_then(|arg| (arg != "-").then_some(arg))
 }
+
+/// The number of response headers to expect.
+pub const N_RESPONSE_HEADERS: usize = 6;

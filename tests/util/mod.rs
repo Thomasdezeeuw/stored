@@ -672,6 +672,8 @@ pub mod http {
                                 str::from_utf8(response.body())
                             );
                         }
+                    } else if name == "x-request-id" {
+                        // Can't compare to unique generated request id.
                     } else {
                         panic!(
                             "unexpected header: \"{}\" = {:?}, not in: {:?}: response={:?}",
@@ -686,9 +688,18 @@ pub mod http {
         }
         assert_eq!(
             response.headers().len(),
-            want_headers.len() + 2,
+            want_headers.len() + 3, // Always have Date, Server and Request-ID headers.
             "Missing headers: {:?}",
             missing_headers(response.headers(), want_headers)
+        );
+        let got_request_id = response
+            .headers()
+            .get("x-request-id")
+            .expect("missing 'X-Request-ID' header");
+        assert!(
+            got_request_id.len() == 32,
+            "incorrect 'X-Request-ID' header length: header={:?}",
+            str::from_utf8(got_request_id.as_bytes()),
         );
         let got_content_length = response
             .headers()

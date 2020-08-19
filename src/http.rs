@@ -46,6 +46,7 @@ use parking_lot::{Once, RwLock};
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
 use crate::op::{self, Outcome};
+use crate::passport::{Passport, Uuid};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry};
 use crate::{db, Key};
@@ -202,7 +203,12 @@ pub async fn actor(
             Err(err) => Response::for_error(err).map_err(|err| err.describe("reading request"))?,
         };
 
-        let result = Deadline::timeout(&mut ctx, TIMEOUT, conn.write_response(&response)).await;
+        let result = Deadline::timeout(
+            &mut ctx,
+            TIMEOUT,
+            conn.write_response(&response, request.id()),
+        )
+        .await;
         match result {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing HTTP response")),
@@ -210,9 +216,10 @@ pub async fn actor(
 
         // TODO: don't log invalid/partial requests.
         request!(
-            "request: remote_address=\"{}\", method=\"{}\", path=\"{}\", user_agent=\"{}\", \
-                request_length={}, response_time=\"{:?}\", response_status={}, \
-                response_length={}",
+            "request: request_id=\"{}\", remote_address=\"{}\", method=\"{}\", \
+                path=\"{}\", user_agent=\"{}\", \request_length={}, \
+                response_time=\"{:?}\", response_status={}, response_length={}",
+            request.id(),
             address,
             request.method,
             request.path,
@@ -253,6 +260,7 @@ const MAX_HEADERS_SIZE: usize = 2 * 1024;
 /// Headers we're interested in.
 const USER_AGENT: &str = "user-agent";
 const CONTENT_LENGTH: &str = "content-length";
+const REQUEST_ID: &str = "x-request-id";
 
 impl Connection {
     /// Create a new `Connection`.
@@ -304,11 +312,15 @@ impl Connection {
     }
 
     /// Write `response` to the connection.
-    pub async fn write_response(&mut self, response: &Response) -> io::Result<()> {
+    pub async fn write_response(
+        &mut self,
+        response: &Response,
+        request_id: &Uuid,
+    ) -> io::Result<()> {
         trace!("writing HTTP response: {:?}", response);
         // Create a write buffer a write the request headers to it.
         let (_, mut write_buf) = self.buf.split_write(Response::MAX_HEADERS_SIZE);
-        response.write_headers(&mut write_buf);
+        response.write_headers(&mut write_buf, request_id);
 
         let bufs = &mut [
             IoSlice::new(write_buf.as_bytes()),
@@ -335,6 +347,7 @@ fn lower_case_cmp(value: &str, want: &str) -> bool {
 /// Parsed HTTP request.
 #[derive(Debug)]
 pub struct Request {
+    pub passport: Passport,
     pub method: Method,
     pub path: String,
     /// Empty string means not present.
@@ -346,11 +359,20 @@ impl Request {
     /// Create an empty `Request`.
     pub const fn empty() -> Request {
         Request {
+            passport: Passport::empty(),
             method: Method::Get,
             path: String::new(),
             user_agent: String::new(),
             length: None,
         }
+    }
+
+    /// Returns the request id.
+    ///
+    /// This is either uniquely generated or provided by the request via the
+    /// `X-Request-ID` header.
+    pub fn id(&self) -> &Uuid {
+        self.passport.id()
     }
 
     /// Returns `true` if the "Content-Length" header is > 0.
@@ -359,6 +381,7 @@ impl Request {
     }
 
     fn reset(&mut self) {
+        self.passport.reset();
         self.method = Method::Get;
         self.path.clear();
         self.user_agent.clear();
@@ -379,6 +402,7 @@ impl Request {
                 self.method =
                     Method::try_from(req.method).map_err(|()| RequestError::InvalidMethod)?;
 
+                let mut set_request_id = false;
                 for header in req.headers.iter() {
                     if lower_case_cmp(header.name, USER_AGENT) {
                         if let Ok(user_agent) = str::from_utf8(header.value) {
@@ -393,7 +417,18 @@ impl Request {
                                     .map(Some)
                                     .map_err(|_| RequestError::InvalidContentLength)
                             })?;
+                    } else if lower_case_cmp(header.name, REQUEST_ID) {
+                        if let Ok(request_id) = Uuid::parse_bytes(header.value) {
+                            self.passport.set_id(request_id);
+                            set_request_id = true;
+                        }
+                        // TODO: somehow log to the user that the header was
+                        // invalid?
                     }
+                }
+
+                if !set_request_id {
+                    self.passport.set_id(Uuid::new());
                 }
 
                 Ok(httparse::Status::Complete(bytes_read))
@@ -866,21 +901,21 @@ impl Response {
         // Status line, +31 for the longest reason (`TooManyHeaders`).
         15 + 31 +
         // Server and Content-Length (+39 max. length as text), Date headers.
-        16 + 18 + 39 + 37 +
+        16 + 48 + 18 + 39 + 38 +
         // Connection header (keep-alive).
         24 +
         // Extra headers: Location header (the longest) and ending "\r\n".
         149;
 
     /// Write all headers to `buf`, including the last empty line.
-    fn write_headers(&self, buf: &mut WriteBuffer) {
+    fn write_headers(&self, buf: &mut WriteBuffer, request_id: &Uuid) {
         let (status_code, status_msg) = self.status_code();
         let content_length = self.len();
 
         write!(
             buf,
-            "HTTP/1.1 {} {}\r\nServer: stored\r\nContent-Length: {}\r\n",
-            status_code, status_msg, content_length,
+            "HTTP/1.1 {} {}\r\nServer: stored\r\nX-Request-ID: {}\r\nContent-Length: {}\r\n",
+            status_code, status_msg, request_id, content_length,
         )
         .unwrap();
         append_date_header(&Utc::now(), "Date", buf);

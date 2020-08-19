@@ -15,7 +15,7 @@ use std::env;
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpStream};
 
-use stored::cli::{first_arg, Error};
+use stored::cli::{first_arg, Error, N_RESPONSE_HEADERS};
 
 fn main() -> Result<(), Error> {
     // TODO: make the address configurable.
@@ -47,7 +47,7 @@ fn main() -> Result<(), Error> {
     // Read the response.
     stream.read_to_end(&mut buf)?;
 
-    let mut headers = [httparse::EMPTY_HEADER; 5];
+    let mut headers = [httparse::EMPTY_HEADER; N_RESPONSE_HEADERS];
     let mut resp = httparse::Response::new(&mut headers);
     let headers_length = resp.parse(&buf)?.unwrap();
 
