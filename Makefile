@@ -17,12 +17,13 @@ lint:
 		--warn clippy::style \
 		--warn clippy::complexity \
 		--warn clippy::perf \
-		--allow clippy::enum_variant_names \
-		--allow clippy::needless_lifetimes \
-		--allow clippy::partialeq_ne_impl \
-		--allow clippy::len_without_is_empty \
 		--allow clippy::assertions_on_constants \
-		--allow clippy::borrow_interior_mutable_const
+		--allow clippy::borrow_interior_mutable_const \
+		--allow clippy::enum_variant_names \
+		--allow clippy::len_without_is_empty \
+		--allow clippy::needless_lifetimes \
+		--allow clippy::new-without-default \
+		--allow clippy::partialeq_ne_impl
 
 clean:
 	cargo clean
