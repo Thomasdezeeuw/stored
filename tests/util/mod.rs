@@ -341,16 +341,11 @@ pub fn copy_database(src: &str, dst: &str) {
     let mut dst_path = PathBuf::new();
     dst_path.push(dst);
 
-    dbg!(&src_path);
-    dbg!(&dst_path);
-
     fs::create_dir_all(&dst_path).expect("failed to create directory");
     let files = &["index", "data"];
     for file in files {
         src_path.push(file);
         dst_path.push(file);
-        dbg!(&src_path);
-        dbg!(&dst_path);
         fs::copy(&src_path, &dst_path).expect("failed to copy file");
         src_path.pop();
         dst_path.pop();
