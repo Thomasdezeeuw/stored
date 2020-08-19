@@ -70,7 +70,7 @@ impl Passport {
 /// Loosely follows [RFC4122].
 ///
 /// [RFC4122]: http://tools.ietf.org/html/rfc4122
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Uuid {
     bytes: [u8; 16], // 128 bits.
 }
@@ -288,7 +288,7 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
 
-    use super::{Event, Mark, Passport, Uuid};
+    use super::{Event, Mark, Uuid};
 
     #[test]
     fn sizes() {
