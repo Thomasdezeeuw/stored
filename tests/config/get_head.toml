@@ -1,4 +1,4 @@
-path = "tests/data/001.db"
+path = "/tmp/stored/get_head_tests.db"
 
 [http]
 address = "127.0.0.1:9001"

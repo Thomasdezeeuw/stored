@@ -1,14 +1,20 @@
 //! Tests for GET and HEAD requests.
 
+use std::sync::Once;
+
 use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
 use http::status::StatusCode;
 use log::LevelFilter;
 
+use crate::util::copy_database;
 use crate::util::http::{assert_response, body, header, request};
 
 const DB_PORT: u16 = 9001;
+const DB_PATH: &str = "/tmp/stored/get_head_tests.db";
 const CONF_PATH: &str = "tests/config/get_head.toml";
 const FILTER: LevelFilter = LevelFilter::Warn;
+
+static CP_DB: Once = Once::new();
 
 start_stored_fn!(&[CONF_PATH], &[], FILTER);
 
@@ -21,6 +27,10 @@ macro_rules! test {
         expected: $want_status: expr, $want_body: expr,
         $($header_name: ident => $header_value: expr),*,
     ) => {{
+        CP_DB.call_once(|| {
+            copy_database("tests/data/001.db", DB_PATH);
+        });
+
         let _p = start_stored();
 
         request!(
