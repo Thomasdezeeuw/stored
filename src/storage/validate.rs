@@ -6,6 +6,7 @@ use std::path::Path;
 use std::{io, thread};
 
 use crossbeam_channel::{Receiver, Sender};
+use log::error;
 
 use crate::storage::{Blob, BlobEntry, EntryIndex, Storage};
 use crate::Key;
@@ -86,7 +87,7 @@ fn validate_blobs(entries: Receiver<(Key, EntryIndex, Blob)>, corruptions: Sende
         let got = Key::for_blob(blob.bytes());
         if got != key {
             if let Err(err) = corruptions.send(Corruption::for_key(key)) {
-                log::error!(
+                error!(
                     "failed to send corruption for blob: {}",
                     err.into_inner().key()
                 );

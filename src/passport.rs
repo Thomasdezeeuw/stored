@@ -7,9 +7,8 @@ use std::iter::FusedIterator;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 use std::{array, fmt};
-
-use chrono::{DateTime, Utc};
 
 /// Request passport.
 ///
@@ -17,14 +16,25 @@ use chrono::{DateTime, Utc};
 #[derive(Debug)]
 pub struct Passport {
     id: Uuid,
+    start: Instant,
     marks: Vec<Mark>,
 }
 
 impl Passport {
-    /// Create an empty `Passport` with an initial `capacity`.
-    pub const fn empty() -> Passport {
+    /// Create an empty `Passport` with an zero id.
+    pub fn empty() -> Passport {
         Passport {
             id: Uuid::empty(),
+            start: Instant::now(),
+            marks: Vec::new(),
+        }
+    }
+
+    /// Create a new `Passport` with unique id.
+    pub fn new() -> Passport {
+        Passport {
+            id: Uuid::new(),
+            start: Instant::now(),
             marks: Vec::new(),
         }
     }
@@ -42,7 +52,7 @@ impl Passport {
     /// Mark the passport with a new `event`.
     pub fn mark(&mut self, event: Event) {
         let mark = Mark {
-            timestamp: Utc::now(),
+            timestamp: Instant::now(),
             event,
         };
         self.marks.push(mark);
@@ -59,7 +69,32 @@ impl Passport {
     /// Reuse the passport for another request.
     pub fn reset(&mut self) {
         self.id = Uuid::empty();
+        self.start = Instant::now();
         self.marks.clear();
+    }
+}
+
+impl fmt::Display for Passport {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{{request_id=\"{}\", events=[", self.id)?;
+        let mut last_time = self.start;
+        let mut first = true;
+        for mark in self.marks.iter() {
+            if first {
+                first = false;
+            } else {
+                write!(f, ", ")?;
+            }
+            let timestamp = mark.timestamp();
+            write!(
+                f,
+                "{{event=\"{}\", duration=\"{:?}\"}}",
+                mark.event(),
+                timestamp - last_time,
+            )?;
+            last_time = timestamp;
+        }
+        write!(f, "]}}")
     }
 }
 
@@ -70,7 +105,7 @@ impl Passport {
 /// Loosely follows [RFC4122].
 ///
 /// [RFC4122]: http://tools.ietf.org/html/rfc4122
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Uuid {
     bytes: [u8; 16], // 128 bits.
 }
@@ -116,6 +151,12 @@ impl Uuid {
             36 => from_hex_hyphenated(input),
             _ => Err(ParseUuidErr(())),
         }
+    }
+}
+
+impl fmt::Debug for Uuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -205,13 +246,13 @@ fn from_hex_byte(b: u8) -> Result<u8, ()> {
 /// [time]: Mark::timestamp
 #[derive(Copy, Clone, Debug)]
 pub struct Mark {
-    timestamp: DateTime<Utc>,
+    timestamp: Instant,
     event: Event,
 }
 
 impl Mark {
     /// Returns the time at which the event took place.
-    pub fn timestamp(self) -> DateTime<Utc> {
+    pub fn timestamp(self) -> Instant {
         self.timestamp
     }
 
@@ -247,36 +288,63 @@ macro_rules! events {
 }
 
 events!(
-    // HTTP.
-    ReadFirstByte => "read first byte",
-    ParsedRequest => "parsed request heading",
-    ReadBody => "read body",
-    WrittenResponse => "written response",
+    // # HTTP.
+    ParsedHttpRequest => "read and parsed HTTP request heading",
+    ReadHttpBody => "read HTTP body",
+    WrittenHttpResponse => "written HTTP response",
 
-    // Ops.
-    RetrievingBlob => "retrieving blob",
+    // # Peer interaction.
+    // Server.
+    ReadingPeerRequest => "reading peer request header",
+    ReadPeerRequest => "read peer request header",
+    ReadingPeerKey => "reading key from peer",
+    ReadPeerKey => "read key from peer",
+    ReadingPeerMetadata => "reading blob metadata from peer",
+    ReadPeerMetadata => "read blob metadata from peer",
+    ReadingPeerBlob => "reading blob from peer",
+    ReadPeerBlob => "read blob from peer",
+    WritingPeerResponse => "writing peer response",
+    WrittenPeerResponse => "written peer response",
+
+    // # Ops.
+    // Store blob.
+    AddedBlob => "added blob to storage",
+    FailedToAddBlob => "failed to add blob to storage",
+    CommittedStoringBlob => "committed to storing blob query",
+    FailedToCommitStoringBlob => "failed to commit storing blob query",
+    AbortedStoringBlob => "aborted store blob query",
+    FailedToAbortStoringBlob => "failed to abort store blob query",
+    // Retrieve blob.
     RetrievedBlob => "retrieved blob",
-    RetrievingKeys => "retrieving keys",
+    FailedToRetrieveBlob => "failed to retrieve blob",
+    // Remove blob.
+    PreppedRemoveBlob => "prepared storage for removing blob",
+    FailedToPrepRemoveBlob => "failed to prepare storage for removing blob",
+    CommittedRemovingBlob => "committed to removing blob query",
+    FailedToCommitRemovingBlob => "failed to commit removing blob query",
+    AbortedRemovingBlob => "aborted remove blob query",
+    FailedToAbortRemovingBlob => "failed to abort remove blob query",
+    // Retrieve uncommitted blob.
+    RetrievedUncommittedBlob => "retrieved uncommitted blob",
+    FailedToRetrieveUncommittedBlob => "retrieved uncommitted blob",
+    // Retrieve keys.
     RetrievedKeys => "retrieved keys",
-    HealthCheck => "running health check",
+    FailedToRetrieveKeys => "failed to retrieve keys",
+    // Health check.
     HealthCheckComplete => "health check complete",
-    SyncStoredBlob => "syncing stored blob",
+    HealthCheckFailed => "health check failed",
+    // Sync stored blob.
     SyncedStoredBlob => "synced stored blob",
-    SyncRemovedBlob => "syncing removed blob",
+    FailedToSyncStoredBlob => "failed to sync stored blob",
+    // Sync removed blob.
     SyncedRemovedBlob => "synced removed blob",
-
-    // TODO: add more events.
-    // Storing blob, in ops module:
-    // TODO: log failed attempts.
-    // * Add blob.
-    // * Blob added.
-    // * Peers adding blob.         // Only in consensus.
-    // * Peers added blob.          // Only in consensus.
-    // * Peers storing blob.        // Only in consensus.
-    // * Peers stored blob.         // Only in consensus.
-    // * Store blob.
-    // * Stored blob.
-    // * Inform peers blob stored.  // Only in consensus.
+    FailedToSyncRemovedBlob => "failed to sync removed blob",
+    // Consensus.
+    StartingConsensus => "starting consensus",
+    ConsensusPhaseOneResults => "got consensus phase one results",
+    ConsensusPhaseTwoResults => "got consensus phase two results",
+    ConsensusCommitted => "coordinator and participants committed",
+    AbortedConsensusRun => "aborted a consensus run",
 );
 
 #[cfg(test)]
@@ -296,7 +364,6 @@ mod tests {
         assert_eq!(size_of::<Event>(), 1);
 
         assert_eq!(size_of::<Mark>(), 16);
-        assert_eq!(size_of::<u128>(), 16);
     }
 
     #[test]

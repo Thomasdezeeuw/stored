@@ -12,6 +12,7 @@ use log::debug;
 
 use crate::db::{self, AddBlobResponse};
 use crate::op::{commit_query, consensus, db_rpc, DbRpc, Outcome};
+use crate::passport::{Event, Passport};
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::storage::{BlobEntry, Query, StoreBlob};
 use crate::{Buffer, Key};
@@ -22,13 +23,18 @@ use crate::{Buffer, Key};
 pub async fn store_blob<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     peers: &Peers,
     blob: &mut Buffer,
     blob_length: usize,
 ) -> Result<Key, ()> {
-    debug!("running store operation");
+    debug!(
+        "running store operation: request_id=\"{}\", blob_length={}",
+        passport.id(),
+        blob_length,
+    );
 
-    let query = match add_blob(ctx, db_ref, blob, blob_length).await {
+    let query = match add_blob(ctx, db_ref, passport, blob, blob_length).await {
         Ok(Outcome::Continue(query)) => query,
         Ok(Outcome::Done(key)) => return Ok(key),
         Err(()) => return Err(()),
@@ -38,18 +44,25 @@ pub async fn store_blob<M>(
     if peers.is_empty() {
         // Easy mode!
         debug!(
-            "running in single mode, not running consensus algorithm to store blob: key={}",
-            key
+            "running in single mode, not running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            key,
         );
         // We can directly commit to storing the blob, we're always in agreement
         // with ourselves.
-        commit_query(ctx, db_ref, query, SystemTime::now())
+        commit_query(ctx, db_ref, passport, query, SystemTime::now())
             .await
             .map(|_| key)
     } else {
         // Hard mode.
-        debug!("running consensus algorithm to store blob: key={}", key);
-        consensus(ctx, db_ref, peers, query).await.map(|_| key)
+        debug!(
+            "running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            key,
+        );
+        consensus(ctx, db_ref, passport, peers, query)
+            .await
+            .map(|_| key)
     }
 }
 
@@ -57,6 +70,7 @@ pub async fn store_blob<M>(
 pub(crate) async fn add_blob<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     buf: &mut Buffer,
     blob_length: usize,
 ) -> Result<Outcome<StoreBlob, Key>, ()>
@@ -66,21 +80,33 @@ where
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
     let view = replace(buf, Buffer::empty()).view(blob_length);
+    debug!(
+        "adding blob to storage: request_id=\"{}\", blob_length={}",
+        passport.id(),
+        view.len()
+    );
 
-    match db_rpc(ctx, db_ref, view) {
+    match db_rpc(ctx, db_ref, *passport.id(), view) {
         Ok(rpc) => match rpc.await {
             Ok((result, view)) => {
                 // Mark the blob's bytes as processed and put back the buffer.
                 *buf = view.processed();
 
+                passport.mark(Event::AddedBlob);
                 match result {
                     AddBlobResponse::Query(query) => Ok(Outcome::Continue(query)),
                     AddBlobResponse::AlreadyStored(key) => Ok(Outcome::Done(key)),
                 }
             }
-            Err(()) => Err(()),
+            Err(()) => {
+                passport.mark(Event::FailedToAddBlob);
+                Err(())
+            }
         },
-        Err(()) => Err(()),
+        Err(()) => {
+            passport.mark(Event::FailedToAddBlob);
+            Err(())
+        }
     }
 }
 
@@ -91,10 +117,15 @@ impl super::Query for StoreBlob {
         &self,
         ctx: &mut actor::Context<M>,
         db_ref: &mut ActorRef<db::Message>,
+        passport: &mut Passport,
     ) -> Self::AlreadyDone {
-        debug!("checking if blob is already stored: key={}", self.key());
+        debug!(
+            "checking if blob is already stored: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            self.key(),
+        );
         AlreadyDone {
-            db_rpc: db_rpc(ctx, db_ref, self.key().clone()),
+            db_rpc: db_rpc(ctx, db_ref, *passport.id(), self.key().clone()),
         }
     }
 
@@ -106,6 +137,9 @@ impl super::Query for StoreBlob {
         peers.add_blob(ctx, self.key().clone())
     }
 
+    const COMMITTED: Event = Event::CommittedStoringBlob;
+    const FAILED_TO_COMMIT: Event = Event::FailedToCommitStoringBlob;
+
     fn peers_commit<M>(
         &self,
         ctx: &mut actor::Context<M>,
@@ -115,6 +149,9 @@ impl super::Query for StoreBlob {
     ) -> PeerRpc<()> {
         peers.commit_to_store_blob(ctx, id, self.key().clone(), timestamp)
     }
+
+    const ABORTED: Event = Event::AbortedStoringBlob;
+    const FAILED_TO_ABORT: Event = Event::FailedToAbortStoringBlob;
 
     fn peers_abort<M>(
         &self,

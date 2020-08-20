@@ -11,6 +11,7 @@ use log::debug;
 
 use crate::db::{self, RemoveBlobResponse};
 use crate::op::{commit_query, consensus, db_rpc, DbRpc, Outcome};
+use crate::passport::{Event, Passport};
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::storage::{BlobEntry, Query, RemoveBlob};
 use crate::Key;
@@ -21,12 +22,17 @@ use crate::Key;
 pub async fn remove_blob<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     peers: &Peers,
     key: Key,
 ) -> Result<Option<SystemTime>, ()> {
-    debug!("running remove operation");
+    debug!(
+        "running remove operation: request_id=\"{}\", key=\"{}\"",
+        passport.id(),
+        key,
+    );
 
-    let query = match prep_remove_blob(ctx, db_ref, key.clone()).await {
+    let query = match prep_remove_blob(ctx, db_ref, passport, key.clone()).await {
         Ok(Outcome::Continue(query)) => query,
         // Already removed or never stored.
         Ok(Outcome::Done(timestamp)) => return Ok(timestamp),
@@ -36,21 +42,25 @@ pub async fn remove_blob<M>(
     if peers.is_empty() {
         // Easy mode!
         debug!(
-            "running in single mode, not running consensus algorithm to remove blob: key={}",
-            query.key()
+            "running in single mode, not running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            query.key(),
         );
         // We can directly commit to removing the blob, we're always in
         // agreement with ourselves.
-        commit_query(ctx, db_ref, query, SystemTime::now())
+        commit_query(ctx, db_ref, passport, query, SystemTime::now())
             .await
             .map(Some)
     } else {
         // Hard mode.
         debug!(
-            "running consensus algorithm to remove blob: key={}",
-            query.key()
+            "running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            query.key(),
         );
-        consensus(ctx, db_ref, peers, query).await.map(Some)
+        consensus(ctx, db_ref, passport, peers, query)
+            .await
+            .map(Some)
     }
 }
 
@@ -58,20 +68,35 @@ pub async fn remove_blob<M>(
 pub(crate) async fn prep_remove_blob<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     key: Key,
 ) -> Result<Outcome<RemoveBlob, Option<SystemTime>>, ()>
 where
     K: RuntimeAccess,
 {
-    match db_rpc(ctx, db_ref, key) {
+    debug!(
+        "prepping storage to removing blob: request_id=\"{}\", key=\"{}\"",
+        passport.id(),
+        key,
+    );
+    match db_rpc(ctx, db_ref, *passport.id(), key) {
         Ok(rpc) => match rpc.await {
-            Ok(result) => match result {
-                RemoveBlobResponse::Query(query) => Ok(Outcome::Continue(query)),
-                RemoveBlobResponse::NotStored(timestamp) => Ok(Outcome::Done(timestamp)),
-            },
-            Err(()) => Err(()),
+            Ok(result) => {
+                passport.mark(Event::PreppedRemoveBlob);
+                match result {
+                    RemoveBlobResponse::Query(query) => Ok(Outcome::Continue(query)),
+                    RemoveBlobResponse::NotStored(timestamp) => Ok(Outcome::Done(timestamp)),
+                }
+            }
+            Err(()) => {
+                passport.mark(Event::FailedToPrepRemoveBlob);
+                Err(())
+            }
         },
-        Err(()) => Err(()),
+        Err(()) => {
+            passport.mark(Event::FailedToPrepRemoveBlob);
+            Err(())
+        }
     }
 }
 
@@ -82,10 +107,15 @@ impl super::Query for RemoveBlob {
         &self,
         ctx: &mut actor::Context<M>,
         db_ref: &mut ActorRef<db::Message>,
+        passport: &mut Passport,
     ) -> Self::AlreadyDone {
-        debug!("checking if blob is already removed: key={}", self.key());
+        debug!(
+            "checking if blob is already removed: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            self.key(),
+        );
         AlreadyDone {
-            db_rpc: db_rpc(ctx, db_ref, self.key().clone()),
+            db_rpc: db_rpc(ctx, db_ref, *passport.id(), self.key().clone()),
         }
     }
 
@@ -97,6 +127,9 @@ impl super::Query for RemoveBlob {
         peers.remove_blob(ctx, self.key().clone())
     }
 
+    const COMMITTED: Event = Event::CommittedRemovingBlob;
+    const FAILED_TO_COMMIT: Event = Event::FailedToCommitRemovingBlob;
+
     fn peers_commit<M>(
         &self,
         ctx: &mut actor::Context<M>,
@@ -106,6 +139,9 @@ impl super::Query for RemoveBlob {
     ) -> PeerRpc<()> {
         peers.commit_to_remove_blob(ctx, id, self.key().clone(), timestamp)
     }
+
+    const ABORTED: Event = Event::AbortedRemovingBlob;
+    const FAILED_TO_ABORT: Event = Event::FailedToAbortRemovingBlob;
 
     fn peers_abort<M>(
         &self,

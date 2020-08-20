@@ -19,11 +19,12 @@ use heph::rt::options::{ActorOptions, Priority};
 use heph::rt::RuntimeAccess;
 use heph::timer::Deadline;
 use heph::{actor, Actor, NewActor, SupervisorStrategy};
-use log::{error, warn};
+use log::{debug, error, warn};
 
 use crate::buffer::Buffer;
 use crate::db::{self, db_error};
 use crate::op::{db_rpc, retrieve_blob, sync_removed_blob, sync_stored_blob};
+use crate::passport::{Passport, Uuid};
 use crate::peer::server::{
     BLOB_LENGTH_LEN, DATE_TIME_LEN, KEY_SET_SIZE_LEN, METADATA_LEN, REQUEST_BLOB, REQUEST_KEYS,
     STORE_BLOB,
@@ -56,6 +57,7 @@ pub async fn full_sync<M>(
     db_ref: &mut ActorRef<db::Message>,
     peers: &Peers,
 ) -> Result<(), ()> {
+    debug!("running full synchronisation");
     if peers.is_empty() {
         return Ok(());
     }
@@ -66,7 +68,7 @@ pub async fn full_sync<M>(
     );
 
     // Keys stored locally.
-    let stored_keys: Keys = db_rpc(ctx, db_ref, ())?.await?;
+    let stored_keys: Keys = db_rpc(ctx, db_ref, Uuid::empty(), ())?.await?;
     // Keys missing locally.
     let mut missing_keys = Vec::new();
 
@@ -414,9 +416,12 @@ where
         .await
         .map_err(|err| err.describe("writing magic bytes"))?;
 
+    // FIXME: actually use the passport.
+    let mut passport = Passport::empty();
+    passport.set_id(Uuid::new());
+    let mut buf = Buffer::new();
     // FIXME: this doesn't return.
     // Change this to `while let Some(msg) = ctx.receive_next()`.
-    let mut buf = Buffer::new();
     loop {
         match ctx.receive_next().await {
             Message::GetKnownKeys(RpcMessage { response, .. }) => {
@@ -427,7 +432,7 @@ where
                 }
             }
             Message::ShareBlobs(RpcMessage { request, response }) => {
-                share_blobs(&mut ctx, &mut db_ref, &mut stream, request).await?;
+                share_blobs(&mut ctx, &mut db_ref, &mut passport, &mut stream, request).await?;
                 if let Result::Err(err) = response.respond(()) {
                     // TODO: better name for the actor?
                     warn!("peer sync actor failed to send response to actor: {}", err);
@@ -438,6 +443,7 @@ where
                 let res = retrieve_blobs(
                     &mut ctx,
                     &mut db_ref,
+                    &mut passport,
                     &mut stream,
                     &mut buf,
                     &mut stored_keys,
@@ -544,6 +550,7 @@ where
 async fn share_blobs<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     stream: &mut TcpStream,
     keys: Vec<Key>,
 ) -> crate::Result<()>
@@ -551,7 +558,7 @@ where
     K: RuntimeAccess,
 {
     for key in keys {
-        match retrieve_blob(ctx, db_ref, key.clone()).await {
+        match retrieve_blob(ctx, db_ref, passport, key.clone()).await {
             Ok(Some(BlobEntry::Stored(blob))) => {
                 write_blob(
                     ctx,
@@ -613,6 +620,7 @@ const RETRIEVE_MAX_KEYS: usize = 20;
 async fn retrieve_blobs<M, K>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
     stream: &mut TcpStream,
     buf: &mut Buffer,
     stored_keys: &mut Vec<Key>,
@@ -674,13 +682,13 @@ where
             match timestamp.into() {
                 ModifiedTime::Created(timestamp) => {
                     let view = replace(buf, Buffer::empty()).view(blob_length as usize);
-                    match sync_stored_blob(ctx, db_ref, view, timestamp).await {
+                    match sync_stored_blob(ctx, db_ref, passport, view, timestamp).await {
                         Ok(view) => *buf = view.processed(),
                         Err(()) => return Err(db_error()),
                     }
                 }
                 ModifiedTime::Removed(timestamp) => {
-                    match sync_removed_blob(ctx, db_ref, key.clone(), timestamp).await {
+                    match sync_removed_blob(ctx, db_ref, passport, key.clone(), timestamp).await {
                         Ok(()) => {}
                         Err(()) => return Err(db_error()),
                     }

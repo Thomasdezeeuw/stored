@@ -611,6 +611,7 @@ pub mod consensus {
 
     use std::collections::HashMap;
     use std::convert::TryInto;
+    use std::io::IoSlice;
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime};
 
@@ -626,6 +627,7 @@ pub mod consensus {
 
     use crate::error::Describe;
     use crate::op::{abort_query, add_blob, commit_query, prep_remove_blob, Outcome};
+    use crate::passport::{Passport, Uuid};
     use crate::peer::participant::RpcResponder;
     use crate::peer::server::{
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
@@ -668,43 +670,46 @@ pub mod consensus {
         key: Key,
         mut responder: RpcResponder,
     ) -> crate::Result<()> {
+        // TODO: use and log the passport properly.
+        let mut passport = Passport::new();
         debug!(
-            "store blob consensus actor started: key={}, remote_address={}",
-            key, remote
+            "store blob consensus actor started: request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
+            passport.id(), key, remote
         );
 
         // TODO: reuse stream and buffer.
         // TODO: stream large blob to a file directly? Preallocating disk space in
         // the data file?
         debug!(
-            "connecting to coordinator server: remote_address={}",
+            "connecting to coordinator server: request_id=\"{}\", remote_address={}",
+            passport.id(),
             remote
         );
         let mut stream = TcpStream::connect(&mut ctx, remote)
             .map_err(|err| err.describe("creating connect to peer server"))?;
         let mut buf = Buffer::new();
 
-        trace!("writing connection magic");
+        trace!("writing connection magic: request_id=\"{}\"", passport.id());
         match Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(COORDINATOR_MAGIC)).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing connection magic")),
         }
 
-        let read_blob = read_blob(&mut ctx, &mut stream, &mut buf, &key);
+        let read_blob = read_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &key);
         let blob_len = match read_blob.await {
             Ok(Some((blob_key, blob))) if key == blob_key => blob.len(),
             Ok(Some((blob_key, ..))) => {
                 error!(
-                    "coordinator server responded with incorrect blob, voting to abort consensus: want_key={}, got_blob_key={}",
-                    key, blob_key
+                    "coordinator server responded with incorrect blob, voting to abort consensus: request_id=\"{}\", want_key=\"{}\", got_blob_key=\"{}\"",
+                    passport.id(), key, blob_key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
             }
             Ok(None) => {
                 error!(
-                    "couldn't get blob from coordinator server, voting to abort consensus: key={}",
-                    key
+                    "couldn't get blob from coordinator server, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(), key
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
@@ -713,14 +718,15 @@ pub mod consensus {
         };
 
         // Phase one: storing the blob, readying it to be added to the database.
-        let query = match add_blob(&mut ctx, &mut db_ref, &mut buf, blob_len).await {
+        let query = match add_blob(&mut ctx, &mut db_ref, &mut passport, &mut buf, blob_len).await {
             Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 query
             }
             Ok(Outcome::Done(..)) => {
                 info!(
-                    "blob already stored, voting to abort consensus: key={}",
+                    "blob already stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 responder.respond(ConsensusVote::Abort);
@@ -728,7 +734,8 @@ pub mod consensus {
             }
             Err(()) => {
                 warn!(
-                    "failed to add blob to storage, voting to abort consensus: key={}",
+                    "failed to add blob to storage, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 responder.respond(ConsensusVote::Abort);
@@ -750,8 +757,8 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!(
-                    "failed to get consensus result in time, running peer conensus: key={}",
-                    query.key()
+                    "failed to get consensus result in time, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(), query.key()
                 );
                 peers.uncommitted_stored(query);
                 return Ok(());
@@ -760,13 +767,15 @@ pub mod consensus {
 
         let response = match vote_result.result {
             ConsensusVote::Commit(timestamp) => {
-                commit_query(&mut ctx, &mut db_ref, query, timestamp)
+                commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp)
                     .await
                     .map(Some)
             }
-            ConsensusVote::Abort | ConsensusVote::Fail => abort_query(&mut ctx, &mut db_ref, query)
-                .await
-                .map(|_| None),
+            ConsensusVote::Abort | ConsensusVote::Fail => {
+                abort_query(&mut ctx, &mut db_ref, &mut passport, query)
+                    .await
+                    .map(|_| None)
+            }
         };
 
         let timestamp = match response {
@@ -797,7 +806,8 @@ pub mod consensus {
                 // use peer consensus to get us back into an ok state.
                 warn!(
                     "failed to get committed message from coordinator, \
-                    running peer conensus: key={}",
+                    running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 // We're committed, let all other participants know.
@@ -812,6 +822,7 @@ pub mod consensus {
     async fn read_blob<'b, M, K>(
         ctx: &mut actor::Context<M, K>,
         stream: &mut TcpStream,
+        passport: &mut Passport,
         buf: &'b mut Buffer,
         request_key: &Key,
     ) -> crate::Result<Option<(Key, &'b [u8])>>
@@ -819,21 +830,20 @@ pub mod consensus {
         K: RuntimeAccess,
     {
         trace!(
-            "requesting key from coordinator server: key={}",
+            "requesting key from coordinator server: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
             request_key
         );
         debug_assert!(buf.is_empty());
 
-        // TODO: use vectored I/O here. See
-        // https://github.com/rust-lang/futures-rs/pull/2181.
         // Write the request for the key.
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&[REQUEST_BLOB])).await {
+        let bufs = &mut [
+            IoSlice::new(&[REQUEST_BLOB]),
+            IoSlice::new(request_key.as_bytes()),
+        ];
+        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs)).await {
             Ok(()) => {}
-            Err(err) => return Err(err.describe("writing request key")),
-        }
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(request_key.as_bytes())).await {
-            Ok(()) => {}
-            Err(err) => return Err(err.describe("writing request key")),
+            Err(err) => return Err(err.describe("writing request")),
         }
 
         // Don't want to include the length of the blob in the key calculation.
@@ -853,7 +863,8 @@ pub mod consensus {
         let blob_length = u64::from_be_bytes(blob_length_bytes);
         buf.processed(BLOB_LENGTH_LEN);
         trace!(
-            "read blob length from coordinator server: length={}",
+            "read blob length from coordinator server: request_id=\"{}\", blob_length={}",
+            passport.id(),
             blob_length
         );
 
@@ -873,7 +884,8 @@ pub mod consensus {
 
         let key = calc.finish();
         trace!(
-            "read blob from coordinator server: key={}, length={}",
+            "read blob from coordinator server: request_id=\"{}\", key=\"{}\", blob_length={}",
+            passport.id(),
             key,
             blob_length
         );
@@ -892,13 +904,16 @@ pub mod consensus {
         key: Key,
         mut responder: RpcResponder,
     ) -> crate::Result<()> {
+        // TODO: use and log the passport properly.
+        let mut passport = Passport::new();
         debug!(
-            "remove blob consensus actor started: key={}, remote_address={}",
-            key, remote
+            "remove blob consensus actor started: request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
+            passport.id(), key, remote
         );
 
         // Phase one: removing the blob, readying it to be removed from the database.
-        let query = match prep_remove_blob(&mut ctx, &mut db_ref, key.clone()).await {
+        let query = match prep_remove_blob(&mut ctx, &mut db_ref, &mut passport, key.clone()).await
+        {
             Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 query
@@ -907,7 +922,8 @@ pub mod consensus {
                 // FIXME: if we're not synced this can happen, but we should
                 // continue.
                 info!(
-                    "blob already removed/not stored, voting to abort consensus: key={}",
+                    "blob already removed/not stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 responder.respond(ConsensusVote::Abort);
@@ -915,7 +931,8 @@ pub mod consensus {
             }
             Err(()) => {
                 warn!(
-                    "failed to prepare storage to remove blob, voting to abort consensus: key={}",
+                    "failed to prepare storage to remove blob, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 responder.respond(ConsensusVote::Abort);
@@ -936,7 +953,8 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!(
-                    "failed to get consensus result in time, running peer conensus: key={}",
+                    "failed to get consensus result in time, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     query.key()
                 );
                 peers.uncommitted_removed(query);
@@ -946,13 +964,15 @@ pub mod consensus {
 
         let response = match vote_result.result {
             ConsensusVote::Commit(timestamp) => {
-                commit_query(&mut ctx, &mut db_ref, query, timestamp)
+                commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp)
                     .await
                     .map(Some)
             }
-            ConsensusVote::Abort | ConsensusVote::Fail => abort_query(&mut ctx, &mut db_ref, query)
-                .await
-                .map(|()| None),
+            ConsensusVote::Abort | ConsensusVote::Fail => {
+                abort_query(&mut ctx, &mut db_ref, &mut passport, query)
+                    .await
+                    .map(|()| None)
+            }
         };
 
         let timestamp = match response {
@@ -983,7 +1003,8 @@ pub mod consensus {
                 // use peer consensus to get us back into an ok state.
                 warn!(
                     "failed to get committed message from coordinator, \
-                    running peer conensus: key={}",
+                    running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
                     key
                 );
                 // We're committed, let all other participants know.
@@ -1032,8 +1053,12 @@ pub mod consensus {
         let mut peer_results: HashMap<_, PeerResult, _> =
             HashMap::with_hasher(FxBuildHasher::default());
 
+        // TODO: use and log the passport properly.
+        let mut passport = Passport::empty();
         loop {
+            passport.reset();
             let msg = ctx.receive_next().await;
+            passport.set_id(Uuid::new());
             debug!("participant consensus received a message: {:?}", msg);
 
             match msg {
@@ -1042,7 +1067,14 @@ pub mod consensus {
                         if let Some(timestamp) = result.committed {
                             // Don't care about the result, can't handle it
                             // here.
-                            let _ = commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                            let _ = commit_query(
+                                &mut ctx,
+                                &mut db_ref,
+                                &mut passport,
+                                query,
+                                timestamp,
+                            )
+                            .await;
                             continue;
                         }
                     }
@@ -1055,7 +1087,14 @@ pub mod consensus {
                         if let Some(timestamp) = result.committed {
                             // Don't care about the result, can't handle it
                             // here.
-                            let _ = commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                            let _ = commit_query(
+                                &mut ctx,
+                                &mut db_ref,
+                                &mut passport,
+                                query,
+                                timestamp,
+                            )
+                            .await;
                             continue;
                         }
                     }
@@ -1097,14 +1136,26 @@ pub mod consensus {
                                 StorageQuery::Store(query) => {
                                     // Don't care about the result, can't handle
                                     // it here.
-                                    let _ =
-                                        commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                                    let _ = commit_query(
+                                        &mut ctx,
+                                        &mut db_ref,
+                                        &mut passport,
+                                        query,
+                                        timestamp,
+                                    )
+                                    .await;
                                 }
                                 StorageQuery::Remove(query) => {
                                     // Don't care about the result, can't handle
                                     // it here.
-                                    let _ =
-                                        commit_query(&mut ctx, &mut db_ref, query, timestamp).await;
+                                    let _ = commit_query(
+                                        &mut ctx,
+                                        &mut db_ref,
+                                        &mut passport,
+                                        query,
+                                        timestamp,
+                                    )
+                                    .await;
                                 }
                             }
                         }

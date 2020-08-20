@@ -21,6 +21,7 @@ use crate::buffer::Buffer;
 use crate::db::{self, db_error};
 use crate::error::Describe;
 use crate::op::{self, sync_removed_blob, sync_stored_blob};
+use crate::passport::{Event, Passport, Uuid};
 use crate::storage::{self, BlobEntry, DateTime, ModifiedTime};
 use crate::Key;
 
@@ -111,23 +112,29 @@ pub async fn actor<M>(
         warn!("failed to set no delay, continuing: {}", err);
     }
 
+    // TODO: read request-id from peer?
+    let mut passport = Passport::new();
+    passport.mark(Event::ReadingPeerRequest);
     loop {
         // NOTE: we don't create `buf` ourselves so it could be that it already
         // contains a request, so check it first and only after read some more
         // bytes.
         while let Some(request_byte) = buf.next_byte() {
+            passport.mark(Event::ReadPeerRequest);
             match request_byte {
                 REQUEST_BLOB => {
                     buf.processed(1);
-                    retrieve_blob(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
+                    retrieve_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
+                        .await?;
                 }
                 REQUEST_KEYS => {
                     buf.processed(1);
-                    retrieve_keys(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
+                    retrieve_keys(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
+                        .await?;
                 }
                 STORE_BLOB => {
                     buf.processed(1);
-                    store_blob(&mut ctx, &mut stream, &mut buf, &mut db_ref).await?;
+                    store_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref).await?;
                 }
                 byte => {
                     // Invalid byte. Forcefully close the connection, letting
@@ -139,6 +146,9 @@ pub async fn actor<M>(
                     return Ok(());
                 }
             }
+            passport.reset();
+            passport.set_id(Uuid::new());
+            passport.mark(Event::ReadingPeerRequest);
         }
 
         // Read some more bytes.
@@ -182,13 +192,15 @@ impl Blob {
 async fn retrieve_blob<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
+    passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
 ) -> crate::Result<()> {
+    passport.mark(Event::ReadingPeerKey);
     if buf.len() < Key::LENGTH {
         let n = Key::LENGTH - buf.len();
         match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
-            Ok(..) => {}
+            Ok(..) => passport.mark(Event::ReadPeerKey),
             Err(err) => return Err(err.describe("reading key of blob to retrieve")),
         }
     }
@@ -196,18 +208,30 @@ async fn retrieve_blob<M>(
     // SAFETY: checked length above, so indexing is safe.
     let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]).to_owned();
     buf.processed(Key::LENGTH);
-    debug!("got peer request for blob: key={}", key);
+    debug!(
+        "retrieving blob for peer: request_id=\"{}\", key=\"{}\"",
+        passport.id(),
+        key
+    );
 
-    let (blob, timestamp) = match op::retrieve_uncommitted_blob(ctx, db_ref, key).await {
+    let (blob, timestamp) = match op::retrieve_uncommitted_blob(ctx, db_ref, passport, key).await {
         Ok(Ok(blob)) => {
             if let Err(err) = blob.prefetch() {
-                warn!("error prefetching uncommitted blob, continuing: {}", err);
+                warn!(
+                    "error prefetching uncommitted blob, continuing: {}: request_id=\"{}\"",
+                    err,
+                    passport.id()
+                );
             }
             (Blob::Uncommitted(blob), DateTime::INVALID)
         }
         Ok(Err(Some(BlobEntry::Stored(blob)))) => {
             if let Err(err) = blob.prefetch() {
-                warn!("error prefetching committed blob, continuing: {}", err);
+                warn!(
+                    "error prefetching committed blob, continuing: {}: request_id=\"{}\"",
+                    err,
+                    passport.id()
+                );
             }
             let created_at = blob.created_at().into();
             (Blob::Committed(blob), created_at)
@@ -217,6 +241,7 @@ async fn retrieve_blob<M>(
         Err(()) => return Err(db_error()),
     };
 
+    passport.mark(Event::WritingPeerResponse);
     let length: [u8; BLOB_LENGTH_LEN] = (blob.len() as u64).to_be_bytes();
     let bufs = &mut [
         IoSlice::new(timestamp.as_bytes()),
@@ -225,6 +250,7 @@ async fn retrieve_blob<M>(
     ];
     Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
         .await
+        .map(|()| passport.mark(Event::WrittenPeerResponse))
         .map_err(|err| err.describe("writing blob"))
 }
 
@@ -233,12 +259,13 @@ async fn retrieve_blob<M>(
 async fn retrieve_keys<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
+    passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
 ) -> crate::Result<()> {
-    debug!("retrieving keys");
+    debug!("retrieving keys for peer: request_id=\"{}\"", passport.id());
 
-    let keys = crate::op::retrieve_keys(ctx, db_ref)
+    let keys = crate::op::retrieve_keys(ctx, db_ref, passport)
         .await
         .map_err(|()| db_error())?;
     let mut iter = keys.into_iter();
@@ -248,6 +275,7 @@ async fn retrieve_keys<M>(
     // TODO: benchmark with larger sizes.
     const N_KEYS: usize = 100;
 
+    passport.mark(Event::WritingPeerResponse);
     let mut first = true;
     loop {
         let mut wbuf = buf.split_write(BLOB_LENGTH_LEN + (N_KEYS * Key::LENGTH)).1;
@@ -267,6 +295,7 @@ async fn retrieve_keys<M>(
 
         // Wrote all keys.
         if wbuf.is_empty() {
+            passport.mark(Event::WrittenPeerResponse);
             return Ok(());
         }
 
@@ -283,14 +312,16 @@ async fn retrieve_keys<M>(
 async fn store_blob<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
+    passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
 ) -> crate::Result<()> {
+    passport.mark(Event::ReadingPeerMetadata);
     // Read at least the metadata of the blob to store.
     if buf.len() < Key::LENGTH + METADATA_LEN {
         let n = (Key::LENGTH + METADATA_LEN) - buf.len();
         match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
-            Ok(..) => {}
+            Ok(..) => passport.mark(Event::ReadPeerMetadata),
             Err(err) => return Err(err.describe("reading metadata from socket")),
         }
     }
@@ -311,15 +342,18 @@ async fn store_blob<M>(
     buf.processed(Key::LENGTH + METADATA_LEN);
 
     debug!(
-        "storing blob: key={}, length={}, timestamp={:?}",
-        key, blob_length, timestamp
+        "storing blob for peer: request_id=\"{}\", key=\"{}\", blob_length={}",
+        passport.id(),
+        key,
+        blob_length,
     );
 
     // Read the entire blob.
+    passport.mark(Event::ReadingPeerBlob);
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
         match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
-            Ok(..) => {}
+            Ok(..) => passport.mark(Event::ReadPeerBlob),
             Err(err) => return Err(err.describe("reading blob from socket")),
         }
     }
@@ -327,7 +361,7 @@ async fn store_blob<M>(
     match timestamp.into() {
         ModifiedTime::Created(timestamp) => {
             let view = replace(buf, Buffer::empty()).view(blob_length as usize);
-            match sync_stored_blob(ctx, db_ref, view, timestamp).await {
+            match sync_stored_blob(ctx, db_ref, passport, view, timestamp).await {
                 Ok(view) => {
                     *buf = view.processed();
                     Ok(())
@@ -336,7 +370,7 @@ async fn store_blob<M>(
             }
         }
         ModifiedTime::Removed(timestamp) => {
-            match sync_removed_blob(ctx, db_ref, key, timestamp).await {
+            match sync_removed_blob(ctx, db_ref, passport, key, timestamp).await {
                 Ok(()) => Ok(()),
                 Err(()) => Err(db_error()),
             }
@@ -347,4 +381,6 @@ async fn store_blob<M>(
             Ok(())
         }
     }
+
+    // TODO: add a response to the peer.
 }
