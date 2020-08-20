@@ -219,7 +219,7 @@ pub async fn actor(
         // TODO: don't log invalid/partial requests.
         request!(
             "request: request_id=\"{}\", remote_address=\"{}\", method=\"{}\", \
-                path=\"{}\", user_agent=\"{}\", \request_length={}, \
+                path=\"{}\", user_agent=\"{}\", request_length={}, \
                 response_time=\"{:?}\", response_status={}, response_length={}",
             request.id(),
             address,
