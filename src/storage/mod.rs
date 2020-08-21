@@ -633,13 +633,18 @@ impl StreamBlob {
     /// let read_bytes = unsafe { MaybeUninit::slice_get_ref(&bytes[..n]) };
     /// # Ok(()) }
     /// ```
+    ///
+    /// The returned amount of bytes written may also not exceed the length of
+    /// the bytes provided.
     pub unsafe fn write_bytes<F>(&mut self, write: F) -> io::Result<usize>
     where
         F: FnOnce(&mut [MaybeUninit<u8>]) -> io::Result<usize>,
     {
-        let bytes = self.slice.as_mut_slice();
+        let bytes = &mut self.slice.as_mut_slice()[self.offset..];
         match write(&mut *bytes) {
             Ok(n) => {
+                // Safety: the caller need to ensure the bytes up to `n` are
+                // initialised as per the docs.
                 let bytes = MaybeUninit::slice_get_ref(&bytes[..n]);
                 self.calculator.add_bytes(bytes);
                 self.offset += n;

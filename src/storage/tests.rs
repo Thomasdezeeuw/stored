@@ -1048,6 +1048,70 @@ mod storage {
     }
 
     #[test]
+    fn stream_blob_multiple_writes() {
+        let path = temp_dir("stream_blob_multiple_writes.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        const N: usize = 4;
+        let mut blob = Vec::with_capacity(N * 1024);
+        for i in 1u8..=N as u8 {
+            blob.resize(i as usize * 1024, i);
+        }
+
+        let mut stream_blob = storage.stream_blob(blob.len()).unwrap();
+        assert_eq!(stream_blob.len(), blob.len());
+
+        // Write the blob in multiple calls.
+        let len = blob.len() / N;
+        for i in 1..=N {
+            let n = unsafe {
+                stream_blob
+                    .write_bytes(|bytes| {
+                        ptr::copy_nonoverlapping(
+                            blob.as_ptr().add((i - 1) * 1024),
+                            bytes.as_mut_ptr() as *mut _,
+                            len,
+                        );
+                        Ok(len)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(n, len);
+            assert_eq!(stream_blob.bytes_left(), blob.len() - (i * len));
+        }
+        assert_eq!(stream_blob.bytes_left(), 0);
+
+        let query = stream_blob.finish(&mut storage).unwrap();
+        let key = query.key().clone();
+        assert_eq!(key, Key::for_blob(&*blob));
+        storage.commit(query, SystemTime::now()).unwrap();
+
+        let got = storage.lookup(&key).unwrap().unwrap();
+        assert_eq!(got.bytes(), blob);
+
+        // Check the EntryIndex.
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        match blob_entry {
+            BlobEntry::Stored(got_blob) => assert_eq!(got_blob.bytes(), blob),
+            BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+        }
+
+        assert_eq!(storage.len(), 1);
+        let want_data_size = (blob.len() + DATA_MAGIC.len()) as u64;
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = size_of::<Entry>() as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
+    }
+
+    #[test]
     fn stream_blob_concurrently() {
         let path = temp_dir("stream_blob_concurrently.db");
         let mut storage = Storage::open(&path).unwrap();
