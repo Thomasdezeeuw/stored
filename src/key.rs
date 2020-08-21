@@ -358,6 +358,15 @@ impl<IO> KeyCalculator<IO> {
     }
 }
 
+impl<IO: fmt::Debug> fmt::Debug for KeyCalculator<IO> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("KeyCalculator")
+            .field("skip_left", &self.skip_left)
+            .field("io", &self.io)
+            .finish()
+    }
+}
+
 impl<R> Read for KeyCalculator<R>
 where
     R: Read,
