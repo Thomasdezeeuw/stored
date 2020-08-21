@@ -211,7 +211,6 @@ fn buffer_reset() {
 
 #[test]
 #[should_panic(expected = "marking bytes as processed beyond read range")]
-#[ignore = "problem in libbacktrace, see https://github.com/rust-lang/rust/issues/71397"]
 fn marking_processed_beyond_read_range() {
     let mut buf = Buffer::new();
     buf.processed(1);
@@ -219,7 +218,6 @@ fn marking_processed_beyond_read_range() {
 
 #[test]
 #[should_panic(expected = "marking bytes as processed beyond read range")]
-#[ignore = "problem in libbacktrace, see https://github.com/rust-lang/rust/issues/71397"]
 fn marking_processed_beyond_read_range_after_reset() {
     let mut buf = Buffer::new();
 
@@ -436,7 +434,6 @@ fn write_buffer_processed_original_empty() {
 
 #[test]
 #[should_panic(expected = "marking bytes as processed beyond read range")]
-#[ignore = "problem in libbacktrace, see https://github.com/rust-lang/rust/issues/71397"]
 fn marking_processed_write_buffer_beyond_read_range() {
     let mut buf = Buffer::new();
     let (original_bytes, mut wbuf) = buf.split_write(20);
@@ -446,7 +443,6 @@ fn marking_processed_write_buffer_beyond_read_range() {
 
 #[test]
 #[should_panic(expected = "marking bytes as processed beyond read range")]
-#[ignore = "problem in libbacktrace, see https://github.com/rust-lang/rust/issues/71397"]
 fn marking_processed_write_buffer_beyond_read_range_after_reset() {
     let mut buf = Buffer::new();
     let bytes = &[1, 2, 3];
