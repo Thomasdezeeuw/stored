@@ -1,11 +1,15 @@
-#![feature(process_exitcode_placeholder)]
+#![feature(never_type, process_exitcode_placeholder)]
 
 use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use heph::actor;
+use heph::actor::context::ThreadSafe;
 use heph::actor_ref::ActorGroup;
-use heph::Runtime;
+use heph::rt::options::{ActorOptions, Priority};
+use heph::rt::{Runtime, Signal};
+use heph::supervisor::NoSupervisor;
 use log::{error, info};
 use parking_lot::RwLock;
 
@@ -75,6 +79,14 @@ fn try_main() -> Result<(), ExitCode> {
         .map_err(map_err!("error creating Heph runtime: {}"))?
         .use_all_cores();
 
+    let actor_ref = runtime.spawn(
+        NoSupervisor,
+        signal_handler as fn(_) -> _,
+        (),
+        ActorOptions::default().with_priority(Priority::HIGH),
+    );
+    runtime.receive_signals(actor_ref);
+
     info!("opening database '{}'", config.path.display());
     let db_ref =
         db::start(&mut runtime, config.path).map_err(map_err!("error opening database: {}"))?;
@@ -114,6 +126,19 @@ fn try_main() -> Result<(), ExitCode> {
         })
         .start()
         .map_err(map_err!("{}"))
+}
+
+/// Actor that waits for a signal and prints a message.
+async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(), !> {
+    loop {
+        let signal = ctx.receive_next().await;
+        match signal {
+            Signal::Interrupt | Signal::Terminate | Signal::Quit => {
+                info!("received {:#} signal, shutting down", signal);
+                return Ok(());
+            }
+        }
+    }
 }
 
 /// Parses the arguments.
