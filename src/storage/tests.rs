@@ -1124,7 +1124,6 @@ mod storage {
         assert_eq!(storage.lookup(&key1).unwrap().unwrap().bytes(), blob1);
     }
 
-    /*
     #[test]
     fn concurrently_adding_same_blob() {
         let path = temp_dir("concurrently_adding_same_blob.db");
@@ -1147,8 +1146,14 @@ mod storage {
         let uncommitted_blob2 = storage.lookup_uncommitted(&key).unwrap();
         // The uncommitted blob should be reused.
         assert_eq!(uncommitted_blob1.offset, uncommitted_blob2.offset);
-        assert_eq!(uncommitted_blob1.length, uncommitted_blob2.length);
-        assert_eq!(uncommitted_blob1.address, uncommitted_blob2.address);
+        assert_eq!(
+            uncommitted_blob1.mmap_slice.address,
+            uncommitted_blob2.mmap_slice.address
+        );
+        assert_eq!(
+            uncommitted_blob1.mmap_slice.length,
+            uncommitted_blob2.mmap_slice.length
+        );
         assert_eq!(uncommitted_blob1.bytes(), blob);
 
         assert_eq!(storage.len(), 0);
@@ -1187,7 +1192,6 @@ mod storage {
             (size_of::<Entry>() as u64) + INDEX_MAGIC.len() as u64
         );
     }
-    */
 
     #[test]
     fn aborting_adding_blob() {
