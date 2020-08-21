@@ -24,7 +24,9 @@
 //! also fully synced. Only after those two steps is a blob considered stored.
 //!
 //! In the code this is done by first calling [`Storage::add_blob`]. This adds
-//! the blob's bytes to the data file and returns a [`StoreBlob`] query. This
+//! the blob's bytes to the data file and returns a [`StoreBlob`] query.
+//! Alternatively the [`Storage::stream_blob`] can be used to write the blob
+//! directly into the data file, this also returns a [`StoreBlob`] query. This
 //! query can then be committed (by calling [`Storage::commit`]) or aborted (by
 //! calling [`Storage::abort`]). If the query is committed an entry is added to
 //! the index file, ensuring the blob is stored in the database. Only after the
@@ -125,16 +127,14 @@ use std::os::unix::io::AsRawFd;
 use std::path::Path;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{self, AtomicUsize, Ordering};
+use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{fmt, slice};
 
 use fxhash::FxBuildHasher;
 use log::{error, trace, warn};
 
-use crate::key::Key;
-
-#[cfg(test)]
-use std::thread;
+use crate::key::{Key, KeyCalculator};
 
 mod validate;
 
@@ -429,6 +429,38 @@ impl Storage {
         }
     }
 
+    /// Stream a blob to the storage.
+    ///
+    /// This method is designed to stream large blobs directly into the data
+    /// file, avoiding buffering in memory. This returns the [`StreamBlob`] type
+    /// which can be used to write the blob to disk. Once the entire blob is
+    /// written it can be [`finish`]ed, which returns the [`StoreBlob`] query.
+    /// Only after the returned `StoreBlob` query is [committed] is the blob
+    /// stored in the database.
+    ///
+    /// # Notes
+    ///
+    /// There is an implicit lifetime between the returned [`StoreBlob`] query
+    /// and this `Storage`. The query can only be commit or aborted to this
+    /// `Storage`, the query may however safely outlive `Storage`.
+    ///
+    /// [`finish`]: StreamBlob::finish
+    /// [query]: StoreBlob
+    /// [committed]: Storage::commit
+    pub fn stream_blob(&mut self, length: usize) -> io::Result<StreamBlob> {
+        // FIXME: when streaming we still need to add the query to uncommitted
+        // blobs for the peer to retrieve.
+        trace!("streaming blob: blob_length={}", length);
+        self.data
+            .reserve(length)
+            .map(|(slice, file_offset)| StreamBlob {
+                slice,
+                offset: 0,
+                file_offset,
+                calculator: KeyCalculator::new(),
+            })
+    }
+
     /// Remove the blob with `key` from the database.
     ///
     /// Only after the returned [query] is [committed] is the blob removed from
@@ -551,6 +583,110 @@ pub enum AddResult {
     AlreadyStored(Key),
     /// I/O error.
     Err(io::Error),
+}
+
+/// Type that gives unique access to a part of the data file to write a blob
+/// into.
+#[derive(Debug)]
+pub struct StreamBlob {
+    /// `mmap(2)`-ed memory backed by the data file.
+    slice: MmapSliceMut<MaybeUninit<u8>>,
+    /// Offset in `slice` which we haven't written yet.
+    offset: usize,
+    /// Offset in the [`Data`] file.
+    file_offset: u64,
+    calculator: KeyCalculator<()>,
+}
+
+impl StreamBlob {
+    /// Returns the length of the blob.
+    pub fn len(&self) -> usize {
+        self.slice.len()
+    }
+
+    /// Returns the number of bytes left for writing.
+    pub fn bytes_left(&self) -> usize {
+        self.len() - self.offset
+    }
+
+    /// Write bytes directly from the source into the data file.
+    ///
+    /// This methods allows zero-copy I/O: reading bytes directly from the
+    /// socket and writing them into the (`mmap(2)`-ed) data file.
+    ///
+    /// # Safety
+    ///
+    /// The `write` function must return the number of bytes written into the
+    /// provided buffer. The bytes up to the returned amount in the provided
+    /// slice to the `write` function must be initialised (written to). In other
+    /// words following must be safe.
+    ///
+    /// ```no_run
+    /// # let bytes: &mut [MaybeUninit<u8>] = &mut [];
+    /// let n = write(bytes)?;
+    /// // If `n` is larger then the actually initialised bytes the following
+    /// // line would be undefined behaviour.
+    /// let read_bytes = unsafe { MaybeUninit::slice_get_ref(&bytes[..n]) };
+    /// ```
+    pub unsafe fn write_bytes<F>(&mut self, write: F) -> io::Result<usize>
+    where
+        F: FnOnce(&mut [MaybeUninit<u8>]) -> io::Result<usize>,
+    {
+        let bytes = self.slice.as_mut_slice();
+        match write(&mut *bytes) {
+            Ok(n) => {
+                let bytes = MaybeUninit::slice_get_ref(&bytes[..n]);
+                self.calculator.add_bytes(bytes);
+                self.offset += n;
+                Ok(n)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Add the streamed blob to the database file. Returns a [`StoreBlob`]
+    /// query to commit to storing the blob.
+    ///
+    /// # Panics
+    ///
+    /// This panics if not all bytes have been written, i.e. [`bytes_left`] must
+    /// return 0.
+    ///
+    /// [`bytes_left`]: StreamBlob::bytes_left
+    pub fn finish(self, storage: &mut Storage) -> AddResult {
+        assert!(self.bytes_left() == 0);
+        let StreamBlob {
+            slice,
+            file_offset,
+            calculator,
+            ..
+        } = self;
+
+        let key = calculator.finish();
+
+        if storage.contains(&key) {
+            return AddResult::AlreadyStored(key);
+        } else {
+            match slice.start_sync() {
+                Ok(()) => {
+                    let entry = storage.uncommitted.entry(key.clone());
+                    entry.or_insert_with(|| {
+                        let uncommitted_blob = UncommittedBlob {
+                            // Safety: we've (well the user) written the previously, as
+                            // checked by the assertion at the top of this function. And
+                            // the `mmap` slice is created used `PROT_READ`.
+                            mmap_slice: unsafe { slice.assume_init().immutable() },
+                            offset: file_offset,
+                        };
+                        (1, uncommitted_blob)
+                    });
+
+                    AddResult::Ok(StoreBlob { key })
+                }
+                Err(err) => AddResult::Err(err),
+            }
+        }
+    }
 }
 
 /// Result returned by [`Storage::remove_blob`].
@@ -862,7 +998,7 @@ impl Data {
     /// [`sync`]: MmapSlice::sync
     fn add_blob(&mut self, blob: &[u8]) -> io::Result<(MmapSlice<u8>, u64)> {
         let offset = self.used_bytes;
-        let mut slice = self.reserve(blob.len())?;
+        let (mut slice, _) = self.reserve(blob.len())?;
         slice.copy_from_slice(0, blob);
         // Let the OS we want to sync it to disk at a later stage.
         slice.start_sync()?;
@@ -873,7 +1009,7 @@ impl Data {
     /// Reserve `length` bytes to write into.
     ///
     /// Returns a `mmap`-ed memory area that is backed by the data file.
-    fn reserve(&mut self, length: usize) -> io::Result<MmapSliceMut<MaybeUninit<u8>>> {
+    fn reserve(&mut self, length: usize) -> io::Result<(MmapSliceMut<MaybeUninit<u8>>, u64)> {
         if self.used_bytes + length as u64 > self.mmaped_bytes {
             // Don't have enough space, allocate some more.
             self.fallocate(length)?;
@@ -883,8 +1019,10 @@ impl Data {
         // `unwrap` is safe.
         let area = self.areas.last_mut().unwrap();
         let in_area_offset = self.used_bytes - area.file_offset();
+        let offset = self.used_bytes;
         self.used_bytes += length as u64;
-        unsafe { Ok(area.slice_mut_unchecked(in_area_offset as usize, length)) }
+        let slice = unsafe { area.slice_mut_unchecked(in_area_offset as usize, length) };
+        Ok((slice, offset))
     }
 
     /// Allocate a new area of `length` bytes in the data file and add the newly
@@ -1016,6 +1154,12 @@ const fn min_fallocate_size(length: usize) -> usize {
 
 impl Drop for Data {
     fn drop(&mut self) {
+        // Don't truncate the file when we're panicking as existing `mmap(2)`-ed
+        // areas may exists and can be written to, e.g. using `StreamBlob`.
+        if thread::panicking() {
+            return;
+        }
+
         // Shrink the file back to the actual used bytes.
         // NOTE: this doesn't happen in case of a crash and that is OK. We'll
         // end up with a gap of unused bytes, but that will be cleaned-up by the
@@ -1145,6 +1289,8 @@ impl Index {
                 );
                 self.length += bytes.len() as u64;
                 // Ensure we the file size is correct.
+                // FIXME: this fails sometimes on macOS, the file being 88 bytes
+                // (1 entry) smaller than we expect it to be.
                 debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
                 entry_index
             })
@@ -1990,6 +2136,11 @@ unsafe impl<T: Send> Send for MmapSliceMut<T> {}
 unsafe impl<T: Sync> Sync for MmapSliceMut<T> {}
 
 impl<T> MmapSliceMut<T> {
+    /// Returns the length of the slice.
+    fn len(&self) -> usize {
+        self.length
+    }
+
     /// Changes the mutable slice into an immutable one.
     ///
     /// # Safety
@@ -2002,6 +2153,12 @@ impl<T> MmapSliceMut<T> {
             length: self.length,
             lifetime: self.lifetime,
         }
+    }
+
+    /// Turns the this `MmapSliceMut` into a Rust slice.
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        check_address(self.address.as_ptr(), self.length);
+        unsafe { slice::from_raw_parts_mut(self.address.as_ptr(), self.length) }
     }
 
     /// Call `msync(2)` with `MS_ASYNC`. Returns immediately.

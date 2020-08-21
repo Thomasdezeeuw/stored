@@ -7,6 +7,10 @@ use std::time::SystemTime;
 
 use lazy_static::lazy_static;
 
+// TODO: add more test with interaction with the Storage after it returned an
+// error and the db actor is restarted. E.g. do the Store/Remove/Stream-Blob
+// types still work?
+
 use crate::storage::{
     AddResult, Blob, BlobEntry, DateTime, Entry, RemoveBlob, RemoveResult, StoreBlob, DATA_MAGIC,
     INDEX_MAGIC,
@@ -819,7 +823,7 @@ mod data {
 mod storage {
     use std::mem::size_of;
     use std::time::{Duration, SystemTime};
-    use std::{fs, io};
+    use std::{fs, io, ptr};
 
     use crate::storage::{
         AddResult, Blob, BlobEntry, Entry, EntryIndex, ModifiedTime, Query, RemoveResult, Storage,
@@ -828,6 +832,8 @@ mod storage {
     use crate::Key;
 
     use super::{temp_dir, test_data_path, test_entries, DATA, DB_001, DB_009};
+
+    const BLOBS: [&[u8]; 5] = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
 
     #[test]
     fn blob_size() {
@@ -887,10 +893,8 @@ mod storage {
             (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
         );
 
-        let blobs = [DATA[0], DATA[1], &[1; 100], &[2; 200], b"Store my data!"];
-
-        let mut keys = Vec::with_capacity(blobs.len());
-        for blob in blobs.iter().copied() {
+        let mut keys = Vec::with_capacity(BLOBS.len());
+        for blob in BLOBS.iter().copied() {
             let query = storage.add_blob(blob).unwrap();
             let key = query.key().clone();
             storage.commit(query, SystemTime::now()).unwrap();
@@ -904,22 +908,22 @@ mod storage {
 
         for (i, key) in keys.into_iter().enumerate() {
             let got = storage.lookup(&key).unwrap().unwrap();
-            assert_eq!(got.bytes(), blobs[i]);
+            assert_eq!(got.bytes(), BLOBS[i]);
 
             // Check the EntryIndex.
             let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
             assert_eq!(*entry_index, EntryIndex(i));
             match blob_entry {
-                BlobEntry::Stored(blob) => assert_eq!(blob.bytes(), blobs[i]),
+                BlobEntry::Stored(blob) => assert_eq!(blob.bytes(), BLOBS[i]),
                 BlobEntry::Removed(_) => panic!("unexpected blob entry"),
             }
         }
 
-        assert_eq!(storage.len(), blobs.len());
+        assert_eq!(storage.len(), BLOBS.len());
         let want_data_size =
-            (blobs.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
+            (BLOBS.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
         assert_eq!(storage.data_size(), want_data_size);
-        let want_index_size = (blobs.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
+        let want_index_size = (BLOBS.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
         assert_eq!(storage.index_size(), want_index_size);
         assert_eq!(storage.total_size(), want_index_size + want_data_size);
 
@@ -980,6 +984,297 @@ mod storage {
         // Dropping the storage before the query should not panic.
         drop(storage);
         drop(query);
+    }
+
+    #[test]
+    fn stream_blob() {
+        let path = temp_dir("stream_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let mut keys = Vec::with_capacity(BLOBS.len());
+        for blob in BLOBS.iter().copied() {
+            let mut stream_blob = storage.stream_blob(blob.len()).unwrap();
+            assert_eq!(stream_blob.len(), blob.len());
+            let n = unsafe {
+                stream_blob
+                    .write_bytes(|bytes| {
+                        let len = blob.len();
+                        ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                        Ok(len)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(n, blob.len());
+            assert_eq!(stream_blob.bytes_left(), 0);
+
+            let query = stream_blob.finish(&mut storage).unwrap();
+            let key = query.key().clone();
+            assert_eq!(key, Key::for_blob(blob));
+            storage.commit(query, SystemTime::now()).unwrap();
+
+            let got = storage.lookup(&key).unwrap().unwrap();
+            assert_eq!(got.bytes(), blob);
+            // TODO: check created_at data? SystemTime is not monotonic so the
+            // test will be flaky.
+            keys.push(key);
+        }
+
+        for (i, key) in keys.into_iter().enumerate() {
+            let got = storage.lookup(&key).unwrap().unwrap();
+            assert_eq!(got.bytes(), BLOBS[i]);
+
+            // Check the EntryIndex.
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(i));
+            match blob_entry {
+                BlobEntry::Stored(blob) => assert_eq!(blob.bytes(), BLOBS[i]),
+                BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+            }
+        }
+
+        assert_eq!(storage.len(), BLOBS.len());
+        let want_data_size =
+            (BLOBS.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = (BLOBS.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
+    }
+
+    #[test]
+    fn stream_blob_concurrently() {
+        let path = temp_dir("stream_blob_concurrently.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let mut stream_blobs = Vec::with_capacity(BLOBS.len());
+        for blob in BLOBS.iter().copied() {
+            let stream_blob = storage.stream_blob(blob.len()).unwrap();
+            assert_eq!(stream_blob.len(), blob.len());
+            stream_blobs.push(stream_blob);
+        }
+
+        for (stream_blob, blob) in stream_blobs.iter_mut().zip(BLOBS.iter().copied()).rev() {
+            assert_eq!(stream_blob.len(), blob.len());
+            let n = unsafe {
+                stream_blob
+                    .write_bytes(|bytes| {
+                        let len = blob.len();
+                        ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                        Ok(len)
+                    })
+                    .unwrap()
+            };
+            assert_eq!(n, blob.len());
+            assert_eq!(stream_blob.bytes_left(), 0);
+        }
+
+        let mut keys = Vec::with_capacity(BLOBS.len());
+        for (stream_blob, blob) in stream_blobs.into_iter().zip(BLOBS.iter().copied()).rev() {
+            assert_eq!(stream_blob.len(), blob.len());
+
+            let query = stream_blob.finish(&mut storage).unwrap();
+            let key = query.key().clone();
+            assert_eq!(key, Key::for_blob(blob));
+            storage.commit(query, SystemTime::now()).unwrap();
+
+            let got = storage.lookup(&key).unwrap().unwrap();
+            assert_eq!(got.bytes(), blob);
+            // TODO: check created_at data? SystemTime is not monotonic so the
+            // test will be flaky.
+            keys.push(key);
+        }
+
+        for ((key, blob_idx), entry_idx) in keys
+            .into_iter()
+            .zip((0usize..BLOBS.len()).rev())
+            .zip(0usize..)
+        {
+            let got = storage.lookup(&key).unwrap().unwrap();
+            assert_eq!(got.bytes(), BLOBS[blob_idx]);
+
+            // Check the EntryIndex.
+            let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+            assert_eq!(*entry_index, EntryIndex(entry_idx));
+            match blob_entry {
+                BlobEntry::Stored(blob) => assert_eq!(blob.bytes(), BLOBS[blob_idx]),
+                BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+            }
+        }
+
+        assert_eq!(storage.len(), BLOBS.len());
+        let want_data_size =
+            (BLOBS.iter().map(|b| b.len()).sum::<usize>() + DATA_MAGIC.len()) as u64;
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = (BLOBS.len() * size_of::<Entry>()) as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
+    }
+
+    #[test]
+    fn stream_same_blob() {
+        let path = temp_dir("stream_same_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let blob = BLOBS[0];
+        let mut stream_blob = storage.stream_blob(blob.len()).unwrap();
+        assert_eq!(stream_blob.len(), blob.len());
+        let n = unsafe {
+            stream_blob
+                .write_bytes(|bytes| {
+                    let len = blob.len();
+                    ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                    Ok(len)
+                })
+                .unwrap()
+        };
+        assert_eq!(n, blob.len());
+        assert_eq!(stream_blob.bytes_left(), 0);
+
+        let query = stream_blob.finish(&mut storage).unwrap();
+        let key = query.key().clone();
+        assert_eq!(key, Key::for_blob(blob));
+        storage.commit(query, SystemTime::now()).unwrap();
+
+        let mut stream_blob = storage.stream_blob(blob.len()).unwrap();
+        assert_eq!(stream_blob.len(), blob.len());
+        let n = unsafe {
+            stream_blob
+                .write_bytes(|bytes| {
+                    let len = blob.len();
+                    ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                    Ok(len)
+                })
+                .unwrap()
+        };
+        assert_eq!(n, blob.len());
+        assert_eq!(stream_blob.bytes_left(), 0);
+
+        // Adding the same blob again should return an already stored result.
+        match stream_blob.finish(&mut storage) {
+            AddResult::AlreadyStored(got_key) => assert_eq!(got_key, key),
+            _ => panic!("unexpected result"),
+        }
+
+        let got = storage.lookup(&key).unwrap().unwrap();
+        assert_eq!(got.bytes(), blob);
+        // Check the EntryIndex.
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        match blob_entry {
+            BlobEntry::Stored(got_blob) => assert_eq!(got_blob.bytes(), blob),
+            BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+        }
+
+        assert_eq!(storage.len(), 1);
+        // Blob is still written twice.
+        let want_data_size = (2 * blob.len() + DATA_MAGIC.len()) as u64;
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = size_of::<Entry>() as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
+    }
+
+    #[test]
+    fn stream_same_blob_concurrently() {
+        let path = temp_dir("stream_same_blob_concurrently.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let blob = BLOBS[0];
+        // DRY this.
+        let mut stream_blob1 = storage.stream_blob(blob.len()).unwrap();
+        assert_eq!(stream_blob1.len(), blob.len());
+        // And repeat.
+        let mut stream_blob2 = storage.stream_blob(blob.len()).unwrap();
+        assert_eq!(stream_blob2.len(), blob.len());
+
+        let n = unsafe {
+            stream_blob1
+                .write_bytes(|bytes| {
+                    let len = blob.len();
+                    ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                    Ok(len)
+                })
+                .unwrap()
+        };
+        assert_eq!(n, blob.len());
+        assert_eq!(stream_blob1.bytes_left(), 0);
+        // And repeat.
+        let n = unsafe {
+            stream_blob2
+                .write_bytes(|bytes| {
+                    let len = blob.len();
+                    ptr::copy_nonoverlapping(blob.as_ptr(), bytes.as_mut_ptr() as *mut _, len);
+                    Ok(len)
+                })
+                .unwrap()
+        };
+        assert_eq!(n, blob.len());
+        assert_eq!(stream_blob2.bytes_left(), 0);
+
+        let query = stream_blob1.finish(&mut storage).unwrap();
+        let key = query.key().clone();
+        assert_eq!(key, Key::for_blob(blob));
+        storage.commit(query, SystemTime::now()).unwrap();
+        // Adding the same blob again should return an already stored result.
+        match stream_blob2.finish(&mut storage) {
+            AddResult::AlreadyStored(got_key) => assert_eq!(got_key, key),
+            _ => panic!("unexpected result"),
+        }
+
+        let got = storage.lookup(&key).unwrap().unwrap();
+        assert_eq!(got.bytes(), blob);
+        // Check the EntryIndex.
+        let (entry_index, blob_entry) = storage.blobs.get(&key).unwrap();
+        assert_eq!(*entry_index, EntryIndex(0));
+        match blob_entry {
+            BlobEntry::Stored(got_blob) => assert_eq!(got_blob.bytes(), blob),
+            BlobEntry::Removed(_) => panic!("unexpected blob entry"),
+        }
+
+        assert_eq!(storage.len(), 1);
+        // Blob is still written twice.
+        let want_data_size = (2 * blob.len() + DATA_MAGIC.len()) as u64;
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = size_of::<Entry>() as u64 + INDEX_MAGIC.len() as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
+    }
+
+    #[test]
+    #[should_panic]
+    fn stream_blob_not_fully_written() {
+        let path = temp_dir("stream_blob_not_fully_written.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        let stream_blob = storage.stream_blob(100).unwrap();
+        assert_eq!(stream_blob.len(), 100);
+        assert_eq!(stream_blob.bytes_left(), 100);
+
+        let _query = stream_blob.finish(&mut storage).unwrap();
     }
 
     #[test]
