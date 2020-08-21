@@ -22,7 +22,8 @@ use log::{debug, error, info, trace, warn};
 use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
-    AddResult, BlobEntry, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, UncommittedBlob,
+    AddResult, BlobEntry, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, StreamBlob,
+    UncommittedBlob,
 };
 use crate::Key;
 
@@ -102,6 +103,27 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     Ok(query) => (AddBlobResponse::Query(query), view),
                     AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), view),
                     Err(err) => return Result::Err(err.describe("adding a blob")),
+                };
+                if let Result::Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::StreamBlob(RpcMessage { request, response }) => {
+                let blob_length = request;
+                let stream_blob = storage
+                    .stream_blob(blob_length)
+                    .map_err(|err| err.describe("streaming a blob"))?;
+                if let Result::Err(err) = response.respond(stream_blob) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
+            Message::AddStreamedBlob(RpcMessage { request, response }) => {
+                let stream_blob = request;
+                use AddResult::*;
+                let result = match stream_blob.finish(&mut storage) {
+                    Ok(query) => AddBlobResponse::Query(query),
+                    AlreadyStored(key) => AddBlobResponse::AlreadyStored(key),
+                    Err(err) => return Result::Err(err.describe("adding streamed blob")),
                 };
                 if let Result::Err(err) = response.respond(result) {
                     warn!("db actor failed to send response to actor: {}", err);
@@ -216,13 +238,25 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
 pub enum Message {
     /// Add a blob to the database, phase one of storing the blob.
     ///
-    /// Request is the `Buffer`, of which `length` (usize) bytes are used, that
-    /// makes up the blob.
+    /// Request is the `BufView` that makes up the blob.
     ///
     /// Responds with a query to commit to storing the blob, or the key of the
     /// blob if the blob is already in the database. Also returns the original,
     /// unchanged `BufView` in `Message::AddBlob`.
     AddBlob(RpcMessage<BufView, (AddBlobResponse, BufView)>),
+    /// Add a blob by streaming it to the database.
+    ///
+    /// Request is the length of the buffer to add.
+    ///
+    /// Responds with a [`StreamBlob`] which allows the blob to be stream to the
+    /// data file directly.
+    StreamBlob(RpcMessage<usize, StreamBlob>),
+    /// Add a streamed blob to the database.
+    ///
+    /// Request is a filled [`StreamBlob`].
+    ///
+    /// Returns the same thing as [`Message::AddBlob`].
+    AddStreamedBlob(RpcMessage<StreamBlob, AddBlobResponse>),
     /// Commit to a blob being stored, phase two of storing the blob.
     ///
     /// Request is the query to store the blob, returned by [`Message::AddBlob`].
@@ -324,6 +358,8 @@ macro_rules! from_rpc_message {
 from_rpc_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
 from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
 from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
+from_rpc_message!(Message::StreamBlob(usize) -> StreamBlob);
+from_rpc_message!(Message::AddStreamedBlob(StreamBlob) -> AddBlobResponse);
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::GetKeys(()) -> Keys);
