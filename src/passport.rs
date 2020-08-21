@@ -4,11 +4,15 @@
 
 use std::error::Error;
 use std::iter::FusedIterator;
+use std::mem::size_of;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use std::{array, fmt};
+
+use getrandom::getrandom;
+use log::warn;
 
 /// Request passport.
 ///
@@ -110,18 +114,41 @@ pub struct Uuid {
     bytes: [u8; 16], // 128 bits.
 }
 
+// Initial ids used by [`Uuid::new`] to generate new unique ids. Can be
+// optionally initialised by [`Uuid::initialise`].
+// `fetch_add` (used by `Uuid::new`) wraps around so any number is fine.
+static ID0: AtomicU64 = AtomicU64::new(9396178701149223067);
+static ID1: AtomicU64 = AtomicU64::new(6169990013871724815);
+
 impl Uuid {
     /// Returns an empty `Uuid`, containing all zeros.
     pub const fn empty() -> Uuid {
         Uuid { bytes: [0; 16] }
     }
 
-    /// Returns a new `Uuid`, unique during the running of the process.
-    pub fn new() -> Uuid {
-        // `fetch_add` wraps around so any number is fine.
-        static ID0: AtomicU64 = AtomicU64::new(9396178701149223067);
-        static ID1: AtomicU64 = AtomicU64::new(6169990013871724815);
+    /// Initialise the starting [`Uuid`] based on which pseudo-random ids are
+    /// generated using [`Uuid::new`].
+    pub fn initialise() {
+        let mut bytes = [0; size_of::<u64>() * 2];
+        if let Err(err) = getrandom(&mut bytes) {
+            // We can continue on as the correct operation doesn't depend on the
+            // randomness of `Uuid`.
+            warn!("failied to initialise `Uuid` properly: {}", err);
+        } else {
+            let mut ids = bytes.array_chunks();
+            let id0 = u64::from_ne_bytes(*ids.next().unwrap());
+            let id1 = u64::from_ne_bytes(*ids.next().unwrap());
+            ID0.store(id0, Ordering::Relaxed);
+            ID1.store(id1, Ordering::Relaxed);
+        }
+    }
 
+    /// Returns a new `Uuid`, unique during the running of the process.
+    ///
+    /// Call [`Uuid::initialise`] to initialise the starting id. Not calling
+    /// `initialise` doesn't result in an error, but does make the ids
+    /// predictable.
+    pub fn new() -> Uuid {
         // Oh no! Don't look here. Okay you got me... these aren't random bytes.
         // But we really only need 128 unique bits, not actually random bits.
         //

@@ -1,4 +1,5 @@
 #![feature(
+    array_chunks,
     array_value_iter,
     bool_to_option,
     exact_size_is_empty,

@@ -10,6 +10,7 @@ use log::{error, info};
 use parking_lot::RwLock;
 
 use stored::config::Config;
+use stored::passport::Uuid;
 use stored::peer::{self, Peers};
 use stored::util::CountDownLatch;
 use stored::{db, http};
@@ -63,6 +64,9 @@ macro_rules! map_err {
 }
 
 fn try_main() -> Result<(), ExitCode> {
+    // Make the generated `Uuid`s random.
+    Uuid::initialise();
+
     let config_path = parse_args()?;
     let config = Config::from_file(&config_path)
         .map_err(map_err!("error reading configuration file: {}"))?;
