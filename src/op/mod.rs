@@ -30,7 +30,7 @@ pub use remove::remove_blob;
 #[doc(inline)]
 pub(crate) use store::add_blob;
 #[doc(inline)]
-pub use store::store_blob;
+pub use store::{store_blob, store_streaming_blob, StreamResult};
 #[doc(inline)]
 pub use sync::full_sync;
 

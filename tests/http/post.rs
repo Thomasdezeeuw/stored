@@ -82,6 +82,109 @@ fn store_hello_mars_twice() {
 }
 
 #[test]
+fn stream_blob() {
+    let _p = start_stored();
+
+    let url = "/blob/102a731f35127adb6dc73d39ff4c2613b732d288bd26fc920474934f0dfa53f5e36f625a7238e6a341b4e0b3bc8e09af80b0d51ec018fda4baa3ae07615d5fbf";
+
+    const N: usize = 10;
+    let mut blob = Vec::with_capacity(N * 1024);
+    let blob_len = "10240";
+    for i in 1u8..=N as u8 {
+        blob.resize(i as usize * 1024, i);
+    }
+
+    request!(
+        POST DB_PORT, "/blob", &blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    let last_modified = date_header();
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, &blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+#[test]
+fn stream_same_blob_twice() {
+    let _p = start_stored();
+
+    let url = "/blob/f2f26d8590761a0ed61817059cca12c8615c93c4d9bbfb7d4d105487934df53da449a6b70923c377acbd0daf3672937d7ac9ac5542374ee2bdfae16300071cdb";
+
+    const N: usize = 32;
+    let mut blob = Vec::with_capacity(N * 1024);
+    let blob_len = "32768";
+    for i in 0u8..N as u8 {
+        blob.resize((i + 1) as usize * 1024, i);
+    }
+
+    request!(
+        POST DB_PORT, "/blob", &blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    let last_modified = date_header();
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, &blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    // Storing the blob a second time shouldn't change anything.
+    request!(
+        POST DB_PORT, "/blob", &blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, &blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+#[test]
+fn stream_part_of_a_blob() {
+    let _p = start_stored();
+
+    const N: usize = 5;
+    let mut blob = Vec::with_capacity(N * 1024);
+    let blob_len = "6000"; // Should be 5125.
+    for i in 1u8..=N as u8 {
+        blob.resize(i as usize * 1024, i);
+    }
+
+    request!(
+        POST DB_PORT, "/blob", &blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::BAD_REQUEST, body::INCOMPLETE,
+        CONTENT_LENGTH => body::INCOMPLETE_LEN,
+        CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::CLOSE,
+    );
+}
+
+#[test]
 fn index() {
     let _p = start_stored();
     request!(
@@ -140,7 +243,7 @@ fn content_length_too_large() {
     let _p = start_stored();
     request!(
         POST DB_PORT, "/blob", body::EMPTY,
-        CONTENT_LENGTH => "1048577"; // 1 above max.
+        CONTENT_LENGTH => "1099511627776";
         expected: StatusCode::PAYLOAD_TOO_LARGE, body::PAYLOAD_TOO_LARGE,
         CONTENT_LENGTH => body::PAYLOAD_TOO_LARGE_LEN,
         CONTENT_TYPE => header::PLAIN_TEXT,

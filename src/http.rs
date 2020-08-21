@@ -19,14 +19,16 @@
 // - For writing.
 // - For rpc with storage actor.
 
+use std::cmp::min;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, IoSlice, Write};
+use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
-use std::{fmt, str};
+use std::{fmt, ptr, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::io::AsyncWriteExt;
@@ -45,11 +47,18 @@ use parking_lot::{Once, RwLock};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
-use crate::op::{self, Outcome};
+use crate::op::{self, Outcome, StreamResult};
 use crate::passport::{Event, Passport, Uuid};
 use crate::peer::Peers;
-use crate::storage::{Blob, BlobEntry};
+use crate::storage::{Blob, BlobEntry, StreamBlob};
+use crate::util::wait_for_wakeup;
 use crate::{db, Key};
+
+// TODO: get this from a configuration.
+/// Maximum blob size acceptable.
+const MAX_BLOB_SIZE: usize = 1024 * 1024 * 1024; // 1GB.
+/// Minimum blob size to stream the blob.
+const MIN_STREAM_BLOB_SIZE: usize = 4 * 1024; // 4kB.
 
 /// Setup the HTTP listener.
 ///
@@ -338,6 +347,16 @@ impl Connection {
             .write_all_vectored(bufs)
             .await
             .map(|()| passport.mark(Event::WrittenHttpResponse))
+    }
+
+    /// Directly reads from the underlying socket, skipping the buffer and any
+    /// async goodness.
+    fn raw_read(&mut self, bytes: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+        use std::io::Read;
+        // Safety: this is UB, but the Heph and Mio implementations don't look
+        // at the bytes (source: Author of both).
+        self.stream
+            .read(unsafe { &mut *(bytes as *mut _ as *mut _) })
     }
 }
 
@@ -684,20 +703,97 @@ async fn store_blob(
     peers: &Peers,
     body_length: usize,
 ) -> crate::Result<(ResponseKind, bool)> {
-    match read_blob(ctx, conn, passport, body_length).await {
-        Ok(Outcome::Continue(())) => {}
-        Ok(Outcome::Done((response, should_close))) => return Ok((response, should_close)),
-        Err(err) => return Err(err),
-    }
+    match body_length {
+        0 => Ok((ResponseKind::BadRequest("Can't store empty blob"), false)),
+        blob_length if blob_length > MAX_BLOB_SIZE => Ok((ResponseKind::TooLargePayload, true)),
+        blob_length if blob_length <= MIN_STREAM_BLOB_SIZE => {
+            match read_blob(ctx, conn, passport, body_length).await {
+                Ok(Outcome::Continue(())) => {}
+                Ok(Outcome::Done((response, should_close))) => return Ok((response, should_close)),
+                Err(err) => return Err(err),
+            }
 
-    // NOTE: `store_blob` will advance the buffer for use.
-    match op::store_blob(ctx, db_ref, passport, peers, &mut conn.buf, body_length).await {
-        Ok(key) => Ok((ResponseKind::Stored(key), false)),
-        Err(()) => Ok((ResponseKind::ServerError, true)),
+            // NOTE: `store_blob` will advance the buffer for use.
+            match op::store_blob(ctx, db_ref, passport, peers, &mut conn.buf, body_length).await {
+                Ok(key) => Ok((ResponseKind::Stored(key), false)),
+                Err(()) => Ok((ResponseKind::ServerError, true)),
+            }
+        }
+        blob_length => {
+            let write = move |mut stream_blob: StreamBlob| {
+                async move {
+                    // First copy over all the contents of the blob in the
+                    // buffer to the data file.
+                    // Safety:
+                    // `write_bytes`: we're ensuring that we return the correct
+                    //   number of bytes written.
+                    // `copy_nonoverlapping`: both the src and dst pointers are
+                    //   good. And we've ensured that the length is correct, not
+                    //   overwriting data we don't own or reading data we don't
+                    //   own.
+                    // `unwrap`: we've returned `Ok` ourselves.
+                    let mut written = unsafe {
+                        stream_blob
+                            .write_bytes(|bytes| {
+                                let len = min(conn.buf.len(), bytes.len());
+                                ptr::copy_nonoverlapping(
+                                    conn.buf.as_bytes().as_ptr(),
+                                    bytes.as_mut_ptr() as *mut _,
+                                    len,
+                                );
+                                conn.buf.processed(len);
+                                Ok(len)
+                            })
+                            .unwrap()
+                    };
+
+                    // If the buffer didn't contain the entire blob we need to
+                    // read more from the connection.
+                    while written < blob_length {
+                        // TODO: put a max on the number of bytes we read at a
+                        // time? Not sure if OSes will complain, or just return
+                        // less bytes.
+                        // Safety: the call to read ensure that we've
+                        // initialised to number of bytes we return.
+                        let res = unsafe { stream_blob.write_bytes(|bytes| conn.raw_read(bytes)) };
+                        match res {
+                            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                            Ok(n) => written += n,
+                            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                                // Heph will schedule us once there is more data
+                                // to read.
+                                wait_for_wakeup().await;
+                                continue;
+                            }
+                            Err(err) => return Err(err),
+                        }
+                    }
+
+                    // If we reach this point we've written the entire blob so
+                    // we're done.
+                    Ok(stream_blob)
+                }
+            };
+            let res = unsafe {
+                op::store_streaming_blob(ctx, db_ref, passport, peers, blob_length, write).await
+            };
+            match res {
+                StreamResult::Ok(key) => Ok((ResponseKind::Stored(key), false)),
+                StreamResult::IoErr(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                    Ok((ResponseKind::BadRequest("Incomplete blob"), true))
+                }
+                StreamResult::IoErr(err) => Err(err.describe("streaming request body")),
+                StreamResult::DbError => Ok((ResponseKind::ServerError, true)),
+            }
+        }
     }
 }
 
 /// Read a blob of length `body_length` from the `conn`ection.
+///
+/// # Notes
+///
+/// `body_length` must not be 0.
 async fn read_blob(
     ctx: &mut actor::Context<!>,
     conn: &mut Connection,
@@ -705,20 +801,9 @@ async fn read_blob(
     body_length: usize,
 ) -> crate::Result<Outcome<(), (ResponseKind, bool)>> {
     trace!(
-        "reading blob from HTTP request body: request_id={}",
+        "reading blob from HTTP request body: request_id=\"{}\"",
         passport.id()
     );
-    // TODO: get this from a configuration.
-    const MAX_SIZE: usize = 1024 * 1024; // 1MB.
-
-    if body_length == 0 {
-        return Ok(Outcome::Done((
-            ResponseKind::BadRequest("Can't store empty blob"),
-            false,
-        )));
-    } else if body_length > MAX_SIZE {
-        return Ok(Outcome::Done((ResponseKind::TooLargePayload, true)));
-    }
 
     if conn.buf.len() < body_length {
         // Haven't read entire body yet.
@@ -737,7 +822,8 @@ async fn read_blob(
     }
 
     trace!(
-        "read blob from HTTP request body: length={}",
+        "read blob from HTTP request body: : request_id=\"{}\", length={}",
+        passport.id(),
         conn.buf.len()
     );
     passport.mark(Event::ReadHttpBody);

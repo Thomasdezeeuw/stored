@@ -1,6 +1,7 @@
 //! Module with the store blob operation.
 
 use std::future::Future;
+use std::io;
 use std::mem::replace;
 use std::pin::Pin;
 use std::task::{self, Poll};
@@ -14,7 +15,7 @@ use crate::db::{self, AddBlobResponse};
 use crate::op::{commit_query, consensus, db_rpc, DbRpc, Outcome};
 use crate::passport::{Event, Passport};
 use crate::peer::{ConsensusId, PeerRpc, Peers};
-use crate::storage::{BlobEntry, Query, StoreBlob};
+use crate::storage::{BlobEntry, Query, StoreBlob, StreamBlob};
 use crate::{Buffer, Key};
 
 /// Stores a blob in the database.
@@ -40,30 +41,7 @@ pub async fn store_blob<M>(
         Err(()) => return Err(()),
     };
 
-    let key = query.key().clone();
-    if peers.is_empty() {
-        // Easy mode!
-        debug!(
-            "running in single mode, not running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            key,
-        );
-        // We can directly commit to storing the blob, we're always in agreement
-        // with ourselves.
-        commit_query(ctx, db_ref, passport, query, SystemTime::now())
-            .await
-            .map(|_| key)
-    } else {
-        // Hard mode.
-        debug!(
-            "running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            key,
-        );
-        consensus(ctx, db_ref, passport, peers, query)
-            .await
-            .map(|_| key)
-    }
+    store_phase_two(ctx, db_ref, passport, peers, query).await
 }
 
 /// Phase one of storing a blob: adding the bytes to the data file.
@@ -107,6 +85,157 @@ where
             passport.mark(Event::FailedToAddBlob);
             Err(())
         }
+    }
+}
+
+/// Stores a blob in the database, streaming the blob to the data file.
+///
+/// The `write` function must return a [`Future`] that writes blob into the
+/// [`StreamBlob`] type.
+///
+/// Also see [`store_blob`].
+///
+/// # Panics
+///
+/// This panics if the returned `Future` by `write` fails to fully write the
+/// blob into `StreamBlob`.
+pub async fn store_streaming_blob<M, F, W>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    peers: &Peers,
+    blob_length: usize,
+    write: F,
+) -> StreamResult<Key>
+where
+    F: FnOnce(StreamBlob) -> W,
+    W: Future<Output = io::Result<StreamBlob>>,
+{
+    debug!(
+        "running streaming store operation: request_id=\"{}\", blob_length={}",
+        passport.id(),
+        blob_length,
+    );
+
+    let query = match stream_add_blob(ctx, db_ref, passport, blob_length, write).await {
+        StreamResult::Ok(Outcome::Continue(query)) => query,
+        StreamResult::Ok(Outcome::Done(key)) => return StreamResult::Ok(key),
+        StreamResult::IoErr(err) => return StreamResult::IoErr(err),
+        StreamResult::DbError => return StreamResult::DbError,
+    };
+
+    match store_phase_two(ctx, db_ref, passport, peers, query).await {
+        Ok(key) => StreamResult::Ok(key),
+        Err(()) => StreamResult::DbError,
+    }
+}
+
+/// Result returned by [`store_streaming_blob`].
+pub enum StreamResult<T> {
+    Ok(T),
+    /// Streaming the blob to disk failed, the source of the data returned an
+    /// error.
+    IoErr(io::Error),
+    /// RPC to db actor failed.
+    DbError,
+}
+
+/// Phase one of storing a blob: streaming the bytes to the data file.
+pub(crate) async fn stream_add_blob<M, K, F, W>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    blob_length: usize,
+    write: F,
+) -> StreamResult<Outcome<StoreBlob, Key>>
+where
+    K: RuntimeAccess,
+    F: FnOnce(StreamBlob) -> W,
+    W: Future<Output = io::Result<StreamBlob>>,
+{
+    // Behold the great `match` pyramid!
+    match db_rpc(ctx, db_ref, *passport.id(), blob_length) {
+        Ok(rpc) => match rpc.await {
+            Ok(stream_blob) => {
+                // Write the blob to the data file.
+                let stream_blob = match write(stream_blob).await {
+                    Ok(stream_blob) => stream_blob,
+                    Err(err) => {
+                        passport.mark(Event::FailedToAddBlob);
+                        return StreamResult::IoErr(err);
+                    }
+                };
+                debug_assert_eq!(stream_blob.bytes_left(), 0);
+
+                // Add the blob to the database, completing phase one.
+                match db_rpc(ctx, db_ref, *passport.id(), stream_blob) {
+                    Ok(rpc) => match rpc.await {
+                        Ok(result) => {
+                            passport.mark(Event::AddedBlob);
+                            match result {
+                                AddBlobResponse::Query(query) => {
+                                    StreamResult::Ok(Outcome::Continue(query))
+                                }
+                                AddBlobResponse::AlreadyStored(key) => {
+                                    StreamResult::Ok(Outcome::Done(key))
+                                }
+                            }
+                        }
+                        Err(()) => {
+                            passport.mark(Event::FailedToAddBlob);
+                            StreamResult::DbError
+                        }
+                    },
+                    Err(()) => {
+                        passport.mark(Event::FailedToAddBlob);
+                        StreamResult::DbError
+                    }
+                }
+            }
+            Err(()) => {
+                passport.mark(Event::FailedToAddBlob);
+                StreamResult::DbError
+            }
+        },
+        Err(()) => {
+            passport.mark(Event::FailedToAddBlob);
+            StreamResult::DbError
+        }
+    }
+}
+
+/// Phase one of storing a blob: running consensus with the peers and committing
+/// the blob to storage.
+async fn store_phase_two<M>(
+    ctx: &mut actor::Context<M>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    peers: &Peers,
+    query: StoreBlob,
+) -> Result<Key, ()> {
+    let key = query.key().clone();
+    if peers.is_empty() {
+        // Easy mode!
+        debug!(
+            "running in single mode, not running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            key,
+        );
+        // We can directly commit to storing the blob, we're always in agreement
+        // with ourselves.
+        commit_query(ctx, db_ref, passport, query, SystemTime::now())
+            .await
+            .map(|_| key)
+    } else {
+        // Hard mode.
+        debug!(
+            "running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+            passport.id(),
+            key,
+        );
+        consensus(ctx, db_ref, passport, peers, query)
+            .await
+            .map(|_| key)
     }
 }
 

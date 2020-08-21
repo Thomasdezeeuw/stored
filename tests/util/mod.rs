@@ -474,7 +474,7 @@ pub mod http {
         pub const PAYLOAD_TOO_LARGE_LEN: &str = "14";
 
         pub const INCOMPLETE: &[u8] = b"Incomplete blob";
-        pub const INCOMPLETE_LEN: &str = "14";
+        pub const INCOMPLETE_LEN: &str = "15";
 
         pub const UNEXPECTED_BODY: &[u8] = b"Unexpected request body";
         pub const UNEXPECTED_BODY_LEN: &str = "23";
