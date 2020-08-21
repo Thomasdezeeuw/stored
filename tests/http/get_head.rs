@@ -2,7 +2,7 @@
 
 use std::sync::Once;
 
-use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
+use http::header::{HeaderName, CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED};
 use http::status::StatusCode;
 use log::LevelFilter;
 
@@ -208,6 +208,50 @@ fn with_body() {
             } else {
                 body::EMPTY
             },
+        );
+    }
+}
+
+#[test]
+fn request_id() {
+    let _p = start_stored();
+
+    let request_ids = &[
+        (
+            "5f91644b917d410885f1d8b542126894",
+            "5f91644b917d410885f1d8b542126894",
+        ),
+        (
+            "5f91644b-917d-4108-85f1-d8b542126894",
+            "5f91644b917d410885f1d8b542126894",
+        ),
+        (
+            "828ef0b8a876457985db3cc9d1b5f6e5",
+            "828ef0b8a876457985db3cc9d1b5f6e5",
+        ),
+        (
+            "828ef0b8-a876-4579-85db-3cc9d1b5f6e5",
+            "828ef0b8a876457985db3cc9d1b5f6e5",
+        ),
+    ];
+    let x_request_id = HeaderName::from_static("x-request-id");
+    let mut request_headers = [(x_request_id.clone(), "")];
+    let mut response_headers = [
+        (CONTENT_LENGTH, body::NOT_FOUND_LEN),
+        (CONTENT_TYPE, header::PLAIN_TEXT),
+        (CONNECTION, header::KEEP_ALIVE),
+        (x_request_id, ""),
+    ];
+
+    for request_id in request_ids {
+        request_headers[0].1 = request_id.0;
+        response_headers[3].1 = request_id.1;
+        let response = request("GET", "/", DB_PORT, &request_headers, b"");
+        assert_response(
+            response,
+            StatusCode::NOT_FOUND,
+            &response_headers,
+            body::NOT_FOUND,
         );
     }
 }

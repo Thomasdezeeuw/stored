@@ -681,9 +681,17 @@ pub mod http {
                 }
             }
         }
+        // Always have Date, Server and Request-ID headers.
+        let want_headers_len = if contains_request_id_header(want_headers) {
+            // Wanted headers already contains Request-ID header, don't want to
+            // count it twice.
+            want_headers.len() + 2
+        } else {
+            want_headers.len() + 3
+        };
         assert_eq!(
             response.headers().len(),
-            want_headers.len() + 3, // Always have Date, Server and Request-ID headers.
+            want_headers_len,
             "Missing headers: {:?}",
             missing_headers(response.headers(), want_headers)
         );
@@ -728,6 +736,15 @@ pub mod http {
             str::from_utf8(got_body),
             str::from_utf8(want_body)
         );
+    }
+
+    fn contains_request_id_header(headers: &[(HeaderName, &str)]) -> bool {
+        for (header, _) in headers {
+            if header.as_str() == "x-request-id" {
+                return true;
+            }
+        }
+        false
     }
 
     #[test]
