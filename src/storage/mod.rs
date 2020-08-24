@@ -448,17 +448,19 @@ impl Storage {
     /// [query]: StoreBlob
     /// [committed]: Storage::commit
     pub fn stream_blob(&mut self, length: usize) -> io::Result<StreamBlob> {
-        // FIXME: when streaming we still need to add the query to uncommitted
-        // blobs for the peer to retrieve.
         trace!("streaming blob: blob_length={}", length);
-        self.data
-            .reserve(length)
-            .map(|(slice, file_offset)| StreamBlob {
+        self.data.reserve(length).map(|(slice, file_offset)| {
+            if let Err(err) = slice.madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED) {
+                warn!("error prefetching StreamBlob data, continuing: {}", err);
+            }
+
+            StreamBlob {
                 slice,
                 offset: 0,
                 file_offset,
                 calculator: KeyCalculator::new(),
-            })
+            }
+        })
     }
 
     /// Remove the blob with `key` from the database.
@@ -2169,6 +2171,16 @@ impl<T> MmapSliceMut<T> {
     fn as_mut_slice(&mut self) -> &mut [T] {
         check_address(self.address.as_ptr(), self.length);
         unsafe { slice::from_raw_parts_mut(self.address.as_ptr(), self.length) }
+    }
+
+    /// Call `madvise`
+    fn madvise(&self, advise: libc::c_int) -> io::Result<()> {
+        madvise(
+            // Not required to be page aligned.
+            self.address.as_ptr() as *mut _,
+            self.length as usize,
+            advise,
+        )
     }
 
     /// Call `msync(2)` with `MS_ASYNC`. Returns immediately.
