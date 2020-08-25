@@ -240,8 +240,7 @@ pub async fn actor(
             response.status_code().0,
             response.len(),
         );
-        // Log the request passport to standard error.
-        info!("request passport: {}", request.passport);
+        debug!("request passport: {}", request.passport);
 
         // In cases were we don't/can't read the (entire) body we need to close
         // the connection.
