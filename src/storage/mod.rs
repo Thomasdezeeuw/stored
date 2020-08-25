@@ -401,6 +401,7 @@ impl Storage {
     /// [query]: StoreBlob
     /// [committed]: Storage::commit
     pub fn add_blob(&mut self, blob: &[u8]) -> AddResult {
+        debug_assert!(blob.len() <= u32::MAX as usize);
         let key = Key::for_blob(blob);
         trace!("adding blob: key={} length={}", key, blob.len());
 
@@ -448,6 +449,7 @@ impl Storage {
     /// [query]: StoreBlob
     /// [committed]: Storage::commit
     pub fn stream_blob(&mut self, length: usize) -> io::Result<StreamBlob> {
+        debug_assert!(length <= u32::MAX as usize);
         trace!("streaming blob: blob_length={}", length);
         self.data.reserve(length).map(|(slice, file_offset)| {
             if let Err(err) = slice.madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED) {
@@ -506,6 +508,7 @@ impl Storage {
     ///
     /// [committing]: Storage::commit
     pub fn store_blob(&mut self, blob: &[u8], created_at: SystemTime) -> io::Result<SystemTime> {
+        debug_assert!(blob.len() <= u32::MAX as usize);
         let key = Key::for_blob(blob);
         trace!(
             "storing blob: key={}, length={}, created_at={:?}",
