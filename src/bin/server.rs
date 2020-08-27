@@ -20,7 +20,8 @@ use stored::util::CountDownLatch;
 use stored::{db, http};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMMIT_HASH: Option<&str> = option_env!("GIT_HASH");
+const COMMIT_VERSION: Option<&str> = option_env!("COMMIT_VERSION");
+
 const USAGE: &str = concat!(
     "Stored v",
     env!("CARGO_PKG_VERSION"),
@@ -147,8 +148,8 @@ async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(
 fn parse_args() -> Result<String, ExitCode> {
     match env::args().nth(1) {
         Some(arg) if arg == "-v" || arg == "--version" => {
-            if let Some(commit_hash) = COMMIT_HASH {
-                println!("Stored v{} ({})", VERSION, commit_hash);
+            if let Some(commit_version) = COMMIT_VERSION {
+                println!("Stored v{} ({})", VERSION, commit_version);
             } else {
                 println!("Stored v{}", VERSION);
             }

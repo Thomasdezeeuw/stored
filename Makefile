@@ -1,6 +1,9 @@
 export RUSTFLAGS                ?= -C target-cpu=native
 export MACOSX_DEPLOYMENT_TARGET ?= 10.15
-export GIT_HASH                 := $(shell git rev-parse --short HEAD)
+export GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
+# Either " modified" or empty if on a clean branch.
+export GIT_MODIFIED              = $(shell git diff --quiet --ignore-submodules HEAD 2> /dev/null || echo " modified")
+export COMMIT_VERSION            = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
 
 build:
 	cargo build --release
