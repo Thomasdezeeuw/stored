@@ -1,9 +1,9 @@
-RUSTFLAGS                ?= "-C target-cpu=native"
-MACOSX_DEPLOYMENT_TARGET ?= "10.15"
+export RUSTFLAGS                ?= -C target-cpu=native
+export MACOSX_DEPLOYMENT_TARGET ?= 10.15
+export GIT_HASH                 := $(shell git rev-parse --short HEAD)
 
 build:
-	RUSTFLAGS=$(RUSTFLAGS) MACOSX_DEPLOYMENT_TARGET=$(MACOSX_DEPLOYMENT_TARGET) \
-		cargo build --release
+	cargo build --release
 
 test:
 	cargo test
