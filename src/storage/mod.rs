@@ -2288,6 +2288,9 @@ fn munmap(addr: *mut libc::c_void, len: libc::size_t) -> io::Result<()> {
 /// `madvise(2)` system call.
 fn madvise(addr: *mut libc::c_void, len: libc::size_t, advise: libc::c_int) -> io::Result<()> {
     debug_assert!(len != 0);
+    // Linux requires `addr` to be page aligned.
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    let (addr, len) = align(addr, len);
     if unsafe { libc::madvise(addr, len, advise) != 0 } {
         Err(io::Error::last_os_error())
     } else {
@@ -2301,10 +2304,8 @@ fn unaligned_msync(
     length: libc::size_t,
     flags: libc::c_int,
 ) -> io::Result<()> {
-    let address = address as usize;
-    let aligned_address = prev_page_aligned(address);
-    let total_length = address - aligned_address + length;
-    msync(aligned_address as *mut _, total_length, flags)
+    let (aligned_address, total_length) = align(address, length);
+    msync(aligned_address, total_length, flags)
 }
 
 /// `msync(2)` system call.
@@ -2317,6 +2318,15 @@ fn msync(addr: *mut libc::c_void, len: libc::size_t, flags: libc::c_int) -> io::
     } else {
         Ok(())
     }
+}
+
+/// Align `address` to the previous page, increasing `length` to include the
+/// bytes required for alignment.
+fn align(address: *mut libc::c_void, length: libc::size_t) -> (*mut libc::c_void, libc::size_t) {
+    let address = address as usize;
+    let aligned_address = prev_page_aligned(address);
+    let total_length = address - aligned_address + length;
+    (aligned_address as *mut libc::c_void, total_length)
 }
 
 /// Lock `file` using `flock(2)`.
