@@ -719,7 +719,7 @@ async fn store_blob(
             }
         }
         blob_length => {
-            let write = move |mut stream_blob: StreamBlob| {
+            let write = move |mut stream_blob: Box<StreamBlob>| {
                 async move {
                     // First copy over all the contents of the blob in the
                     // buffer to the data file.

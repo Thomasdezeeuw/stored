@@ -108,8 +108,10 @@ pub async fn store_streaming_blob<M, F, W>(
     write: F,
 ) -> StreamResult<Key>
 where
-    F: FnOnce(StreamBlob) -> W,
-    W: Future<Output = io::Result<StreamBlob>>,
+    // Note: `F` really should be `FnOnce(&mut StreamBlob) -> W`, but I couldn't
+    // get the lifetime to work.
+    F: FnOnce(Box<StreamBlob>) -> W,
+    W: Future<Output = io::Result<Box<StreamBlob>>>,
 {
     debug!(
         "running streaming store operation: request_id=\"{}\", blob_length={}",
@@ -150,8 +152,8 @@ pub(crate) async fn stream_add_blob<M, K, F, W>(
 ) -> StreamResult<Outcome<StoreBlob, Key>>
 where
     K: RuntimeAccess,
-    F: FnOnce(StreamBlob) -> W,
-    W: Future<Output = io::Result<StreamBlob>>,
+    F: FnOnce(Box<StreamBlob>) -> W,
+    W: Future<Output = io::Result<Box<StreamBlob>>>,
 {
     // Behold the great `match` pyramid!
     match db_rpc(ctx, db_ref, *passport.id(), blob_length) {

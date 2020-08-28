@@ -112,6 +112,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                 let blob_length = request;
                 let stream_blob = storage
                     .stream_blob(blob_length)
+                    .map(Box::new)
                     .map_err(|err| err.describe("streaming a blob"))?;
                 if let Result::Err(err) = response.respond(stream_blob) {
                     warn!("db actor failed to send response to actor: {}", err);
@@ -250,13 +251,16 @@ pub enum Message {
     ///
     /// Responds with a [`StreamBlob`] which allows the blob to be stream to the
     /// data file directly.
-    StreamBlob(RpcMessage<usize, StreamBlob>),
+    // NOTE: `StreamBlob` is rather large (272 bytes at the time of writing)
+    // compare the other variants. Using a box here to reduce the in-balance a
+    // bit.
+    StreamBlob(RpcMessage<usize, Box<StreamBlob>>),
     /// Add a streamed blob to the database.
     ///
     /// Request is a filled [`StreamBlob`].
     ///
     /// Returns the same thing as [`Message::AddBlob`].
-    AddStreamedBlob(RpcMessage<StreamBlob, AddBlobResponse>),
+    AddStreamedBlob(RpcMessage<Box<StreamBlob>, AddBlobResponse>),
     /// Commit to a blob being stored, phase two of storing the blob.
     ///
     /// Request is the query to store the blob, returned by [`Message::AddBlob`].
@@ -358,8 +362,8 @@ macro_rules! from_rpc_message {
 from_rpc_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
 from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
 from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
-from_rpc_message!(Message::StreamBlob(usize) -> StreamBlob);
-from_rpc_message!(Message::AddStreamedBlob(StreamBlob) -> AddBlobResponse);
+from_rpc_message!(Message::StreamBlob(usize) -> Box<StreamBlob>);
+from_rpc_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::GetKeys(()) -> Keys);
