@@ -680,7 +680,7 @@ impl StreamBlob {
         let key = calculator.finish();
 
         if storage.contains(&key) {
-            return AddResult::AlreadyStored(key);
+            AddResult::AlreadyStored(key)
         } else {
             match slice.start_sync() {
                 Ok(()) => {

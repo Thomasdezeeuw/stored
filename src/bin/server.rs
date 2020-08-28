@@ -132,13 +132,11 @@ fn try_main() -> Result<(), ExitCode> {
 
 /// Actor that waits for a signal and prints a message.
 async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(), !> {
-    loop {
-        let signal = ctx.receive_next().await;
-        match signal {
-            Signal::Interrupt | Signal::Terminate | Signal::Quit => {
-                info!("received {:#} signal, shutting down", signal);
-                return Ok(());
-            }
+    let signal = ctx.receive_next().await;
+    match signal {
+        Signal::Interrupt | Signal::Terminate | Signal::Quit => {
+            info!("received {:#} signal, shutting down", signal);
+            return Ok(());
         }
     }
 }
