@@ -390,7 +390,10 @@ mod tests {
         assert_eq!(size_of::<&'static str>(), 16);
         assert_eq!(size_of::<Event>(), 1);
 
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
         assert_eq!(size_of::<Mark>(), 16);
+        #[cfg(any(target_os = "freebsd", target_os = "linux"))]
+        assert_eq!(size_of::<Mark>(), 24);
     }
 
     #[test]
