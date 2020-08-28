@@ -2342,7 +2342,7 @@ fn lock(file: &mut File) -> io::Result<()> {
 }
 
 /// `fallocate(2)` system call.
-#[cfg(any(target_os = "android", target_os = "linux",))]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
     // Allocates more disk space (mode = 0), starting at offset 0.
     if unsafe { libc::fallocate(fd, 0, 0, new_len) } == -1 {
@@ -2352,8 +2352,19 @@ fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
     }
 }
 
-/// Emulated `fallocate(2)` system call.
-#[cfg(any(target_os = "ios", target_os = "macos",))]
+/// Emulated `fallocate(2)` using the `posix_fallocate(2)` system call.
+#[cfg(any(target_os = "freebsd"))]
+fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
+    // Allocates more disk space, starting at offset 0.
+    if unsafe { libc::posix_fallocate(fd, 0, new_len) } == -1 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// Emulated `fallocate(2)` using the `ftruncate(2)` system call.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 fn fallocate(fd: libc::c_int, new_len: libc::off_t) -> io::Result<()> {
     // `ftruncate(2)` can actually grow the file. Alternatively we could use
     // `fcntl(2)` with `F_PREALLOCATE`, however that doesn't seem to increase
