@@ -536,8 +536,8 @@ where
     // Failed too many times.
     error!(
         "failed {} consensus algorithm runs: request_id=\"{}\", key=\"{}\"",
-        passport.id(),
         MAX_CONSENSUS_TRIES,
+        passport.id(),
         query.key()
     );
     // Abort the last consensus run.
