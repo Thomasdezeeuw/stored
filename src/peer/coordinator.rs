@@ -130,6 +130,10 @@ pub mod relay {
         // NOTE: this must happen after reading (and adding) the known peers.
         peers.connected(&remote);
 
+        stream
+            .set_keepalive(true)
+            .map_err(|err| err.describe("setting keepalive"))?;
+
         // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
 
         // FIXME: rather then restarting this actor on connection errors, try to
