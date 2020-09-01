@@ -89,7 +89,7 @@ fn try_main() -> Result<(), ExitCode> {
     );
     runtime.receive_signals(actor_ref);
 
-    info!("opening database '{}'", config.path.display());
+    info!("opening database: path=\"{}\"", config.path.display());
     let db_ref =
         db::start(&mut runtime, config.path).map_err(map_err!("error opening database: {}"))?;
 

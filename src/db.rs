@@ -61,11 +61,14 @@ where
 {
     fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<Storage> {
         error!("error operating on database: {}", err);
-        info!("attempting to reopen database: path={}", self.0.display());
+        info!(
+            "attempting to reopen database: path=\"{}\"",
+            self.0.display()
+        );
         match Storage::open(&self.0) {
             Ok(storage) => {
                 info!(
-                    "successfully reopened database, restarting database actor: path={}",
+                    "successfully reopened database, restarting database actor: path=\"{}\"",
                     self.0.display()
                 );
                 SupervisorStrategy::Restart(storage)
@@ -74,7 +77,7 @@ where
                 // FIXME: shutdown the entire server somehow? Maybe by sending
                 // the TCP server a shutdown message?
                 error!(
-                    "failed to reopen database, not restarting database actor: {}: path={}",
+                    "failed to reopen database, not restarting database actor: {}: path=\"{}\"",
                     err,
                     self.0.display(),
                 );
@@ -149,7 +152,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
             }
             Message::GetBlob(RpcMessage { request, response }) => {
                 let key = request;
-                debug!("retrieving blob: key={}", key);
+                debug!("retrieving blob: key=\"{}\"", key);
                 let result = storage.lookup(&key);
                 if let Err(err) = response.respond(result) {
                     warn!("db actor failed to send response to actor: {}", err);
@@ -157,7 +160,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
             }
             Message::GetUncommittedBlob(RpcMessage { request, response }) => {
                 let key = request;
-                debug!("retrieving uncommitted blob: key={}", key);
+                debug!("retrieving uncommitted blob: key=\"{}\"", key);
                 let result = storage
                     .lookup_uncommitted(&key)
                     .ok_or_else(|| storage.lookup(&key));

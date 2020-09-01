@@ -209,7 +209,7 @@ where
     E: fmt::Display,
 {
     warn!(
-        "syncing with peer failed: {}: remote_address={}",
+        "syncing with peer failed: {}: remote_address=\"{}\"",
         err, peer.address
     );
     peer.state = State::Failed;
@@ -310,7 +310,7 @@ impl SyncingPeer {
             }),
             Err(err) => {
                 warn!(
-                    "failed to start syncing to actor: {}: remote_address={}",
+                    "failed to start syncing to actor: {}: remote_address=\"{}\"",
                     err, peer_address
                 );
                 None
@@ -367,7 +367,7 @@ where
     // writes.
     if let Err(err) = stream.set_nodelay(true) {
         error!(
-            "error setting `TCP_NODELAY`, continuing: {}: remote_address={}",
+            "error setting `TCP_NODELAY`, continuing: {}: remote_address=\"{}\"",
             err, peer_address
         );
     }

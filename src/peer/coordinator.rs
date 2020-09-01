@@ -74,13 +74,13 @@ pub mod relay {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres={}, server_address={}",
+                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres=\"{}\", server_address=\"{}\"",
                     self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
                 );
                 SupervisorStrategy::Restart((self.remote, self.peers.clone(), self.server))
             } else {
                 warn!(
-                    "peer coordinator relay failed, stopping it: {}: remote_address={}, server_address={}",
+                    "peer coordinator relay failed, stopping it: {}: remote_address=\"{}\", server_address=\"{}\"",
                     err, self.remote, self.server,
                 );
                 self.peers.remove(&self.remote);
@@ -108,7 +108,7 @@ pub mod relay {
         server: SocketAddr,
     ) -> crate::Result<()> {
         debug!(
-            "starting coordinator relay: remote_address={}, server_address={}",
+            "starting coordinator relay: remote_address=\"{}\", server_address=\"{}\"",
             remote, server
         );
 
@@ -392,7 +392,7 @@ pub mod relay {
         server: &SocketAddr,
     ) -> crate::Result<TcpStream> {
         trace!(
-            "coordinator relay connecting to peer participant: remote_address={}",
+            "coordinator relay connecting to peer participant: remote_address=\"{}\"",
             remote
         );
         let mut wait = START_WAIT;
@@ -447,7 +447,7 @@ pub mod relay {
         }
 
         trace!(
-            "coordinator relay writing setup to peer participant: remote_address={}, server_address={}",
+            "coordinator relay writing setup to peer participant: remote_address=\"{}\", server_address=\"{}\"",
             remote,
             server,
         );
@@ -599,7 +599,7 @@ pub mod relay {
                         Some(rpc_response) => {
                             if let Err(err) = rpc_response.respond(response.vote) {
                                 warn!(
-                                    "failed to relay peer response to actor: {}: request.id={}",
+                                    "failed to relay peer response to actor: {}: request_id=\"{}\"",
                                     err, response.request_id
                                 );
                             }

@@ -75,7 +75,7 @@ pub(crate) async fn run_actor<M>(
 ) {
     if let Err(err) = actor(ctx, stream, buf, db_ref).await {
         warn!(
-            "peer server failed: {}: remote_address={}, server_address={}",
+            "peer server failed: {}: remote_address=\"{}\", server_address=\"{}\"",
             err, remote, server
         );
     }

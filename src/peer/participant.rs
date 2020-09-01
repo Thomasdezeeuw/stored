@@ -149,7 +149,7 @@ pub mod dispatcher {
     ) {
         if let Err(err) = actor(ctx, stream, buf, peers, db_ref, server).await {
             warn!(
-                "participant dispatcher failed: {}: remote_address={}, server_address={}",
+                "participant dispatcher failed: {}: remote_address=\"{}\", server_address=\"{}\"",
                 err, remote, server
             );
         }
@@ -169,7 +169,10 @@ pub mod dispatcher {
         db_ref: ActorRef<db::Message>,
         server: SocketAddr,
     ) -> crate::Result<()> {
-        debug!("starting participant dispatcher: server_address={}", server);
+        debug!(
+            "starting participant dispatcher: server_address=\"{}\"",
+            server
+        );
 
         // Read the address at which the peer is listening for peer connections.
         let remote = read_server_address(&mut ctx, &mut stream, &mut buf).await?;
@@ -806,8 +809,7 @@ pub mod consensus {
                 // state, where some participants committed and some didn't. We
                 // use peer consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, \
-                    running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running peer conensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );
@@ -1003,8 +1005,7 @@ pub mod consensus {
                 // state, where some participants committed and some didn't. We
                 // use peer consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, \
-                    running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running peer conensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );

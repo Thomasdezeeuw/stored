@@ -195,7 +195,7 @@ pub async fn actor(
     mut db_ref: ActorRef<db::Message>,
     peers: Peers,
 ) -> crate::Result<()> {
-    debug!("accepted connection: remote_address={}", address);
+    debug!("accepted connection: remote_address=\"{}\"", address);
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
 
@@ -252,7 +252,7 @@ pub async fn actor(
         timeout = ALIVE_TIMEOUT;
     }
 
-    debug!("closing connection: remote_address={}", address);
+    debug!("closing connection: remote_address=\"{}\"", address);
     Ok(())
 }
 
@@ -821,7 +821,7 @@ async fn read_blob(
     }
 
     trace!(
-        "read blob from HTTP request body: : request_id=\"{}\", length={}",
+        "read blob from HTTP request body: request_id=\"{}\", length={}",
         passport.id(),
         conn.buf.len()
     );

@@ -88,7 +88,7 @@ fn start_listener(
     peers: Peers,
     server: SocketAddr,
 ) -> crate::Result<()> {
-    debug!("starting peer listener: address={}", address);
+    debug!("starting peer listener: address=\"{}\"", address);
 
     let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
@@ -121,7 +121,7 @@ fn start_relays(
         }
 
         debug!(
-            "starting relay actor for peer: remote_address={}",
+            "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
         let args = (peer_address, peers.clone(), server);
@@ -437,7 +437,7 @@ impl Peers {
                     Ok(rpc) => RpcStatus::InProgress(rpc),
                     Err(SendError) => {
                         warn!(
-                            "failed to send message to peer relay: address={}",
+                            "failed to send message to peer relay: address=\"{}\"",
                             peer.address
                         );
                         RpcStatus::Done(Err(relay::Error::Failed))
@@ -462,7 +462,7 @@ impl Peers {
         for peer in self.inner.peers.read().iter() {
             if let Err(err) = peer.actor_ref.send(request.clone()) {
                 warn!(
-                    "failed to send message to peer relay: {}: address={}",
+                    "failed to send message to peer relay: {}: address=\"{}\"",
                     err, peer.address
                 );
             }
@@ -506,7 +506,7 @@ impl Peers {
         // TODO: DRY with code in `start_relays`: need a trait for spawning
         // in Heph.
         debug!(
-            "starting relay actor for peer: remote_address={}",
+            "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
         let args = (peer_address, self.clone(), server);
@@ -764,7 +764,7 @@ pub mod switcher {
         db_ref: ActorRef<db::Message>,
         server: SocketAddr,
     ) -> Result<(), !> {
-        debug!("accepted peer connection: remote_address={}", remote);
+        debug!("accepted peer connection: remote_address=\"{}\"", remote);
         let mut buf = Buffer::new();
 
         let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
@@ -772,16 +772,14 @@ pub mod switcher {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!(
-                    "closing connection: missing connection magic: \
-                    remote_address={}, local_address={}",
+                    "closing connection: missing connection magic: remote_address=\"{}\", local_address=\"{}\"",
                     remote, server
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
                 if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
                     warn!(
-                        "error writing error response: {}: \
-                        remote_address={}, local_address={}",
+                        "error writing error response: {}: remote_address=\"{}\", local_address=\"{}\"",
                         err, remote, server
                     );
                 }
@@ -789,8 +787,7 @@ pub mod switcher {
             }
             Err(err) => {
                 warn!(
-                    "closing connection: error reading connection magic: {}: \
-                    remote_address={}, local_address={}",
+                    "closing connection: error reading connection magic: {}: remote_address=\"{}\", local_address=\"{}\"",
                     err, remote, server
                 );
                 return Ok(());
@@ -811,16 +808,14 @@ pub mod switcher {
             }
             _ => {
                 warn!(
-                    "closing connection: incorrect connection magic: \
-                    remote_address={}, local_address={}",
+                    "closing connection: incorrect connection magic: remote_address=\"{}\", local_address=\"{}\"",
                     remote, server,
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
                 if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
                     warn!(
-                        "error writing error response: {}: \
-                        remote_address={}, local_address={}",
+                        "error writing error response: {}: remote_address=\"{}\", local_address=\"{}\"",
                         err, remote, server
                     );
                 }
