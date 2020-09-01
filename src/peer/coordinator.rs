@@ -575,7 +575,7 @@ pub mod relay {
                 }
                 Ok(())
             }
-            Err(err) => Err(err.describe("reading known peers")),
+            Err(err) => Err(err.describe("writing request to peer participant")),
         }
     }
 
