@@ -109,7 +109,7 @@ impl fmt::Display for Passport {
 /// Loosely follows [RFC4122].
 ///
 /// [RFC4122]: http://tools.ietf.org/html/rfc4122
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct Uuid {
     bytes: [u8; 16], // 128 bits.
 }
@@ -485,13 +485,19 @@ mod tests {
         }
     }
 
-    //#[test]
-    #[allow(dead_code)]
-    fn print_10_mln_uuids() {
-        // Run with:
-        // $ cargo test --lib print_10_mln_uuids -- --nocapture
-        for _ in 0..10000000 {
-            println!("{}", Uuid::new());
+    #[test]
+    #[ignore]
+    fn uuids_are_unique_10_mln() {
+        const N: usize = 10_000_000;
+        let mut uuids: Vec<Uuid> = (0..N).map(|_| Uuid::new()).collect();
+        uuids.sort_unstable();
+        let mut iter = uuids.into_iter();
+        while let Some(uuid) = iter.next() {
+            if let Some(next) = iter.as_slice().first() {
+                if uuid == *next {
+                    panic!("failed to generate {} unique keys", N);
+                }
+            }
         }
     }
 }
