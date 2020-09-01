@@ -261,9 +261,10 @@ pub mod dispatcher {
     ) -> crate::Result<()> {
         trace!("participant dispatch writing all known peers to connection");
         let addresses = peers.addresses();
-        // 45 bytes of space per address (max size of a IPv6 address) + 2 for the
-        // quotes (JSON string) and another 2 for the slice.
-        let mut wbuf = buf.split_write(addresses.len() * (45 + 2) + 2).1;
+        // 45 bytes of space per address (max size of a IPv6 address) + 2 for
+        // the quotes (JSON string) + 1 for the list separator (,) and another 2
+        // for the slice.
+        let mut wbuf = buf.split_write(addresses.len() * (45 + 2 + 1) + 2).1;
         serde_json::to_writer(&mut wbuf, &addresses)
             .map_err(|err| io::Error::from(err).describe("serializing peers addresses"))?;
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
