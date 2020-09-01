@@ -108,7 +108,7 @@ pub mod dispatcher {
     use std::collections::HashMap;
     use std::io;
     use std::net::SocketAddr;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -410,8 +410,8 @@ pub mod dispatcher {
                     if let Err(..) = actor_ref.send(msg) {
                         warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
-                        // In case we fail we send ourself a message to relay to
-                        // the coordinator that the actor failed.
+                        // In case we failed, we send ourself a message to relay
+                        // to the coordinator that the actor failed.
                         let response = Response {
                             request_id: request.id,
                             vote: ConsensusVote::Fail,
@@ -439,13 +439,13 @@ pub mod dispatcher {
                         result: ConsensusVote::Abort,
                     };
                     if let Err(..) = actor_ref.send(msg) {
-                        warn!("failed to send to consensus actor for abort request: request_id={}, consensus_id={}",
-                            request.id, request.consensus_id);
-                        // In case we fail we send ourself a message to relay to
-                        // the coordinator that the actor failed.
+                        // If we can't send a message to the actor it is likely
+                        // that the actor failed and caused the consensus run to
+                        // fail as well. In any case the consensus run will
+                        // be/is already aborted.
                         let response = Response {
                             request_id: request.id,
-                            vote: ConsensusVote::Fail,
+                            vote: ConsensusVote::Commit(SystemTime::now()),
                         };
                         // We can always send ourselves a message.
                         ctx.actor_ref().send(response).unwrap();
@@ -535,8 +535,8 @@ pub mod dispatcher {
                     if let Err(..) = actor_ref.send(msg) {
                         warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
-                        // In case we fail we send ourself a message to relay to
-                        // the coordinator that the actor failed.
+                        // In case we failed, we send ourself a message to relay
+                        // to the coordinator that the actor failed.
                         let response = Response {
                             request_id: request.id,
                             vote: ConsensusVote::Fail,
@@ -564,13 +564,13 @@ pub mod dispatcher {
                         result: ConsensusVote::Abort,
                     };
                     if let Err(..) = actor_ref.send(msg) {
-                        warn!("failed to send to consensus actor for abort request: request_id={}, consensus_id={}",
-                            request.id, request.consensus_id);
-                        // In case we fail we send ourself a message to relay to
-                        // the coordinator that the actor failed.
+                        // If we can't send a message to the actor it is likely
+                        // that the actor failed and caused the consensus run to
+                        // fail as well. In any case the consensus run will
+                        // be/is already aborted.
                         let response = Response {
                             request_id: request.id,
-                            vote: ConsensusVote::Fail,
+                            vote: ConsensusVote::Commit(SystemTime::now()),
                         };
                         // We can always send ourselves a message.
                         ctx.actor_ref().send(response).unwrap();
@@ -638,10 +638,10 @@ pub mod consensus {
     use crate::{db, Buffer, Key};
 
     /// Timeout used for I/O between peers.
-    const IO_TIMEOUT: Duration = Duration::from_secs(2);
+    const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Timeout used for waiting for the result of the census (in each phase).
-    const RESULT_TIMEOUT: Duration = Duration::from_secs(5);
+    const RESULT_TIMEOUT: Duration = Duration::from_secs(10);
 
     /// Result of the consensus vote.
     #[derive(Debug)]
@@ -682,7 +682,7 @@ pub mod consensus {
         // TODO: stream large blob to a file directly? Preallocating disk space in
         // the data file?
         debug!(
-            "connecting to coordinator server: request_id=\"{}\", remote_address={}",
+            "connecting to coordinator server: request_id=\"{}\", remote_address=\"{}\"",
             passport.id(),
             remote
         );
