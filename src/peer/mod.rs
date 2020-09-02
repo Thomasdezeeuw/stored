@@ -232,7 +232,7 @@ pub enum ConsensusVote {
     Commit(SystemTime),
     /// Vote to abort the consensus algorithm.
     Abort,
-    /// Something when wrong, effectively a vote to abort not a direct one.
+    /// Something when wrong, effectively a vote to abort, but not a direct one.
     ///
     /// This can happen when for example the [`participant::consensus`] actor
     /// fails.

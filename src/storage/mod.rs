@@ -1181,7 +1181,7 @@ impl Drop for Data {
         // Shrink the file back to the actual used bytes.
         // NOTE: this doesn't happen in case of a crash and that is OK. We'll
         // end up with a gap of unused bytes, but that will be cleaned-up by the
-        // compacting phase.
+        // compacting process.
         if let Err(err) = ftruncate(self.file.as_raw_fd(), self.used_bytes as libc::off_t) {
             error!(
                 "failed to truncate file: {}: file=\"{:?}\", current_length={}, actual_length={}",

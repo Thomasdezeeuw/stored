@@ -136,7 +136,7 @@ async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(
     match signal {
         Signal::Interrupt | Signal::Terminate | Signal::Quit => {
             info!("received {:#} signal, shutting down", signal);
-            return Ok(());
+            Ok(())
         }
     }
 }
