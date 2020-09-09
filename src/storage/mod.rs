@@ -651,9 +651,9 @@ impl StreamBlob {
         let bytes = &mut self.slice.as_mut_slice()[self.offset..];
         match write(&mut *bytes) {
             Ok(n) => {
-                // Safety: the caller need to ensure the bytes up to `n` are
+                // Safety: the caller needs to ensure the bytes up to `n` are
                 // initialised as per the docs.
-                let bytes = MaybeUninit::slice_get_ref(&bytes[..n]);
+                let bytes = MaybeUninit::slice_assume_init_ref(&bytes[..n]);
                 self.calculator.add_bytes(bytes);
                 self.offset += n;
                 Ok(n)

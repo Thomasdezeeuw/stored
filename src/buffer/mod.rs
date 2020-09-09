@@ -310,7 +310,7 @@ where
         Pin::new(reader)
             .poll_read(ctx, unsafe {
                 // TODO: should use a `read_unitialised` kind of method here.
-                MaybeUninit::slice_get_mut(buffer.available_bytes())
+                MaybeUninit::slice_assume_init_mut(buffer.available_bytes())
             })
             .map_ok(|bytes_read| {
                 // Safety: we just read into the buffer.
@@ -336,7 +336,7 @@ where
         Pin::new(reader)
             .poll_read(ctx, unsafe {
                 // TODO: should use a `read_unitialised` kind of method here.
-                MaybeUninit::slice_get_mut(buffer.available_bytes())
+                MaybeUninit::slice_assume_init_mut(buffer.available_bytes())
             })
             .map_ok(|bytes_read| {
                 // Safety: we just read into the buffer.
@@ -496,7 +496,7 @@ impl<'b> Write for WriteBuffer<'b> {
         unsafe {
             ptr::copy_nonoverlapping(
                 buf.as_ptr(),
-                MaybeUninit::first_ptr_mut(&mut self.inner.buf[self.inner.length..]),
+                MaybeUninit::slice_as_mut_ptr(&mut self.inner.buf[self.inner.length..]),
                 buf.len(),
             );
         }
@@ -566,7 +566,7 @@ impl<'b> TempBuffer<'b> {
         // Safety: `buf[..self.length] is initialised as per the comment on
         // `self.buf`.
         let used_bytes =
-            unsafe { MaybeUninit::slice_get_ref(&self.buf[self.processed..self.length]) };
+            unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[self.processed..self.length]) };
         (used_bytes, unused_bytes)
     }
 
@@ -581,7 +581,7 @@ impl<'b> TempBuffer<'b> {
     fn as_bytes(&self) -> &[u8] {
         // Safety: `self.buf[..self.length]` bytes are initialised as per
         // the comment on the field.
-        unsafe { MaybeUninit::slice_get_ref(&self.buf[self.processed..self.length]) }
+        unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[self.processed..self.length]) }
     }
 
     fn capacity_left(&self) -> usize {
