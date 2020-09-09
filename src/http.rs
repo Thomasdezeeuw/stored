@@ -27,7 +27,7 @@ use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 use std::{fmt, ptr, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -202,7 +202,6 @@ pub async fn actor(
     let mut timeout = TIMEOUT;
     loop {
         let result = Deadline::timeout(&mut ctx, timeout, conn.read_request(&mut request)).await;
-        let start = Instant::now();
         let response = match result {
             // Parsed a request, now route and process it.
             Ok(true) => {
@@ -236,7 +235,7 @@ pub async fn actor(
             request.path,
             request.user_agent,
             request.length.unwrap_or(0),
-            start.elapsed(),
+            request.passport.start().elapsed(),
             response.status_code().0,
             response.len(),
         );
@@ -288,14 +287,16 @@ impl Connection {
     /// Returns `true` if a request was read into `request`, `false` if there
     /// are no more requests on `stream` or an error otherwise.
     pub async fn read_request(&mut self, request: &mut Request) -> Result<bool, RequestError> {
-        request.reset();
-
         let mut too_short = 0;
         loop {
             // At the start we likely don't have enough bytes to read the entire
             // request, however it could be that we read (part of) a request in
             // reading a previous request, so we need to check.
             if self.buf.len() > too_short {
+                if too_short == 0 {
+                    request.reset();
+                }
+
                 match request.parse(self.buf.as_bytes()) {
                     Ok(httparse::Status::Complete(bytes_read)) => {
                         self.buf.processed(bytes_read);

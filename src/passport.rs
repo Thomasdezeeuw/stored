@@ -53,6 +53,13 @@ impl Passport {
         &self.id
     }
 
+    /// Returns the start of this passport.
+    ///
+    /// That is the time this was created, or last reset.
+    pub fn start(&self) -> Instant {
+        self.start
+    }
+
     /// Mark the passport with a new `event`.
     pub fn mark(&mut self, event: Event) {
         let mark = Mark {
