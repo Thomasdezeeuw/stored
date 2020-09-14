@@ -16,7 +16,7 @@ use crate::db::{self, HealthCheck, HealthOk};
 use crate::passport::{Event, Passport, Uuid};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
-use crate::storage::{self, BlobEntry, Keys, UncommittedBlob};
+use crate::storage::{self, BlobEntry, Entries, Keys, UncommittedBlob};
 use crate::Key;
 
 mod remove;
@@ -32,7 +32,7 @@ pub(crate) use store::add_blob;
 #[doc(inline)]
 pub use store::{store_blob, store_streaming_blob, StreamResult};
 #[doc(inline)]
-pub use sync::full_sync;
+pub use sync::{full_sync, peer_sync};
 
 /// Maximum number of tries we will attempt to run the consensus algorithm.
 const MAX_CONSENSUS_TRIES: usize = 3;
@@ -144,6 +144,39 @@ where
         },
         Err(()) => {
             passport.mark(Event::FailedToRetrieveKeys);
+            Err(())
+        }
+    }
+}
+
+/// Retrieves all index entries currently stored.
+///
+/// Returns an error if the database actor can't be accessed.
+pub(crate) async fn retrieve_entries<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+) -> Result<Entries, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!(
+        "running retrieve index entries operation: request_id=\"{}\"",
+        passport.id()
+    );
+    match db_rpc(ctx, db_ref, *passport.id(), ()) {
+        Ok(rpc) => match rpc.await {
+            Ok(keys) => {
+                passport.mark(Event::RetrievedEntries);
+                Ok(keys)
+            }
+            Err(()) => {
+                passport.mark(Event::FailedToRetrieveEntries);
+                Err(())
+            }
+        },
+        Err(()) => {
+            passport.mark(Event::FailedToRetrieveEntries);
             Err(())
         }
     }

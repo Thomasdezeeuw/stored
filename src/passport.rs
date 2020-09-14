@@ -364,6 +364,9 @@ events!(
     // Retrieve keys.
     RetrievedKeys => "retrieved keys",
     FailedToRetrieveKeys => "failed to retrieve keys",
+    // Retrieve entries.
+    RetrievedEntries => "retrieved entries",
+    FailedToRetrieveEntries => "failed to retrieve entries",
     // Health check.
     HealthCheckComplete => "health check complete",
     HealthCheckFailed => "health check failed",

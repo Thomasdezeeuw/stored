@@ -8,7 +8,7 @@ use std::mem::replace;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Poll;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures_util::future::poll_fn;
 use futures_util::io::AsyncWriteExt;
@@ -23,11 +23,11 @@ use log::{debug, error, warn};
 
 use crate::buffer::Buffer;
 use crate::db::{self, db_error};
-use crate::op::{db_rpc, retrieve_blob, sync_removed_blob, sync_stored_blob};
+use crate::op::{db_rpc, retrieve_blob, retrieve_entries, sync_removed_blob, sync_stored_blob};
 use crate::passport::{Passport, Uuid};
 use crate::peer::server::{
     BLOB_LENGTH_LEN, DATE_TIME_LEN, KEY_SET_SIZE_LEN, METADATA_LEN, REQUEST_BLOB, REQUEST_KEYS,
-    STORE_BLOB,
+    REQUEST_KEYS_SINCE, STORE_BLOB,
 };
 use crate::peer::{Peers, COORDINATOR_MAGIC};
 use crate::storage::{BlobEntry, DateTime, Keys, ModifiedTime};
@@ -47,7 +47,7 @@ const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
 // TODO: cleanup `full_sync`, it is too long.
 
-/// Run a full sync of the stored blob.
+/// Run a full sync of the stored blobs.
 ///
 /// # Notes
 ///
@@ -68,6 +68,7 @@ pub async fn full_sync<M>(
     );
 
     // Keys stored locally.
+    // TODO: use `retrieve_keys` here once peers use passports.
     let stored_keys: Keys = db_rpc(ctx, db_ref, Uuid::empty(), ())?.await?;
     // Keys missing locally.
     let mut missing_keys = Vec::new();
@@ -202,6 +203,65 @@ pub async fn full_sync<M>(
         }
     })
     .await
+}
+
+/// Run a partial sync of the stored blobs with a single peer.
+///
+/// To be called if a peer disconnects. The `last_seen` time is the time the
+/// peer was known to be connected (and synced), e.g. the last time it received
+/// a message from it.
+pub async fn peer_sync<M>(
+    ctx: &mut actor::Context<M, ThreadSafe>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    stream: &mut TcpStream,
+    remote: SocketAddr,
+    buf: &mut Buffer,
+    last_seen: SystemTime,
+) -> crate::Result<()> {
+    // TODO: actually use the `passport`.
+
+    debug!("running partial synchronisation: remote=\"{}\"", remote);
+
+    // To be very cautions we check all keys stored/removed one hour since we've
+    // last seen the peer. This is likely too pessimistic, but better safe then
+    // sorry.
+    let since = last_seen - Duration::from_secs(60 * 60); // 1 hour.
+
+    // Entries stored locally.
+    let entries = retrieve_entries(ctx, db_ref, passport)
+        .await
+        .map_err(|()| db_error())?;
+
+    // The keys stored by the peer.
+    let mut peer_known_keys = get_known_keys_since(ctx, stream, buf, since).await?;
+
+    // All the keys the peer didn't store, but we stored locally.
+    let peer_missing_keys = entries
+        .into_iter()
+        .filter_map(|entry| {
+            if entry.modified_time().after(&since) {
+                let key = entry.key();
+                // Remove all locally known keys from `peer_known_keys`. If it
+                // returns `true` it means the peer is missing the key.
+                (!peer_known_keys.remove(key)).then(|| key.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    // Any keys not removed from `peer_known_keys` above are missing locally.
+    let local_missing_keys = peer_known_keys;
+
+    // Share the keys the peer is missing.
+    share_blobs(ctx, db_ref, passport, stream, peer_missing_keys).await?;
+
+    // TODO: change retrieve_blobs to support `HashSet`.
+    let local_missing_keys_len = local_missing_keys.len();
+    let mut local_missing_keys = local_missing_keys.into_iter().collect();
+    retrieve_blobs(ctx, db_ref, passport, stream, buf, &mut local_missing_keys).await?;
+    debug_assert_eq!(local_missing_keys.len(), local_missing_keys_len);
+    Ok(())
 }
 
 fn peer_failed<E>(peer: &mut SyncingPeer, err: E)
@@ -345,7 +405,8 @@ restart_supervisor!(
     Supervisor,
     "peer synchronisation actor",
     (ActorRef<db::Message>, SocketAddr),
-    5
+    5,
+    Duration::from_secs(60),
 );
 
 /// Actor that synchronises with a single peer.
@@ -381,7 +442,7 @@ where
     let mut passport = Passport::empty();
     passport.set_id(Uuid::new());
     let mut buf = Buffer::new();
-    // FIXME: this doesn't return.
+    // FIXME: this doesn't return. Also fix `TestStream::expect_end`.
     // Change this to `while let Some(msg) = ctx.receive_next()`.
     loop {
         match ctx.receive_next().await {
@@ -482,10 +543,10 @@ where
     buf.processed(KEY_SET_SIZE_LEN);
 
     // FIXME: put a limit on `size`.
-    // TODO: give a large enough set we might want to stream the set.
+    // TODO: given a large enough set we might want to stream the set.
     let mut known_keys = HashSet::with_capacity(size);
 
-    while known_keys.len() != size {
+    for _ in 0..size {
         if buf.len() < Key::LENGTH {
             let n = Key::LENGTH - buf.len();
             match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
@@ -503,7 +564,70 @@ where
     Ok(known_keys)
 }
 
-/// Request all `peers` to store the blobs in `keys`.
+/// Request all known keys from `stream` (connected to [`peer::server`]) `since`
+/// a certain date.
+async fn get_known_keys_since<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    stream: &mut TcpStream,
+    buf: &mut Buffer,
+    since: SystemTime,
+) -> crate::Result<HashSet<Key>>
+where
+    K: RuntimeAccess,
+{
+    let since = DateTime::from(since);
+    let bufs = &mut [
+        IoSlice::new(&[REQUEST_KEYS_SINCE]),
+        IoSlice::new(since.as_bytes()),
+    ];
+    stream
+        .write_all_vectored(bufs)
+        .await
+        .map_err(|err| err.describe("writing known keys since request"))?;
+
+    // TODO: given a large enough set we might want to stream the set.
+    let mut known_keys = HashSet::new();
+
+    loop {
+        // Read the number of keys in this part.
+        if buf.len() < KEY_SET_SIZE_LEN {
+            let n = KEY_SET_SIZE_LEN - buf.len();
+            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                Ok(..) => {}
+                Err(err) => return Err(err.describe("reading number of keys")),
+            }
+        }
+        let bytes = buf.as_bytes();
+        // Safety: checked the length above, so this won't panic.
+        let size_bytes = bytes[0..KEY_SET_SIZE_LEN].try_into().unwrap();
+        let size = u64::from_be_bytes(size_bytes) as usize;
+        buf.processed(KEY_SET_SIZE_LEN);
+
+        if size == 0 {
+            return Ok(known_keys);
+        }
+
+        // FIXME: put a limit on `size`.
+        known_keys.reserve(size);
+
+        for _ in 0..size {
+            if buf.len() < Key::LENGTH {
+                let n = Key::LENGTH - buf.len();
+                match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                    Ok(..) => {}
+                    Err(err) => return Err(err.describe("reading known keys")),
+                }
+            }
+
+            // Safety: we've checked the length above, so this slicing won't panic.
+            let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
+            known_keys.get_or_insert_owned(key);
+            buf.processed(Key::LENGTH);
+        }
+    }
+}
+
+/// Request all peer to store the blobs in `keys`.
 ///
 /// # Panics
 ///
@@ -639,6 +763,8 @@ where
             left -= 1;
             want_read = METADATA_LEN;
 
+            // Safety: we only run this loop if its not empty, thus
+            // `pop().unwrap()` is safe to call.
             let key = keys.pop().unwrap();
             match timestamp.into() {
                 ModifiedTime::Created(timestamp) => {

@@ -14,7 +14,7 @@ pub mod relay {
     use futures_util::io::AsyncWriteExt;
     use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
-    use heph::actor_ref::{RpcMessage, RpcResponse, SendError};
+    use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse, SendError};
     use heph::net::TcpStream;
     use heph::timer::{Deadline, Timer};
     use heph::{actor, Actor, NewActor, SupervisorStrategy};
@@ -22,12 +22,14 @@ pub mod relay {
 
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
+    use crate::op::peer_sync;
+    use crate::passport::Passport;
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
         EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
     };
     use crate::util::wait_for_wakeup;
-    use crate::Key;
+    use crate::{db, Key};
 
     /// Maximum number of tries `start_participant_connection` attempts to make
     /// a connection to the peer before stopping.
@@ -45,6 +47,7 @@ pub mod relay {
 
     pub struct Supervisor {
         remote: SocketAddr,
+        db_ref: ActorRef<db::Message>,
         peers: Peers,
         server: SocketAddr,
         restarts_left: usize,
@@ -55,9 +58,15 @@ pub mod relay {
 
     impl Supervisor {
         /// Create a new `Supervisor`.
-        pub fn new(remote: SocketAddr, peers: Peers, server: SocketAddr) -> Supervisor {
+        pub fn new(
+            remote: SocketAddr,
+            db_ref: ActorRef<db::Message>,
+            peers: Peers,
+            server: SocketAddr,
+        ) -> Supervisor {
             Supervisor {
                 remote,
+                db_ref,
                 peers,
                 server,
                 restarts_left: MAX_RESTARTS,
@@ -67,7 +76,17 @@ pub mod relay {
 
     impl<NA, A> heph::Supervisor<NA> for Supervisor
     where
-        NA: NewActor<Argument = (SocketAddr, Peers, SocketAddr), Error = !, Actor = A>,
+        NA: NewActor<
+            Argument = (
+                SocketAddr,
+                ActorRef<db::Message>,
+                Peers,
+                SocketAddr,
+                Option<SystemTime>,
+            ),
+            Error = !,
+            Actor = A,
+        >,
         A: Actor<Error = crate::Error>,
     {
         fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
@@ -77,7 +96,14 @@ pub mod relay {
                     "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres=\"{}\", server_address=\"{}\"",
                     self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
                 );
-                SupervisorStrategy::Restart((self.remote, self.peers.clone(), self.server))
+                let last_seen = SystemTime::now();
+                SupervisorStrategy::Restart((
+                    self.remote,
+                    self.db_ref.clone(),
+                    self.peers.clone(),
+                    self.server,
+                    Some(last_seen),
+                ))
             } else {
                 warn!(
                     "peer coordinator relay failed, stopping it: {}: remote_address=\"{}\", server_address=\"{}\"",
@@ -100,12 +126,18 @@ pub mod relay {
     /// Actor that relays messages to a [`participant::dispatcher`] actor
     /// running on the `remote` node.
     ///
+    /// If `last_seen` is `None` it means that we're connecting to the peer for
+    /// the first time. If it's `Some` we're restarted and we'll run a partial
+    /// peer synchronisation.
+    ///
     /// [`participant::dispatcher`]: crate::peer::participant::dispatcher
     pub async fn actor(
         mut ctx: actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,
+        mut db_ref: ActorRef<db::Message>,
         peers: Peers,
         server: SocketAddr,
+        last_seen: Option<SystemTime>,
     ) -> crate::Result<()> {
         debug!(
             "starting coordinator relay: remote_address=\"{}\", server_address=\"{}\"",
@@ -115,6 +147,7 @@ pub mod relay {
         let mut responses = HashMap::with_hasher(FxBuildHasher::default());
         let mut req_id = 0;
         let mut buf = Buffer::new();
+        let mut passport = Passport::new();
 
         let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
         read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
@@ -133,6 +166,22 @@ pub mod relay {
         stream
             .set_keepalive(true)
             .map_err(|err| err.describe("setting keepalive"))?;
+
+        // If we're reconnecting we need to ensure we're in sync.
+        if let Some(last_seen) = last_seen {
+            peer_sync(
+                &mut ctx,
+                &mut db_ref,
+                &mut passport,
+                &mut stream,
+                remote,
+                &mut buf,
+                last_seen,
+            )
+            .await?;
+            // TODO: add context of syncing peer.
+            //.map_err(|err| err.describe("syncing with peer"))?;
+        }
 
         // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
 
@@ -436,7 +485,7 @@ pub mod relay {
         };
 
         // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
-        let mut wbuf = buf.split_write(PARTICIPANT_MAGIC.len() + 45).1;
+        let mut wbuf = buf.split_write(45).1;
         // The address of the `coordinator::server`.
         serde_json::to_writer(&mut wbuf, server)
             .map_err(|err| io::Error::from(err).describe("serializing server address"))?;

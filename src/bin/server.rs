@@ -114,7 +114,7 @@ fn try_main() -> Result<(), ExitCode> {
         .map_err(map_err!("error setting up peer actors: {}"))?;
         (peers, true)
     } else {
-        (Peers::empty(), false)
+        (Peers::empty(db_ref.clone()), false)
     };
 
     let start_listener = http::setup(config.http.address, db_ref, start_refs, peers, delay_start)

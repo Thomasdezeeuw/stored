@@ -57,7 +57,7 @@ pub fn start(
     let relay = consensus::actor as fn(_, _) -> _;
     let participant_ref =
         runtime.spawn(NoSupervisor, relay, db_ref.clone(), ActorOptions::default());
-    let peers = Peers::new(participant_ref, start_sync.clone());
+    let peers = Peers::new(participant_ref, start_sync.clone(), db_ref.clone());
 
     start_listener(
         runtime,
@@ -66,7 +66,13 @@ pub fn start(
         peers.clone(),
         config.peer_address,
     )?;
-    start_relays(runtime, config.peers.0, config.peer_address, peers.clone());
+    start_relays(
+        runtime,
+        config.peers.0,
+        &db_ref,
+        config.peer_address,
+        peers.clone(),
+    );
 
     // NOTE: the synchronisation actor only starts once all peers are connected
     // and all worker threads are started, as defined by the `start_sync` latch.
@@ -108,6 +114,7 @@ fn start_listener(
 fn start_relays(
     runtime: &mut Runtime,
     mut peer_addresses: Vec<SocketAddr>,
+    db_ref: &ActorRef<db::Message>,
     server: SocketAddr,
     peers: Peers,
 ) {
@@ -124,9 +131,14 @@ fn start_relays(
             "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
-        let args = (peer_address, peers.clone(), server);
-        let supervisor = coordinator::relay::Supervisor::new(peer_address, peers.clone(), server);
-        let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
+        let args = (peer_address, db_ref.clone(), peers.clone(), server, None);
+        let supervisor = coordinator::relay::Supervisor::new(
+            peer_address,
+            db_ref.clone(),
+            peers.clone(),
+            server,
+        );
+        let relay = coordinator::relay::actor as fn(_, _, _, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -260,6 +272,8 @@ struct PeersInner {
     ///
     /// [participant consensus actor]: consensus::actor
     participant_ref: Option<ActorRef<consensus::Message>>,
+    /// Actor reference to the database actor.
+    db_ref: ActorRef<db::Message>,
 }
 
 #[derive(Debug, Clone)]
@@ -271,13 +285,14 @@ struct Peer {
 
 impl Peers {
     /// Create an empty collection of peers, can't grow.
-    pub fn empty() -> Peers {
+    pub fn empty(db_ref: ActorRef<db::Message>) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
                 peers_connected: None,
                 participant_ref: None,
+                db_ref,
             }),
         }
     }
@@ -286,6 +301,7 @@ impl Peers {
     pub fn new(
         participant_ref: ActorRef<consensus::Message>,
         peers_connected: Arc<CountDownLatch>,
+        db_ref: ActorRef<db::Message>,
     ) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
@@ -293,6 +309,7 @@ impl Peers {
                 consensus_id: AtomicUsize::new(0),
                 peers_connected: Some(peers_connected),
                 participant_ref: Some(participant_ref),
+                db_ref,
             }),
         }
     }
@@ -509,9 +526,20 @@ impl Peers {
             "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
-        let args = (peer_address, self.clone(), server);
-        let supervisor = coordinator::relay::Supervisor::new(peer_address, self.clone(), server);
-        let relay = coordinator::relay::actor as fn(_, _, _, _) -> _;
+        let args = (
+            peer_address,
+            self.inner.db_ref.clone(),
+            self.clone(),
+            server,
+            None,
+        );
+        let supervisor = coordinator::relay::Supervisor::new(
+            peer_address,
+            self.inner.db_ref.clone(),
+            self.clone(),
+            server,
+        );
+        let relay = coordinator::relay::actor as fn(_, _, _, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -722,10 +750,12 @@ impl<'a, Res> fmt::Display for DisplayTimedoutPeers<'a, Res> {
     }
 }
 
-// Magic bytes indicate the kind of connection.
-pub const COORDINATOR_MAGIC: &[u8] = b"Stored coordinate\0";
-const PARTICIPANT_MAGIC: &[u8] = b"Stored participate";
-const MAGIC_LENGTH: usize = 18;
+/// Magic bytes to let the peer act as server.
+pub const COORDINATOR_MAGIC: &[u8] = b"Stored coordinater";
+/// Magic bytes to let the peer act as participate.
+pub const PARTICIPANT_MAGIC: &[u8] = b"Stored participate";
+/// Length of [`COORDINATOR_MAGIC`] and [`PARTICIPANT_MAGIC`].
+pub const MAGIC_LENGTH: usize = 18;
 
 pub mod switcher {
     //! Module with the [switcher actor].

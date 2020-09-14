@@ -1,0 +1,12 @@
+path = "/tmp/stored/sync_after_disconnect.db"
+
+[http]
+address = "127.0.0.1:13000"
+
+[distributed]
+peer_address = "127.0.0.1:13100"
+replicas = "all"
+peers = [
+	# A TestPeer is used for this.
+	"127.0.0.1:13101",
+]
