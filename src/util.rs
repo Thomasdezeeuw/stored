@@ -70,6 +70,9 @@ impl CountDownLatch {
     }
 
     /// Decrease the count on the latch.
+    ///
+    /// This is safe to call more then `count` times (the `count` this
+    /// `CountDownLatch` was created with).
     pub fn decrease(&self) {
         if self.count.fetch_sub(1, Ordering::Release) == 1 {
             let mut guard = self.waker.lock();
