@@ -1488,30 +1488,53 @@ impl DateTime {
     /// Bit that is set in `subsec_nanos` if the `DateTime` is invalid.
     const INVALID_BIT: u32 = 1 << 30;
 
+    /// Bit mask to remove the `REMOVED_BIT` and `INVALID_BIT` bits.
+    const BIT_MASK: u32 = !(Self::REMOVED_BIT | Self::INVALID_BIT);
+
     /// `DateTime` that represents an invalid time.
-    pub const INVALID: DateTime = DateTime {
-        seconds: 0,
-        subsec_nanos: u32::from_be_bytes(DateTime::INVALID_BIT.to_ne_bytes()),
-    };
+    pub const INVALID: DateTime = DateTime::new(0, DateTime::INVALID_BIT);
+
+    /// Create a new `DateTime`.
+    const fn new(seconds: u64, subsec_nanos: u32) -> DateTime {
+        DateTime {
+            seconds: u64::from_be_bytes(seconds.to_ne_bytes()),
+            subsec_nanos: u32::from_be_bytes(subsec_nanos.to_ne_bytes()),
+        }
+    }
+
+    /// Returns the number of whole seconds.
+    fn secs(&self) -> u64 {
+        u64::from_be_bytes(self.seconds.to_ne_bytes())
+    }
+
+    /// Returns the fractional part in nanoseconds. This is always less than one
+    /// billion (the number of nanoseconds in a second).
+    fn subsec_nanos(&self) -> u32 {
+        self.subsec_nanos_raw() & Self::BIT_MASK
+    }
+
+    /// Returns the same fractional part as  `subsec_nanos`, but doesn't remove
+    /// the indicator bits (`REMOVED_BIT` and `INVALID_BIT`).
+    fn subsec_nanos_raw(&self) -> u32 {
+        u32::from_be_bytes(self.subsec_nanos.to_ne_bytes())
+    }
 
     /// Returns `true` if the `REMOVED_BIT` is set.
     pub fn is_removed(&self) -> bool {
-        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
-        subsec_nanos & DateTime::REMOVED_BIT != 0
+        self.subsec_nanos_raw() & DateTime::REMOVED_BIT != 0
     }
 
-    /// Returns `true` if the time is invalid.
+    /// Returns `true` if the `INVALID_BIT` is set.
     pub fn is_invalid(&self) -> bool {
         const NANOS_PER_SEC: u32 = 1_000_000_000;
-        let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
-        (subsec_nanos & !DateTime::REMOVED_BIT) > NANOS_PER_SEC
+        (self.subsec_nanos_raw() & !DateTime::REMOVED_BIT) > NANOS_PER_SEC
     }
 
     /// Returns the same `DateTime`, but as removed at
     /// (`ModifiedTime::Removed`).
     #[must_use]
     pub fn mark_removed(mut self) -> Self {
-        let mut subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
+        let mut subsec_nanos = self.subsec_nanos_raw();
         subsec_nanos |= DateTime::REMOVED_BIT;
         self.subsec_nanos = u32::from_ne_bytes(subsec_nanos.to_be_bytes());
         self
@@ -1559,10 +1582,7 @@ impl From<SystemTime> for DateTime {
             // We can't represent times before Unix epoch.
             .unwrap_or_else(|_| Duration::new(0, 0));
 
-        DateTime {
-            seconds: u64::from_ne_bytes(elapsed.as_secs().to_be_bytes()),
-            subsec_nanos: u32::from_ne_bytes(elapsed.subsec_nanos().to_be_bytes()),
-        }
+        DateTime::new(elapsed.as_secs(), elapsed.subsec_nanos())
     }
 }
 
@@ -1604,11 +1624,7 @@ impl Into<ModifiedTime> for DateTime {
         if self.is_invalid() {
             ModifiedTime::Invalid
         } else {
-            let seconds = u64::from_be_bytes(self.seconds.to_ne_bytes());
-            let subsec_nanos = u32::from_be_bytes(self.subsec_nanos.to_ne_bytes());
-            let subsec_nanos = subsec_nanos & !DateTime::REMOVED_BIT;
-            let elapsed = Duration::new(seconds, subsec_nanos);
-            let time = SystemTime::UNIX_EPOCH + elapsed;
+            let time = SystemTime::UNIX_EPOCH + Duration::new(self.secs(), self.subsec_nanos());
             if self.is_removed() {
                 ModifiedTime::Removed(time)
             } else {
@@ -1621,11 +1637,8 @@ impl Into<ModifiedTime> for DateTime {
 impl fmt::Debug for DateTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DateTime")
-            .field("seconds", &u64::from_be_bytes(self.seconds.to_ne_bytes()))
-            .field(
-                "subsec_nanos",
-                &u32::from_be_bytes(self.subsec_nanos.to_ne_bytes()),
-            )
+            .field("seconds", &self.secs())
+            .field("subsec_nanos", &self.subsec_nanos())
             .field("is_removed", &self.is_removed())
             .field("is_invalid", &self.is_invalid())
             .finish()
