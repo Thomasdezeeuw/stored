@@ -21,17 +21,13 @@ pub trait Describe {
     /// Describe an error.
     fn describe(self, description: &'static str) -> Error<Self>
     where
-        Self: Sized;
-}
-
-impl<E> Describe for E {
-    fn describe(self, description: &'static str) -> Error<E>
-    where
         Self: Sized,
     {
         Error::new(self, description)
     }
 }
+
+impl<E> Describe for E {}
 
 /// Convenience type to use with [`Error`].
 pub type Result<T, E = io::Error> = std::result::Result<T, Error<E>>;
@@ -51,6 +47,11 @@ impl<E> Error<E> {
     /// Create a new error with a description.
     pub const fn new(err: E, description: &'static str) -> Error<E> {
         Error { err, description }
+    }
+
+    /// Returns the wrapped error `E`.
+    pub fn inner(self) -> E {
+        self.err
     }
 }
 
