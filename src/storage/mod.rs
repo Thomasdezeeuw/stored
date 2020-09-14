@@ -1612,6 +1612,18 @@ pub enum ModifiedTime {
     Invalid,
 }
 
+impl ModifiedTime {
+    /// Returns `true` if `self` is after or equal to `time`. Always returns
+    /// `false` if the time is invalid.
+    pub fn after(&self, time: &SystemTime) -> bool {
+        match self {
+            ModifiedTime::Created(this) => this >= time,
+            ModifiedTime::Removed(this) => this >= time,
+            ModifiedTime::Invalid => false,
+        }
+    }
+}
+
 #[doc(hidden)]
 impl From<ModifiedTime> for DateTime {
     /// # Notes

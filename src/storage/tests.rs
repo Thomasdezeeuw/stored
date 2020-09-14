@@ -408,6 +408,38 @@ mod date_time {
             assert_eq!(*time, got);
         }
     }
+
+    #[test]
+    fn modified_time_after() {
+        let t0 = SystemTime::UNIX_EPOCH;
+        let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(5);
+        let t2 = SystemTime::now();
+        let tests = &[
+            (ModifiedTime::Created(t1), t0, true),
+            (ModifiedTime::Removed(t1), t0, true),
+            (ModifiedTime::Created(t2), t0, true),
+            (ModifiedTime::Removed(t2), t0, true),
+            (ModifiedTime::Created(t2), t1, true),
+            (ModifiedTime::Removed(t2), t1, true),
+            (ModifiedTime::Invalid, t1, false),
+            (ModifiedTime::Created(t0), t1, false),
+            (ModifiedTime::Removed(t0), t1, false),
+            (ModifiedTime::Created(t0), t2, false),
+            (ModifiedTime::Removed(t0), t2, false),
+            (ModifiedTime::Created(t1), t2, false),
+            (ModifiedTime::Removed(t1), t2, false),
+        ];
+
+        for (input, other, expect) in tests {
+            assert_eq!(
+                input.after(other),
+                *expect,
+                "input: {:?}, other: {:?}",
+                input,
+                other
+            );
+        }
+    }
 }
 
 mod index {
