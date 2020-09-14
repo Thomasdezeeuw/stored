@@ -5,10 +5,10 @@
 //! [peer server actor]: actor()
 
 use std::convert::TryInto;
-use std::io::{IoSlice, Write};
+use std::io::{self, IoSlice, Write};
 use std::mem::{replace, size_of};
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use futures_util::io::AsyncWriteExt;
 use heph::actor::context::ThreadSafe;
@@ -54,8 +54,10 @@ pub const NO_KEYS: [u8; KEY_SET_SIZE_LEN] = 0u64.to_be_bytes();
 pub const REQUEST_BLOB: u8 = 1;
 /// Request type to retrieve all keys.
 pub const REQUEST_KEYS: u8 = 2;
+/// Request type to retrieve all keys since a certain date.
+pub const REQUEST_KEYS_SINCE: u8 = 3;
 /// Request type to store a blob, used by the synchronisation process.
-pub const STORE_BLOB: u8 = 3;
+pub const STORE_BLOB: u8 = 4;
 
 /// Timeout used for I/O.
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -92,6 +94,8 @@ pub(crate) async fn run_actor<M>(
 ///   length 0. For uncommitted blob the timestamp will also be
 ///   [`DateTime::INVALID`], but the length non-zero.
 /// * [`REQUEST_KEYS`] returns a stream of [`Key`]s, prefixed with the length as
+///   `u64`.
+/// * [`REQUEST_KEYS_SINCE`] returns a stream of [`Key`]s, prefixed with the length as
 ///   `u64`.
 /// * [`STORE_BLOB`] expects the [`Key`], metadata ([`DateTime`] and length as
 ///   `u64`) and the blob to store. Supports both actually stored blobs and
@@ -131,6 +135,17 @@ pub async fn actor<M>(
                     buf.processed(1);
                     retrieve_keys(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
                         .await?;
+                }
+                REQUEST_KEYS_SINCE => {
+                    buf.processed(1);
+                    retrieve_keys_since(
+                        &mut ctx,
+                        &mut stream,
+                        &mut passport,
+                        &mut buf,
+                        &mut db_ref,
+                    )
+                    .await?;
                 }
                 STORE_BLOB => {
                     buf.processed(1);
@@ -298,6 +313,87 @@ async fn retrieve_keys<M>(
             passport.mark(Event::WrittenPeerResponse);
             return Ok(());
         }
+
+        // TODO: use vectored I/O here using `Key::as_bytes` directly.
+        Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes()))
+            .await
+            .map_err(|err| err.describe("writing keys"))?;
+    }
+}
+
+async fn retrieve_keys_since<M>(
+    ctx: &mut actor::Context<M, ThreadSafe>,
+    stream: &mut TcpStream,
+    passport: &mut Passport,
+    buf: &mut Buffer,
+    db_ref: &mut ActorRef<db::Message>,
+) -> crate::Result<()> {
+    debug!(
+        "retrieving keys since for peer: request_id=\"{}\"",
+        passport.id()
+    );
+
+    // Read the time before which we don't need to send the keys.
+    if buf.len() < DATE_TIME_LEN {
+        let n = DATE_TIME_LEN - buf.len();
+        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            Ok(..) => {}
+            Err(err) => return Err(err.describe("reading date since to retrieve keys")),
+        }
+    }
+    let since = DateTime::from_bytes(buf.as_bytes()).unwrap_or(DateTime::INVALID);
+    buf.processed(DATE_TIME_LEN);
+    if since.is_invalid() {
+        return Err(io::Error::from(io::ErrorKind::InvalidInput)
+            .describe("received invalid date to retrieve keys from"));
+    }
+    let since: SystemTime = since.into();
+
+    let keys = crate::op::retrieve_entries(ctx, db_ref, passport)
+        .await
+        .map_err(|()| db_error())?;
+    let mut iter = keys.into_iter();
+
+    /// The number of keys send at a time in [`REQUEST_KEYS_SINCE`] request.
+    // TODO: benchmark with larger sizes.
+    const N_KEYS: usize = 100;
+
+    passport.mark(Event::WritingPeerResponse);
+    loop {
+        let mut wbuf = buf.split_write(BLOB_LENGTH_LEN + (N_KEYS * Key::LENGTH)).1;
+
+        // Make space for the number of keys we're going to write, the actual
+        // value is set further down.
+        // NOTE: writing to buffer never fails.
+        let _ = wbuf.write(&u64::to_be_bytes(0)).unwrap();
+
+        // Write all the keys, if the date is after `since` (and not invalid).
+        let mut iter = (&mut iter).take(N_KEYS);
+        let mut length: u64 = 0;
+        while let Some(entry) = iter.next() {
+            if entry.modified_time().after(&since) {
+                // NOTE: writing to buffer never fails.
+                let bytes_written = wbuf.write(entry.key().as_bytes()).unwrap();
+                debug_assert_eq!(bytes_written, Key::LENGTH);
+                length += 1;
+            }
+        }
+
+        // Wrote all keys.
+        if length == 0 {
+            // Write the last length, which is zero, to indicate no more keys
+            // are coming.
+            let res =
+                Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&u64::to_be_bytes(length)))
+                    .await
+                    .map_err(|err| err.describe("writing keys"));
+            passport.mark(Event::WrittenPeerResponse);
+            return res;
+        }
+
+        // Write the actual number of keys we're going to write.
+        // Safety: we've made space above for the length.
+        wbuf.as_mut_bytes()[0..KEY_SET_SIZE_LEN].copy_from_slice(&u64::to_be_bytes(length));
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
         Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes()))
