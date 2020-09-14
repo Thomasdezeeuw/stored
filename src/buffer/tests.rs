@@ -344,9 +344,11 @@ fn write_buffer_length() {
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
+    assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
+    assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
 
     buf.processed(100);
@@ -354,9 +356,11 @@ fn write_buffer_length() {
     assert_eq!(original_bytes, &bytes[100..]);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
+    assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
+    assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
 
     buf.processed(100);
@@ -364,9 +368,11 @@ fn write_buffer_length() {
     assert_eq!(original_bytes, EMPTY);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
+    assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
+    assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
 
     assert_eq!(buf.len(), 0);
@@ -384,19 +390,23 @@ fn write_buffer_processed() {
     assert_eq!(original_bytes, bytes);
     assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
+    assert_eq!(wbuf.as_mut_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
     assert_eq!(wbuf.len(), 3);
     assert_eq!(wbuf.as_bytes(), wbytes);
+    assert_eq!(wbuf.as_mut_bytes(), wbytes);
 
     wbuf.processed(1);
     assert_eq!(wbuf.len(), 2);
     assert_eq!(wbuf.as_bytes(), &wbytes[1..]);
+    assert_eq!(wbuf.as_mut_bytes(), &wbytes[1..]);
 
     wbuf.processed(1);
     assert_eq!(wbuf.len(), 1);
     assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
+    assert_eq!(wbuf.as_mut_bytes(), &wbytes[2..]);
 
     assert_eq!(original_bytes, bytes);
     drop(wbuf);

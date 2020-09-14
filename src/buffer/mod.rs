@@ -479,6 +479,11 @@ impl<'b> WriteBuffer<'b> {
         self.inner.as_bytes()
     }
 
+    /// Returns the unprocessed, written bytes.
+    pub fn as_mut_bytes(&mut self) -> &mut [u8] {
+        self.inner.as_mut_bytes()
+    }
+
     /// Mark `n` bytes as processed.
     pub fn processed(&mut self, n: usize) {
         self.inner.processed(n);
@@ -582,6 +587,12 @@ impl<'b> TempBuffer<'b> {
         // Safety: `self.buf[..self.length]` bytes are initialised as per
         // the comment on the field.
         unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[self.processed..self.length]) }
+    }
+
+    fn as_mut_bytes(&mut self) -> &mut [u8] {
+        // Safety: `self.buf[..self.length]` bytes are initialised as per
+        // the comment on the field.
+        unsafe { MaybeUninit::slice_assume_init_mut(&mut self.buf[self.processed..self.length]) }
     }
 
     fn capacity_left(&self) -> usize {
