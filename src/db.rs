@@ -22,7 +22,7 @@ use log::{debug, error, info, trace, warn};
 use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
-    AddResult, BlobEntry, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, StreamBlob,
+    AddResult, BlobEntry, Entries, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, StreamBlob,
     UncommittedBlob,
 };
 use crate::Key;
@@ -177,6 +177,15 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
+            Message::GetEntries(RpcMessage { response, .. }) => {
+                debug!("retrieving index entries");
+                let result = storage
+                    .entries()
+                    .map_err(|err| err.describe("retrieving index entries"))?;
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
             Message::SyncStoredBlob(RpcMessage { request, response }) => {
                 let (view, created_at) = request;
                 storage
@@ -298,9 +307,20 @@ pub enum Message {
     ///
     /// # Notes
     ///
-    /// The returned keys are almost always already outdated the moment there
-    /// returned.
+    /// The returned keys can easily become outdated with concurrent
+    /// store/remove operations.
     GetKeys(RpcMessage<(), Keys>),
+    /// Get all entries currently in the index. Used by the synchronisation
+    /// process.
+    ///
+    /// Responds with [`Entries`], an iterator over all index [`Entry`]s stored
+    /// **at the moment the request is made**.
+    ///
+    /// # Notes
+    ///
+    /// The returned entries can easily become outdated with concurrent
+    /// store/remove operations.
+    GetEntries(RpcMessage<(), Entries>),
     /// Store and commit a blob to storage, used by the synchronisation process.
     ///
     /// Request is the [`Key`], the blob (must match the key) and the timestamp
@@ -370,6 +390,7 @@ from_rpc_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::GetKeys(()) -> Keys);
+from_rpc_message!(Message::GetEntries(()) -> Entries);
 from_rpc_message!(Message::SyncStoredBlob(BufView, SystemTime) -> BufView);
 from_rpc_message!(Message::SyncRemovedBlob(Key, SystemTime) -> ());
 from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);

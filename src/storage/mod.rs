@@ -390,6 +390,11 @@ impl Storage {
         self.index.entries().map(|slice| Keys { slice })
     }
 
+    /// Returns an iterator over the [`Index`]'s `Entry`s.
+    pub fn entries(&mut self) -> io::Result<Entries> {
+        self.index.entries().map(|slice| Entries { slice })
+    }
+
     /// Add `blob` to the storage.
     ///
     /// Only after the returned [query] is [committed] is the blob stored in the
@@ -1368,26 +1373,6 @@ impl MmapSliceOwned<Entry> {
     }
 }
 
-/// Iterator of the [`Key`]s in the [`Storage`].
-pub struct Keys {
-    slice: MmapSliceOwned<Entry>,
-}
-
-impl fmt::Debug for Keys {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.slice.as_slice().fmt(f)
-    }
-}
-
-impl<'a> IntoIterator for &'a Keys {
-    type Item = &'a Key;
-    type IntoIter = impl Iterator<Item = Self::Item> + ExactSizeIterator + FusedIterator;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.slice.as_slice().iter().map(|entry| &entry.key)
-    }
-}
-
 /// Index of an [`Entry`] in the [`Index`] file.
 #[derive(Copy, Clone, Eq, PartialEq, Debug)]
 struct EntryIndex(usize);
@@ -1406,10 +1391,11 @@ impl EntryIndex {
 /// # Notes
 ///
 /// Integers in `Entry` (and `DateTime`) are stored in big-endian format on
-/// disk. Use the getters (e.g. `offset`) to get the value in native endian.
+/// disk. Use the getters (e.g. [`Entry::length`]) to get the value in native
+/// endian.
 #[repr(C)]
 #[derive(Eq, PartialEq)]
-struct Entry {
+pub struct Entry {
     /// Key for the blob.
     key: Key,
     /// Offset into the data file.
@@ -1439,7 +1425,7 @@ impl Entry {
     }
 
     /// Returns the `Key` for the entry.
-    fn key(&self) -> &Key {
+    pub fn key(&self) -> &Key {
         &self.key
     }
 
@@ -1449,12 +1435,12 @@ impl Entry {
     }
 
     /// Returns the length for the entry, in native endian.
-    fn length(&self) -> u32 {
+    pub fn length(&self) -> u32 {
         u32::from_be_bytes(self.length.to_ne_bytes())
     }
 
     /// Returns the time at which this entry was created.
-    fn modified_time(&self) -> ModifiedTime {
+    pub fn modified_time(&self) -> ModifiedTime {
         self.time.into()
     }
 }
@@ -1462,10 +1448,10 @@ impl Entry {
 impl fmt::Debug for Entry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Entry")
-            .field("key", &self.key)
-            .field("offset", &u64::from_be_bytes(self.offset.to_ne_bytes()))
-            .field("length", &u32::from_be_bytes(self.length.to_ne_bytes()))
-            .field("time", &self.time)
+            .field("key", self.key())
+            .field("offset", &self.offset())
+            .field("length", &self.length())
+            .field("time", &self.modified_time())
             .finish()
     }
 }
@@ -1566,7 +1552,7 @@ impl From<SystemTime> for DateTime {
     /// If `time` is before Unix epoch this will return an empty `DateTime`,
     /// i.e. this same time as Unix epoch.
     ///
-    /// This always returns a created at (`ModifiedTime::CreateAt`) time.
+    /// This always returns a created at ([`ModifiedTime::Created`]) time.
     fn from(time: SystemTime) -> DateTime {
         let elapsed = time
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -1582,7 +1568,7 @@ impl From<SystemTime> for DateTime {
 
 /// Time at which a blob was created or removed.
 #[derive(Eq, PartialEq, Debug)]
-pub(crate) enum ModifiedTime {
+pub enum ModifiedTime {
     /// Blob was created at this time.
     Created(SystemTime),
     /// Blob was removed at this time.
@@ -1591,6 +1577,7 @@ pub(crate) enum ModifiedTime {
     Invalid,
 }
 
+#[doc(hidden)]
 impl From<ModifiedTime> for DateTime {
     /// # Notes
     ///
@@ -1611,6 +1598,7 @@ impl From<ModifiedTime> for DateTime {
     }
 }
 
+#[doc(hidden)]
 impl Into<ModifiedTime> for DateTime {
     fn into(self) -> ModifiedTime {
         if self.is_invalid() {
@@ -1641,6 +1629,46 @@ impl fmt::Debug for DateTime {
             .field("is_removed", &self.is_removed())
             .field("is_invalid", &self.is_invalid())
             .finish()
+    }
+}
+
+/// Iterator of the [`Entry`]s in the [`Index`].
+pub struct Entries {
+    slice: MmapSliceOwned<Entry>,
+}
+
+impl fmt::Debug for Entries {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.into_iter()).finish()
+    }
+}
+
+impl<'a> IntoIterator for &'a Entries {
+    type Item = &'a Entry;
+    type IntoIter = impl Iterator<Item = Self::Item> + ExactSizeIterator + FusedIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slice.as_slice().iter()
+    }
+}
+
+/// Iterator of the [`Key`]s in the [`Storage`].
+pub struct Keys {
+    slice: MmapSliceOwned<Entry>,
+}
+
+impl fmt::Debug for Keys {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_list().entries(self.into_iter()).finish()
+    }
+}
+
+impl<'a> IntoIterator for &'a Keys {
+    type Item = &'a Key;
+    type IntoIter = impl Iterator<Item = Self::Item> + ExactSizeIterator + FusedIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.slice.as_slice().iter().map(|entry| &entry.key)
     }
 }
 
