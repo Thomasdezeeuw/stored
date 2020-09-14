@@ -295,6 +295,39 @@ mod date_time {
     }
 
     #[test]
+    fn into_sys_time() {
+        let tests = [
+            (
+                DateTime {
+                    seconds: 1u64.to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                Duration::from_secs(1),
+            ),
+            (
+                DateTime {
+                    seconds: (u64::MAX / 2).to_be(),
+                    subsec_nanos: 0u32.to_be(),
+                },
+                Duration::from_secs(u64::MAX / 2),
+            ),
+            (
+                DateTime {
+                    seconds: 0u64.to_be(),
+                    subsec_nanos: 1000000u32.to_be(),
+                },
+                Duration::from_millis(1),
+            ),
+        ];
+
+        for (time, add) in tests.iter().copied() {
+            let got: SystemTime = time.into();
+            let want = SystemTime::UNIX_EPOCH + add;
+            assert_eq!(got, want);
+        }
+    }
+
+    #[test]
     fn from_and_into_modified_time() {
         let tests = [
             (

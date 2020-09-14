@@ -1586,6 +1586,21 @@ impl From<SystemTime> for DateTime {
     }
 }
 
+impl Into<SystemTime> for DateTime {
+    /// # Notes
+    ///
+    /// If `self` is invalid this will return [`SystemTime::UNIX_EPOCH`].
+    ///
+    /// This always returns a created at ([`ModifiedTime::Created`]) time.
+    fn into(self) -> SystemTime {
+        if self.is_invalid() {
+            SystemTime::UNIX_EPOCH
+        } else {
+            SystemTime::UNIX_EPOCH + Duration::new(self.secs(), self.subsec_nanos())
+        }
+    }
+}
+
 /// Time at which a blob was created or removed.
 #[derive(Eq, PartialEq, Debug)]
 pub enum ModifiedTime {
