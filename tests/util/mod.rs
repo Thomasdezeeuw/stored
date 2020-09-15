@@ -107,7 +107,7 @@ pub fn start_stored<'a>(conf_paths: &[&str], lock: &'a ProcLock, filter: LevelFi
                     .stderr(Stdio::piped())
                     .stdout(Stdio::piped())
                     .env("LOG_LEVEL", filter.to_string());
-                if filter <= LevelFilter::Debug {
+                if filter >= LevelFilter::Debug {
                     // Gets a little noisy otherwise.
                     child.env("LOG_TARGET", "stored");
                 }
