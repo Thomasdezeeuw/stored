@@ -8,7 +8,7 @@ use std::mem::size_of;
 use std::ops::Range;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use std::{array, fmt};
 
 use getrandom::getrandom;
@@ -58,6 +58,17 @@ impl Passport {
     /// That is the time this was created, or last reset.
     pub fn start(&self) -> Instant {
         self.start
+    }
+
+    /// Returns the time elapsed between the start and the last mark.
+    ///
+    /// If no marks have been made it will return a duration of zero.
+    pub fn elapsed(&self) -> Duration {
+        match self.marks.last() {
+            Some(mark) => mark.timestamp - self.start,
+            // TODO: replace with `Duration::zero` once stablised.
+            None => Duration::new(0, 0),
+        }
     }
 
     /// Mark the passport with a new `event`.

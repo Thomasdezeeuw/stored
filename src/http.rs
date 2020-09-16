@@ -235,7 +235,7 @@ pub async fn actor(
             request.path,
             request.user_agent,
             request.length.unwrap_or(0),
-            request.passport.start().elapsed(),
+            request.passport.elapsed(),
             response.status_code().0,
             response.len(),
         );
