@@ -502,7 +502,9 @@ enum Message {
     ///
     /// Returns the list of blobs successfully stored.
     RetrieveBlobs(RpcMessage<Vec<Key>, Vec<Key>>),
-    // FIXME: this shouldn't be a thing.
+    // FIXME: this shouldn't be a thing. Heph's `actor::Context::receive_next`
+    // should return `None` once all `ActorRef`s to it are dropped, then
+    // `peer_sync_actor` can stop itself.
     Stop,
 }
 

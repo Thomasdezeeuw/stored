@@ -6,30 +6,7 @@ use crate::util::http::{body, date_header, header};
 
 const FILTER: LevelFilter = LevelFilter::Warn;
 
-// TODO: expand testing.
-
-// FIXME: something the participant dispatcher reads 0 bytes from the
-// connection, thinking that the coordinator relay closed the connection, if
-// though it didn't, logs:
-//
-// ```
-// 2020-07-01T08:51:56.326494Z [WARN] stored::peer::switcher: participant
-//     dispatcher failed: coordinator relay closed connection unexpectedly:
-//     unexpected end of file: remote=127.0.0.1:63303, server=127.0.0.1:11133
-// 2020-07-01T08:51:56.326494Z [WARN] stored::peer::coordinator::relay:
-//     coordinator relay failed, restarting it (4/5 restarts left): participant
-//     dispatcher closed connection unexpectedly: unexpected end of file:
-//     remote=127.0.0.1:11131, server=127.0.0.1:11133
-// ```
-
-// FIXME: sometimes reading a blob from the coordinator times out, log:
-//
-// ```log
-// 2020-07-01T08:59:03.556219Z [WARN] stored::peer::participant::dispatcher:
-//     store blob consensus actor failed: reading blob length: timed out
-// ```
-
-/// Macro to create tests with different numbers of peers.
+/// Macro to create end to end tests with different numbers of processes.
 macro_rules! tests {
     (
         $(

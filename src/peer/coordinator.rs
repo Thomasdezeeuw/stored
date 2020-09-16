@@ -1,5 +1,15 @@
 //! Coordinator side of the consensus connection.
 
+use std::time::Duration;
+
+/// Maximum number of tries `start_participant_connection` attempts to make
+/// a connection to the peer before stopping.
+const CONNECT_TRIES: usize = 5;
+
+/// Time to wait between connection tries in [`connect_to_participant`], get
+/// doubled after each try.
+const START_WAIT: Duration = Duration::from_millis(500);
+
 pub mod relay {
     //! Module with the [coordinator relay actor].
     //!
@@ -16,14 +26,13 @@ pub mod relay {
     use heph::actor::context::ThreadSafe;
     use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse, SendError};
     use heph::net::TcpStream;
+    use heph::rt::options::{ActorOptions, Priority};
     use heph::timer::{Deadline, Timer};
     use heph::{actor, Actor, NewActor, SupervisorStrategy};
     use log::{debug, trace, warn};
 
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
-    use crate::op::peer_sync;
-    use crate::passport::Passport;
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
         EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
@@ -31,13 +40,7 @@ pub mod relay {
     use crate::util::wait_for_wakeup;
     use crate::{db, Key};
 
-    /// Maximum number of tries `start_participant_connection` attempts to make
-    /// a connection to the peer before stopping.
-    const CONNECT_TRIES: usize = 5;
-
-    /// Time to wait between connection tries in [`connect_to_participant`], get
-    /// doubled after each try.
-    const START_WAIT: Duration = Duration::from_millis(500);
+    use super::{CONNECT_TRIES, START_WAIT};
 
     /// Timeout used for I/O.
     const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -136,7 +139,7 @@ pub mod relay {
     pub async fn actor(
         mut ctx: actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,
-        mut db_ref: ActorRef<db::Message>,
+        db_ref: ActorRef<db::Message>,
         peers: Peers,
         server: SocketAddr,
         last_seen: Option<SystemTime>,
@@ -149,7 +152,6 @@ pub mod relay {
         let mut responses = HashMap::with_hasher(FxBuildHasher::default());
         let mut req_id = 0;
         let mut buf = Buffer::new();
-        let mut passport = Passport::new();
 
         let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
         read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
@@ -171,17 +173,14 @@ pub mod relay {
 
         // If we're reconnecting we need to ensure we're in sync.
         if let Some(last_seen) = last_seen {
-            // TODO: add context of syncing peer to the error.
-            peer_sync(
-                &mut ctx,
-                &mut db_ref,
-                &mut passport,
-                &mut stream,
-                remote,
-                &mut buf,
-                last_seen,
-            )
-            .await?;
+            // TODO: limit the number of concurrent syncs per peer to 1.
+            let args = (remote, db_ref.clone(), last_seen);
+            let supervisor = super::sync::Supervisor::new(remote, db_ref);
+            let sync_actor = super::sync::actor as fn(_, _, _, _) -> _;
+            let options = ActorOptions::default()
+                .with_priority(Priority::HIGH)
+                .mark_ready();
+            ctx.spawn(supervisor, sync_actor, args, options);
         }
 
         // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
@@ -435,6 +434,7 @@ pub mod relay {
     msg_types!(UncommittedRemoved(Key));
 
     /// Start a participant connection to `remote` address.
+    // TODO: move this to a `Future` in heph::net::TcpStream::connect.
     async fn connect_to_participant(
         ctx: &mut actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,
@@ -686,5 +686,171 @@ pub mod relay {
         let bytes_processed = de.byte_offset();
         buf.processed(bytes_processed);
         Ok(false)
+    }
+}
+
+pub mod sync {
+    //! Module with the [coordinator sync actor]. This actor gets started after
+    //! the [coordinator relay actor] disconnected and reconnected.
+    //!
+    //! [coordinator sync actor]: actor()
+    //! [coordinator relay actor]: super::relay::actor()
+
+    use std::net::SocketAddr;
+    use std::time::SystemTime;
+
+    use futures_util::io::AsyncWriteExt;
+    use heph::actor::context::ThreadSafe;
+    use heph::net::TcpStream;
+    use heph::timer::Timer;
+    use heph::{actor, Actor, ActorRef, NewActor, SupervisorStrategy};
+    use log::{debug, trace, warn};
+
+    use crate::buffer::Buffer;
+    use crate::db;
+    use crate::error::Describe;
+    use crate::op::peer_sync;
+    use crate::passport::Passport;
+    use crate::peer::COORDINATOR_MAGIC;
+    use crate::util::wait_for_wakeup;
+
+    use super::{CONNECT_TRIES, START_WAIT};
+
+    // TODO: replace with `heph::restart_supervisor` once it can log extra
+    // arguments.
+    pub struct Supervisor {
+        remote: SocketAddr,
+        db_ref: ActorRef<db::Message>,
+        restarts_left: usize,
+    }
+
+    /// Maximum number of times the [`actor`] will be restarted.
+    const MAX_RESTARTS: usize = 5;
+
+    impl Supervisor {
+        /// Create a new `Supervisor`.
+        pub fn new(remote: SocketAddr, db_ref: ActorRef<db::Message>) -> Supervisor {
+            Supervisor {
+                remote,
+                db_ref,
+                restarts_left: MAX_RESTARTS,
+            }
+        }
+    }
+
+    impl<NA, A> heph::Supervisor<NA> for Supervisor
+    where
+        NA: NewActor<
+            Argument = (SocketAddr, ActorRef<db::Message>, SystemTime),
+            Error = !,
+            Actor = A,
+        >,
+        A: Actor<Error = crate::Error>,
+    {
+        fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
+            if self.restarts_left >= 1 {
+                self.restarts_left -= 1;
+                warn!(
+                    "peer synchronisation failed, restarting it ({}/{} restarts left): {}: remote_addres=\"{}\"",
+                    self.restarts_left, MAX_RESTARTS, err, self.remote,
+                );
+                let last_seen = SystemTime::now();
+                SupervisorStrategy::Restart((self.remote, self.db_ref.clone(), last_seen))
+            } else {
+                warn!(
+                    "peer synchronisation failed, stopping it: {}: remote_address=\"{}\"",
+                    err, self.remote,
+                );
+                SupervisorStrategy::Stop
+            }
+        }
+
+        fn decide_on_restart_error(&mut self, err: NA::Error) -> SupervisorStrategy<NA::Argument> {
+            err
+        }
+
+        fn second_restart_error(&mut self, err: NA::Error) {
+            err
+        }
+    }
+
+    /// Runs a [`peer_sync`] operation with peer at `remote` address.
+    pub async fn actor(
+        mut ctx: actor::Context<!, ThreadSafe>,
+        remote: SocketAddr,
+        mut db_ref: ActorRef<db::Message>,
+        last_seen: SystemTime,
+    ) -> crate::Result<()> {
+        debug!(
+            "starting peer synchronisation: remote_address=\"{}\"",
+            remote
+        );
+
+        let mut stream = connect_to_server(&mut ctx, remote).await?;
+        let mut buf = Buffer::new();
+        let mut passport = Passport::new();
+
+        // TODO: add more logging.
+        peer_sync(
+            &mut ctx,
+            &mut db_ref,
+            &mut passport,
+            &mut stream,
+            remote,
+            &mut buf,
+            last_seen,
+        )
+        .await
+    }
+
+    /// Start a connection to `remote` address.
+    // TODO: move this to a `Future` in heph::net::TcpStream::connect.
+    async fn connect_to_server(
+        ctx: &mut actor::Context<!, ThreadSafe>,
+        remote: SocketAddr,
+    ) -> crate::Result<TcpStream> {
+        trace!(
+            "coordinator sync connecting to peer server: remote_address=\"{}\"",
+            remote
+        );
+        let mut wait = START_WAIT;
+        let mut i = 1;
+        loop {
+            match TcpStream::connect(ctx, remote) {
+                Ok(mut stream) => {
+                    // Work around https://github.com/Thomasdezeeuw/heph/issues/287.
+                    //
+                    // We've got a connection, but it might not be connected
+                    // yet. So first we'll de-schedule ourselves, waiting for an
+                    // event from the OS.
+                    wait_for_wakeup().await;
+                    // After that we try to write the connection magic to test
+                    // the connection.
+                    match stream.write_all(COORDINATOR_MAGIC).await {
+                        Ok(()) => break Ok(stream),
+                        // Not yet connected, try again.
+                        Err(err) => {
+                            debug!(
+                                "failed to connect to peer, but trying again ({}/{} tries): {}",
+                                i, CONNECT_TRIES, err
+                            );
+                        }
+                    }
+                }
+                Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
+                Err(err) => {
+                    debug!(
+                        "failed to connect to peer, but trying again ({}/{} tries): {}",
+                        i, CONNECT_TRIES, err
+                    );
+                }
+            }
+
+            // Wait a moment before trying to connect again.
+            Timer::timeout(ctx, wait).await;
+            // Wait a little longer next time.
+            wait *= 2;
+            i += 1;
+        }
     }
 }
