@@ -45,6 +45,8 @@ pub mod relay {
     /// An estimate of the largest size of an [`Request`] in bytes.
     const MAX_REQ_SIZE: usize = 300;
 
+    // TODO: replace with `heph::restart_supervisor` once it can log extra
+    // arguments.
     pub struct Supervisor {
         remote: SocketAddr,
         db_ref: ActorRef<db::Message>,
@@ -169,6 +171,7 @@ pub mod relay {
 
         // If we're reconnecting we need to ensure we're in sync.
         if let Some(last_seen) = last_seen {
+            // TODO: add context of syncing peer to the error.
             peer_sync(
                 &mut ctx,
                 &mut db_ref,
@@ -179,8 +182,6 @@ pub mod relay {
                 last_seen,
             )
             .await?;
-            // TODO: add context of syncing peer.
-            //.map_err(|err| err.describe("syncing with peer"))?;
         }
 
         // TODO: close connection cleanly, sending `EXIT_COORDINATOR`.
@@ -501,7 +502,10 @@ pub mod relay {
             server,
         );
         match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
-            Ok(()) => Ok(stream),
+            Ok(()) => {
+                buf.reset();
+                Ok(stream)
+            }
             Err(err) => Err(err.describe("writing peer connection setup")),
         }
     }
@@ -549,7 +553,7 @@ pub mod relay {
         }
     }
 
-    /// return id++;
+    /// Returns id++;
     fn next_id(id: &mut usize) -> usize {
         let i = *id;
         *id += 1;
@@ -579,25 +583,27 @@ pub mod relay {
         fn respond(self, vote: ConsensusVote) -> Result<(), SendError> {
             match self {
                 RpcResponder::AddBlob(rpc_response) | RpcResponder::RemoveBlob(rpc_response) => {
-                    let response = match vote {
-                        ConsensusVote::Commit(timestamp) => Ok(timestamp),
-                        ConsensusVote::Abort => Err(Error::Abort),
-                        ConsensusVote::Fail => Err(Error::Failed),
-                    };
+                    let response = vote_result(vote);
                     rpc_response.respond(response)
                 }
                 RpcResponder::CommitStoreBlob(rpc_response)
                 | RpcResponder::AbortStoreBlob(rpc_response)
                 | RpcResponder::CommitRemoveBlob(rpc_response)
                 | RpcResponder::AbortRemoveBlob(rpc_response) => {
-                    let response = match vote {
-                        ConsensusVote::Commit(..) => Ok(()),
-                        ConsensusVote::Abort => Err(Error::Abort),
-                        ConsensusVote::Fail => Err(Error::Failed),
-                    };
+                    let response = vote_result(vote).map(|_| ());
                     rpc_response.respond(response)
                 }
             }
+        }
+    }
+
+    /// Convert a `ConsensusVote` into a `Result`, mapping `Commit` to `Ok` and
+    /// `Abort` and `Fail` to the appropriate error.
+    const fn vote_result(vote: ConsensusVote) -> Result<SystemTime, Error> {
+        match vote {
+            ConsensusVote::Commit(timestamp) => Ok(timestamp),
+            ConsensusVote::Abort => Err(Error::Abort),
+            ConsensusVote::Fail => Err(Error::Failed),
         }
     }
 
@@ -637,6 +643,12 @@ pub mod relay {
         responses: &mut HashMap<usize, RpcResponder, FxBuildHasher>,
         buf: &mut Buffer,
     ) -> crate::Result<bool> {
+        if buf.as_bytes() == EXIT_PARTICIPANT {
+            // Participant wants to close the connection.
+            buf.processed(EXIT_PARTICIPANT.len());
+            return Ok(true);
+        }
+
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
 
         loop {
@@ -664,14 +676,7 @@ pub mod relay {
                 Some(Err(err)) => {
                     let bytes_processed = de.byte_offset();
                     buf.processed(bytes_processed);
-
-                    if buf.as_bytes() == EXIT_PARTICIPANT {
-                        // Participant wants to close the connection.
-                        buf.processed(EXIT_PARTICIPANT.len());
-                        return Ok(true);
-                    } else {
-                        return Err(io::Error::from(err).describe("deserialising peer response"));
-                    }
+                    return Err(io::Error::from(err).describe("deserialising peer response"));
                 }
                 // No more responses.
                 None => break,

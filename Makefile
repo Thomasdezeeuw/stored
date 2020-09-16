@@ -12,7 +12,7 @@ test:
 	cargo test
 
 dev:
-	find src/ tests/ | RUST_BACKTRACE=0 entr -c cargo test -q
+	find src/ tests/ | RUST_BACKTRACE=0 entr -d -c cargo test -q
 
 lint:
 	cargo clippy --all-targets -- --warn warnings \

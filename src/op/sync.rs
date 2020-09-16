@@ -384,6 +384,12 @@ impl SyncingPeer {
     }
 }
 
+impl Drop for SyncingPeer {
+    fn drop(&mut self) {
+        let _ = self.actor_ref.send(Message::Stop);
+    }
+}
+
 /// State of the [`SyncingPeer`].
 #[derive(Debug)]
 enum State {
@@ -477,6 +483,7 @@ where
                 }
                 res?;
             }
+            Message::Stop => return Ok(()),
         }
     }
 }
@@ -495,6 +502,8 @@ enum Message {
     ///
     /// Returns the list of blobs successfully stored.
     RetrieveBlobs(RpcMessage<Vec<Key>, Vec<Key>>),
+    // FIXME: this shouldn't be a thing.
+    Stop,
 }
 
 impl From<RpcMessage<(), HashSet<Key>>> for Message {

@@ -84,7 +84,39 @@ impl Buffer {
 
     /// Returns the unprocessed, read bytes.
     pub fn as_bytes(&self) -> &[u8] {
+        // NOTE: also see `split`.
         &self.data[self.processed..]
+    }
+
+    /// Bytes available to read into.
+    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        // NOTE: also see `split`.
+        // Safety: `Vec` ensure the bytes are available, but there not
+        // intialised so returning `MaybeUninit<u8>` is valid.
+        unsafe {
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
+            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
+        }
+    }
+
+    /// Split the buffer into used bytes and unused bytes. This is equivalent to
+    /// calling `as_bytes` and `available_bytes` (but that isn't allowed due to
+    /// the lifetime restrictions).
+    fn split<'b>(&'b mut self) -> (&'b [u8], &'b mut [MaybeUninit<u8>]) {
+        // NOTE: also see `as_bytes` and `available_bytes`.
+        assert!(self.data.len() >= self.processed);
+        // Safety: since the two slices don't overlap this is safe, also see
+        // `slice::split_at_mut`.
+        let unused_bytes = unsafe {
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
+            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
+        };
+        let used_bytes = &self.data[self.processed..];
+        assert!(
+            used_bytes.as_ptr() as usize + used_bytes.len()
+                < unused_bytes.as_ptr() as usize + unused_bytes.len()
+        );
+        (used_bytes, unused_bytes)
     }
 
     /// Returns the next byte.
@@ -141,18 +173,6 @@ impl Buffer {
             },
         };
         (used_bytes, wbuf)
-    }
-
-    /// Split the buffer into unused bytes and used bytes.
-    fn split<'b>(&'b mut self) -> (&'b [u8], &'b mut [MaybeUninit<u8>]) {
-        // Safety: since the two slices don't overlap this is safe, also see
-        // `slice::split_at_mut`.
-        let unused_bytes = unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
-            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
-        };
-        let used_bytes = &self.data[self.processed..];
-        (used_bytes, unused_bytes)
     }
 
     /// Read from `reader` into this buffer.
@@ -218,16 +238,6 @@ impl Buffer {
             // Move unread bytes to the start of the buffer.
             drop(self.data.drain(..self.processed));
             self.processed = 0;
-        }
-    }
-
-    /// Bytes available to read into.
-    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
-        // Safety: `Vec` ensure the bytes are available, but there not
-        // intialised so returning `MaybeUninit<u8>` is valid.
-        unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
-            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         }
     }
 

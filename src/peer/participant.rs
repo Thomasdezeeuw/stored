@@ -237,11 +237,15 @@ pub mod dispatcher {
                     buf.processed(bytes_processed);
                     return Ok(address);
                 }
+                // Continue to reading below.
                 Some(Err(ref err)) if err.is_eof() => {}
                 Some(Err(err)) => {
                     return Err(io::Error::from(err).describe("deserializing peer's server address"))
                 }
-                None => {} // Continue reading more.
+                None => {
+                    return Err(io::Error::from(io::ErrorKind::InvalidData)
+                        .describe("deserializing peer's server address"))
+                }
             }
 
             match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
@@ -262,7 +266,7 @@ pub mod dispatcher {
         buf: &mut Buffer,
         peers: &Peers,
     ) -> crate::Result<()> {
-        trace!("participant dispatch writing all known peers to connection");
+        trace!("participant dispatcher writing all known peers to connection");
         let addresses = peers.addresses();
         // 45 bytes of space per address (max size of a IPv6 address) + 2 for
         // the quotes (JSON string) + 1 for the list separator (,) and another 2
@@ -283,7 +287,7 @@ pub mod dispatcher {
         buf: &mut Buffer,
         response: Response,
     ) -> crate::Result<()> {
-        trace!("participant dispatch writing response: {:?}", response);
+        trace!("participant dispatcher writing response: {:?}", response);
         let mut wbuf = buf.split_write(MAX_RES_SIZE).1;
         serde_json::to_writer(&mut wbuf, &response)
             .map_err(|err| io::Error::from(err).describe("serializing response"))?;
@@ -306,6 +310,12 @@ pub mod dispatcher {
         peers: &Peers,
         running: &mut HashMap<ConsensusId, ActorRef<VoteResult>, FxBuildHasher>,
     ) -> crate::Result<bool> {
+        if buf.as_bytes() == EXIT_COORDINATOR {
+            // Participant wants to close the connection.
+            buf.processed(EXIT_COORDINATOR.len());
+            return Ok(true);
+        }
+
         // TODO: reuse the `Deserializer`, it allocates scratch memory.
         let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Request>();
 
@@ -317,15 +327,9 @@ pub mod dispatcher {
                     let bytes_processed = de.byte_offset();
                     buf.processed(bytes_processed);
 
-                    if buf.as_bytes() == EXIT_COORDINATOR {
-                        // Participant wants to close the connection.
-                        buf.processed(EXIT_COORDINATOR.len());
-                        return Ok(true);
-                    } else {
-                        // TODO: return an error here to the coordinator in case of
-                        // an syntax error.
-                        return Err(io::Error::from(err).describe("deserialising peer request"));
-                    }
+                    // TODO: return an error here to the coordinator in case of
+                    // an syntax error.
+                    return Err(io::Error::from(err).describe("deserialising peer request"));
                 }
             }
         }
