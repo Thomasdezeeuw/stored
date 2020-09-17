@@ -5,7 +5,7 @@ use log::LevelFilter;
 use stored::peer::ConsensusVote;
 use stored::Key;
 
-use super::{store_hello_world, TestPeer};
+use super::{store_blob, TestPeer};
 
 // NOTE: because these test purposely disconnect peer connections we turn off
 // logging to not log a bunch of warnings that we purposely created.
@@ -30,9 +30,7 @@ fn peer_sync_after_disconnect() {
 
     // Accept a peer connection and set it up.
     let (mut peer_stream, _) = peer.accept().expect("failed to accept peer connection");
-    peer_stream
-        .expect_participant_magic()
-        .expect("failed to read magic");
+    peer_stream.expect_participant_magic();
     let server_addr = peer_stream
         .read_server_addr()
         .expect("failed to read peer server address");
@@ -43,33 +41,27 @@ fn peer_sync_after_disconnect() {
 
     // Run the full synchronisation protocol.
     let (mut sync_stream, _) = peer.accept().expect("failed to accept peer connection");
-    sync_stream
-        .expect_coordinator_magic()
-        .expect("failed to read magic");
-    sync_stream
-        .expect_request_keys(&[])
-        .expect("failed to respond to key request");
-    sync_stream
-        .expect_end()
-        .expect("failed to close connection");
+    sync_stream.expect_coordinator_magic();
+    sync_stream.expect_request_keys(&[]);
+    sync_stream.expect_end();
 
     // Give the HTTP some time to startup.
     sleep(Duration::from_secs(1));
 
     // Store a blob, while concurrently doing the peer interaction.
-    let handle = thread::spawn(|| store_hello_world(DB_PORT));
+    const BLOB: &[u8] = b"Hello world";
+    let handle = thread::spawn(|| store_blob(DB_PORT, BLOB));
 
     // Fake the peer interaction for storing the blob.
-    let key = Key::for_blob(b"Hello world");
-    let consensus_id = peer_stream
-        .expect_add_blob_request(&key, ConsensusVote::Commit(SystemTime::now()))
-        .expect("failed to handle add blob request");
-    peer_stream
-        .expect_commit_blob_request(&key, consensus_id, ConsensusVote::Commit(SystemTime::now()))
-        .expect("failed to handle add blob request");
-    peer_stream
-        .expect_blob_committed_request(&key, consensus_id)
-        .expect("failed to handle add blob request");
+    let key = Key::for_blob(BLOB);
+    let consensus_id =
+        peer_stream.expect_add_blob_request(&key, ConsensusVote::Commit(SystemTime::now()));
+    peer_stream.expect_commit_blob_request(
+        &key,
+        consensus_id,
+        ConsensusVote::Commit(SystemTime::now()),
+    );
+    peer_stream.expect_blob_committed_request(&key, consensus_id);
 
     handle.join().expect("failed to store blob");
 
@@ -81,9 +73,7 @@ fn peer_sync_after_disconnect() {
     // stored).
     // After a disconnect we should start the partial peer sync.
     let (mut peer_stream, _) = peer.accept().expect("failed to accept peer connection");
-    peer_stream
-        .expect_participant_magic()
-        .expect("failed to read magic");
+    peer_stream.expect_participant_magic();
     let server_addr = peer_stream
         .read_server_addr()
         .expect("failed to read peer server address");
@@ -94,23 +84,15 @@ fn peer_sync_after_disconnect() {
     // Since the connection was disconnected and reconnected we expect the peer
     // to run a partial_sync.
     let (mut sync_stream, _) = peer.accept().expect("failed to accept peer connection");
-    sync_stream
-        .expect_coordinator_magic()
-        .expect("failed to read magic");
-    sync_stream
-        .expect_request_keys_since(std::slice::from_ref(&key))
-        .expect("failed to handle request keys since request");
-    sync_stream
-        .expect_end()
-        .expect("expected to stream to be closed after the syncing process is done");
+    sync_stream.expect_coordinator_magic();
+    sync_stream.expect_request_keys_since(std::slice::from_ref(&key));
+    sync_stream.expect_end();
 
     drop(peer_stream);
 
     // Case two: the peer has a key we don't have.
     let (mut peer_stream, _) = peer.accept().expect("failed to accept peer connection");
-    peer_stream
-        .expect_participant_magic()
-        .expect("failed to read magic");
+    peer_stream.expect_participant_magic();
     let server_addr = peer_stream
         .read_server_addr()
         .expect("failed to read peer server address");
@@ -121,34 +103,17 @@ fn peer_sync_after_disconnect() {
     // Since the connection was disconnected and reconnected we expect the peer
     // to run a partial_sync. We'll pretend we missed the last key.
     let (mut sync_stream, _) = peer.accept().expect("failed to accept peer connection");
-    sync_stream
-        .expect_coordinator_magic()
-        .expect("failed to read magic");
-    sync_stream
-        .expect_request_keys_since(&[])
-        .expect("failed to handle request keys since request");
+    sync_stream.expect_coordinator_magic();
+    sync_stream.expect_request_keys_since(&[]);
     // The peer should then ask us to store the blob.
-    sync_stream
-        .expect_request_store_blob(b"Hello world")
-        .expect("failed to handle request store request");
-    match sync_stream.expect_end() {
-        Ok(()) => {}
-        // FIXME: something on macOS this returns a connection reset error. Find
-        // out why and fix it and then remove this.
-        Err(ref err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
-        Err(err) => panic!(
-            "unexpected error: expected to stream to be closed after the syncing process is done: {}",
-            err
-        ),
-    }
+    sync_stream.expect_request_store_blob(b"Hello world");
+    sync_stream.expect_end();
 
     drop(peer_stream);
 
     // Case three: we have a key the peer doesn't have.
     let (mut peer_stream, _) = peer.accept().expect("failed to accept peer connection");
-    peer_stream
-        .expect_participant_magic()
-        .expect("failed to read magic");
+    peer_stream.expect_participant_magic();
     let server_addr = peer_stream
         .read_server_addr()
         .expect("failed to read peer server address");
@@ -160,23 +125,13 @@ fn peer_sync_after_disconnect() {
     // to run a partial_sync. Since then we've stored another blob (`key2`);
     let new_blob = b"Hello mars";
     let (mut sync_stream, _) = peer.accept().expect("failed to accept peer connection");
-    sync_stream
-        .expect_coordinator_magic()
-        .expect("failed to read magic");
-    sync_stream
-        .expect_request_keys_since(&[key, Key::for_blob(new_blob)])
-        .expect("failed to handle request keys since request");
+    sync_stream.expect_coordinator_magic();
+    sync_stream.expect_request_keys_since(&[key, Key::for_blob(new_blob)]);
     // The peer should then ask us to for the new blob.
-    sync_stream
-        .expect_request_blob(new_blob)
-        .expect("failed to handle request store request");
-    sync_stream
-        .expect_end()
-        .expect("expected to stream to be closed after the syncing process is done");
+    sync_stream.expect_request_blob(new_blob);
+    sync_stream.expect_end();
 
     // And we're done.
     drop(process_guard);
-    peer_stream
-        .expect_end()
-        .expect("expected to stream to be closed after the syncing process is done");
+    peer_stream.expect_end();
 }

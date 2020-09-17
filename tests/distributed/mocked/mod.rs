@@ -35,6 +35,47 @@ impl TestPeer {
             .accept()
             .and_then(|(socket, addr)| TestStream::new(socket).map(|stream| (stream, addr)))
     }
+
+    /// Accept a participant connection.
+    #[track_caller]
+    fn expect_participant_conn(
+        &mut self,
+        expect_server_address: SocketAddr,
+        peers: &[SocketAddr],
+    ) -> TestStream<Dispatcher> {
+        let (mut peer_stream, _) = self.accept().expect("failed to accept peer connection");
+        peer_stream.expect_participant_magic();
+        let server_addr = peer_stream
+            .read_server_addr()
+            .expect("failed to read peer server address");
+        assert_eq!(
+            server_addr, expect_server_address,
+            "unexpected server address"
+        );
+        peer_stream
+            .write_peers(peers)
+            .expect("failed to write known peers");
+        peer_stream
+    }
+
+    /// Expect a stream running a full synchronisation.
+    #[track_caller]
+    fn expect_full_sync(&mut self, keys: &[Key]) {
+        let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
+        sync_stream.expect_coordinator_magic();
+        sync_stream.expect_request_keys(keys);
+        sync_stream.expect_end();
+    }
+
+    /// Expect a stream that wants to run peer synchronisation. Returns a
+    /// response with `keys`, expecting both peers to be fully synced.
+    #[track_caller]
+    fn expect_peer_sync(&mut self, keys: &[Key]) {
+        let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
+        sync_stream.expect_coordinator_magic();
+        sync_stream.expect_request_keys_since(keys);
+        sync_stream.expect_end();
+    }
 }
 
 /// Stream accepted from [`TestPeer`]. The stream can acts as a coordinator
@@ -59,11 +100,18 @@ impl<A> TestStream<A> {
 
     /// Expect the stream to be closed.
     #[track_caller]
-    fn expect_end(mut self) -> io::Result<()> {
+    fn expect_end(mut self) {
         let mut buf = [0; 10];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, 0);
-        Ok(())
+        match self.socket.read(&mut buf) {
+            Ok(n) => assert_eq!(n, 0, "unexpected read: {:?}", &buf[..n]),
+            // FIXME: something on macOS this returns a connection reset error. Find
+            // out why and fix it and then remove this.
+            Err(ref err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
+            Err(err) => panic!(
+                "unexpected error: expected to stream to be closed after the syncing process is done: {}",
+                err
+            ),
+        }
     }
 }
 
@@ -74,110 +122,166 @@ enum Server {}
 impl TestStream<Server> {
     /// Returns `true` if it could read `COORDINATOR_MAGIC` from the connection.
     #[track_caller]
-    fn expect_coordinator_magic(&mut self) -> io::Result<()> {
+    fn expect_coordinator_magic(&mut self) {
         let mut buf = [0; COORDINATOR_MAGIC.len()];
-        self.socket.read_exact(&mut buf)?;
-        assert_eq!(buf, COORDINATOR_MAGIC);
-        Ok(())
+        self.socket
+            .read_exact(&mut buf)
+            .expect("failed to read COORDINATOR_MAGIC");
+        if buf == PARTICIPANT_MAGIC {
+            panic!("unexpected PARTICIPANT_MAGIC, expected COORDINATOR_MAGIC");
+        } else {
+            assert_eq!(buf, COORDINATOR_MAGIC, "unexpected bytes");
+        }
     }
 
     /// Expect a `REQUEST_BLOB` request and write `keys` as response.
     #[track_caller]
-    fn expect_request_blob(&mut self, expected_blob: &[u8]) -> io::Result<()> {
+    fn expect_request_blob(&mut self, expected_blob: &[u8]) {
         let mut buf = [0; 1];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], REQUEST_BLOB);
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read REQUEST_BLOB request");
+        assert_eq!(n, 1, "unexpected read length");
+        assert_eq!(
+            buf[0], REQUEST_BLOB,
+            "unexpected request, expected REQUEST_KEYS"
+        );
 
         let mut buf = [0; size_of::<Key>()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read Key in REQUEST_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
         let key = Key::new(buf);
         let expected_key = Key::for_blob(expected_blob);
-        assert_eq!(key, expected_key);
+        assert_eq!(key, expected_key, "read unexpected key");
 
         let timestamp = DateTime::from(SystemTime::now());
-        self.socket.write_all(timestamp.as_bytes())?;
         self.socket
-            .write_all(&u64::to_be_bytes(expected_blob.len() as u64))?;
-        self.socket.write_all(expected_blob)
+            .write_all(timestamp.as_bytes())
+            .expect("failed to write timestamp in response to REQUEST_BLOB request");
+        self.socket
+            .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
+            .expect("failed to write blob length in response to REQUEST_BLOB request");
+        self.socket
+            .write_all(expected_blob)
+            .expect("failed to write blob in response to REQUEST_BLOB request");
     }
 
     /// Expect a `REQUEST_KEYS` request and write `keys` as response.
     #[track_caller]
-    fn expect_request_keys(&mut self, keys: &[Key]) -> io::Result<()> {
+    fn expect_request_keys(&mut self, keys: &[Key]) {
         let mut buf = [0; 1];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], REQUEST_KEYS);
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read REQUEST_BLOB request");
+        assert_eq!(n, 1, "unexpected read length");
+        assert_eq!(
+            buf[0], REQUEST_KEYS,
+            "unexpected request, expected REQUEST_KEYS"
+        );
 
         let length = keys.len();
-        self.socket.write_all(&u64::to_be_bytes(length as u64))?;
+        self.socket
+            .write_all(&u64::to_be_bytes(length as u64))
+            .expect("failed to write key set length to REQUEST_KEYS request");
 
         for key in keys {
-            self.socket.write_all(key.as_bytes())?;
+            self.socket
+                .write_all(key.as_bytes())
+                .expect("failed to write key to REQUEST_KEYS request");
         }
-
-        Ok(())
     }
 
     /// Expect a `REQUEST_KEYS_SINCE` request and write `keys` as response.
     #[track_caller]
-    fn expect_request_keys_since(&mut self, keys: &[Key]) -> io::Result<()> {
+    fn expect_request_keys_since(&mut self, keys: &[Key]) {
         let mut buf = [0; 1];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], REQUEST_KEYS_SINCE);
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read REQUEST_KEYS_SINCE request");
+        assert_eq!(n, 1, "unexpected read length");
+        assert_eq!(
+            buf[0], REQUEST_KEYS_SINCE,
+            "unexpected request, expected REQUEST_KEYS_SINCE"
+        );
 
         let mut buf = [0; size_of::<DateTime>()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read timestamp in REQUEST_KEYS_SINCE request");
+        assert_eq!(n, buf.len(), "unexpected read length");
         let since = DateTime::from_bytes(&buf[..n]).unwrap_or(DateTime::INVALID);
-        assert!(!since.is_invalid());
+        assert!(!since.is_invalid(), "timestamp is invalid");
 
         let length = keys.len();
-        self.socket.write_all(&u64::to_be_bytes(length as u64))?;
+        self.socket
+            .write_all(&u64::to_be_bytes(length as u64))
+            .expect("failed to write key set length to REQUEST_KEYS_SINCE request");
         for key in keys {
-            self.socket.write_all(key.as_bytes())?;
+            self.socket
+                .write_all(key.as_bytes())
+                .expect("failed to write key to REQUEST_KEYS_SINCE request");
         }
-        self.socket.write_all(&u64::to_be_bytes(0))?;
-
-        Ok(())
+        self.socket
+            .write_all(&u64::to_be_bytes(0))
+            .expect("failed to write key set end to REQUEST_KEYS_SINCE request");
     }
 
     /// Expect a `STORE_BLOB` request and write `keys` as response.
     #[track_caller]
-    fn expect_request_store_blob(&mut self, expected_blob: &[u8]) -> io::Result<()> {
+    fn expect_request_store_blob(&mut self, expected_blob: &[u8]) {
         let mut buf = [0; 1];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, 1);
-        assert_eq!(buf[0], STORE_BLOB);
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read STORE_BLOB request");
+        assert_eq!(n, 1, "unexpected read length");
+        assert_eq!(
+            buf[0], STORE_BLOB,
+            "unexpected request, expected STORE_BLOB"
+        );
 
         let mut buf = [0; size_of::<Key>()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read key in STORE_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
         let key = Key::new(buf);
         let expected_key = Key::for_blob(expected_blob);
-        assert_eq!(key, expected_key);
+        assert_eq!(key, expected_key, "unexpected key");
 
         let mut buf = [0; size_of::<DateTime>()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read timestamp in STORE_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
         let since = DateTime::from_bytes(&buf[..n]).unwrap_or(DateTime::INVALID);
-        assert!(!since.is_invalid());
+        assert!(!since.is_invalid(), "invalid timestamp");
 
         let mut buf = [0; size_of::<u64>()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read blob length in STORE_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
         let length = u64::from_be_bytes(buf);
-        assert_eq!(length, expected_blob.len() as u64);
+        assert_eq!(length, expected_blob.len() as u64, "unexpected blob length");
 
         let mut buf = vec![0; expected_blob.len()];
-        let n = self.socket.read(&mut buf)?;
-        assert_eq!(n, buf.len());
-        assert_eq!(&buf[..n], expected_blob);
-
-        Ok(())
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read blob in STORE_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
+        assert_eq!(&buf[..n], expected_blob, "unexpected blob");
     }
 }
 
@@ -188,11 +292,16 @@ enum Dispatcher {}
 impl TestStream<Dispatcher> {
     /// Returns `true` if it could read `PARTICIPANT_MAGIC` from the connection.
     #[track_caller]
-    fn expect_participant_magic(&mut self) -> io::Result<()> {
+    fn expect_participant_magic(&mut self) {
         let mut buf = [0; PARTICIPANT_MAGIC.len()];
-        self.socket.read_exact(&mut buf)?;
-        assert_eq!(buf, PARTICIPANT_MAGIC);
-        Ok(())
+        self.socket
+            .read_exact(&mut buf)
+            .expect("failed to read PARTICIPANT_MAGIC");
+        if buf == COORDINATOR_MAGIC {
+            panic!("unexpected COORDINATOR_MAGIC, expected PARTICIPANT_MAGIC");
+        } else {
+            assert_eq!(buf, PARTICIPANT_MAGIC, "unexpected bytes");
+        }
     }
 
     /// Reads the server address.
@@ -228,81 +337,121 @@ impl TestStream<Dispatcher> {
 
     /// Expects an `AddBlob` request, responding with `response_vote`.
     #[track_caller]
-    fn expect_add_blob_request(
-        &mut self,
-        key: &Key,
-        response_vote: ConsensusVote,
-    ) -> io::Result<ConsensusId> {
-        let request = self.read_request()?;
-        assert_eq!(request.key, *key);
-        assert!(matches!(request.op, Operation::AddBlob));
-        let response = Response {
-            request_id: request.id,
-            vote: response_vote,
-        };
-        match serde_json::to_writer(&mut self.socket, &response) {
-            Ok(()) => Ok(request.consensus_id),
-            Err(err) => Err(io::Error::from(err)),
-        }
+    fn expect_add_blob_request(&mut self, key: &Key, response_vote: ConsensusVote) -> ConsensusId {
+        let request = self.read_request().expect("failed to read AddBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert!(
+            matches!(request.op, Operation::AddBlob),
+            "unexpected operation"
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to AddBlob request");
+        request.consensus_id
     }
 
-    /// Expects a `CommitBlob` request, responding with `response_vote`.
+    /// Expects a `CommitStoreBlob` request, responding with `response_vote`.
     #[track_caller]
     fn expect_commit_blob_request(
         &mut self,
         key: &Key,
         consensus_id: ConsensusId,
         response_vote: ConsensusVote,
-    ) -> io::Result<()> {
-        let request = self.read_request()?;
-        assert_eq!(request.key, *key);
-        assert_eq!(request.consensus_id, consensus_id);
-        assert!(matches!(request.op, Operation::CommitStoreBlob(..)));
-        let response = Response {
-            request_id: request.id,
-            vote: response_vote,
-        };
-        serde_json::to_writer(&mut self.socket, &response).map_err(io::Error::from)
+    ) {
+        let request = self
+            .read_request()
+            .expect("failed to read CommitStoreBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::CommitStoreBlob(..)),
+            "unexpected operation"
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to CommitStoreBlob request");
     }
 
-    /// Expects a `StoreCommitted` request, responding with `response_vote`.
+    /// Expects a `AbortStoreBlob` request, responding with `response_vote`.
     #[track_caller]
-    fn expect_blob_committed_request(
+    fn expect_abort_store_blob_request(
         &mut self,
         key: &Key,
         consensus_id: ConsensusId,
-    ) -> io::Result<()> {
-        let request = self.read_request()?;
-        assert_eq!(request.key, *key);
-        assert_eq!(request.consensus_id, consensus_id);
-        assert!(matches!(request.op, Operation::StoreCommitted(..)));
-        Ok(())
+        response_vote: ConsensusVote,
+    ) {
+        let request = self
+            .read_request()
+            .expect("failed to read AbortStoreBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::AbortStoreBlob),
+            "unexpected operation"
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to AbortStoreBlob request");
     }
+
+    /// Expects a `StoreCommitted` request, sending back no response.
+    #[track_caller]
+    fn expect_blob_committed_request(&mut self, key: &Key, consensus_id: ConsensusId) {
+        let request = self
+            .read_request()
+            .expect("failed to read StoreCommitted request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::StoreCommitted(..)),
+            "unexpected operation"
+        );
+    }
+
+    /* TODO: add remove related request functions.
+    RemoveBlob,
+    CommitRemoveBlob(SystemTime),
+    AbortRemoveBlob,
+    RemoveCommitted(SystemTime),
+    */
 
     fn read_request(&mut self) -> io::Result<Request> {
         let mut buf = [0; 1024];
         let n = self.socket.read(&mut buf)?;
         serde_json::from_slice(&buf[..n]).map_err(io::Error::from)
     }
+
+    fn write_response(&mut self, request_id: usize, vote: ConsensusVote) -> io::Result<()> {
+        let response = Response { request_id, vote };
+        serde_json::to_writer(&mut self.socket, &response).map_err(io::Error::from)
+    }
 }
 
-/// Store the blob "Hello world" on a server running on localhost `port`.
+/// Store `blob` on a server running on localhost `port`.
 #[track_caller]
-fn store_hello_world(port: u16) {
-    let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
+fn store_blob(port: u16, blob: &[u8]) {
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    let length = blob.len().to_string();
     request!(
-        POST port, "/blob", b"Hello world",
-        CONTENT_LENGTH => "11";
+        POST port, "/blob", blob,
+        CONTENT_LENGTH => &*length;
         expected: StatusCode::CREATED, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        LOCATION => url,
+        LOCATION => &*url,
         CONNECTION => header::KEEP_ALIVE,
     );
     let last_modified = date_header();
     request!(
         GET port, url, body::EMPTY,
-        expected: StatusCode::OK, b"Hello world",
-        CONTENT_LENGTH => "11",
+        expected: StatusCode::OK, blob,
+        CONTENT_LENGTH => &*length,
         LAST_MODIFIED => &last_modified,
         CONNECTION => header::KEEP_ALIVE,
     );

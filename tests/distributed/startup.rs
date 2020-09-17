@@ -124,7 +124,7 @@ fn syncing_blobs() {
     for (url, blob, blob_len, last_modified) in tests {
         for port in DB_PORTS.iter().copied() {
             request!(
-                GET port, url, body::EMPTY,
+                GET port, &**url, body::EMPTY,
                 expected: StatusCode::OK, blob,
                 CONTENT_LENGTH => blob_len,
                 LAST_MODIFIED => last_modified,

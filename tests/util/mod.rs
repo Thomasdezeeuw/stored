@@ -356,6 +356,7 @@ pub fn copy_database(src: &str, dst: &str) {
 pub mod http {
     //! Simple http client.
 
+    use std::borrow::Cow;
     use std::io::{Read, Write};
     use std::mem::replace;
     use std::net::{IpAddr, Ipv4Addr, Shutdown, SocketAddr, TcpStream};
@@ -434,9 +435,10 @@ pub mod http {
             expected: $want_status: expr, $want_body: expr,
             $($header_name: ident => $header_value: expr),*,
         ) => {{
-            let _ctx = $crate::util::OnPanic(|| {
+            let path = $path.clone();
+            let _ctx = $crate::util::OnPanic(move || {
                 eprintln!("Request failed: {} to localhost:{}{}",
-                    $method, $port, $path);
+                    $method, $port, path);
             });
             let response = $crate::util::http::request(
                 $method, $path, $port,
@@ -478,6 +480,9 @@ pub mod http {
 
         pub const UNEXPECTED_BODY: &[u8] = b"Unexpected request body";
         pub const UNEXPECTED_BODY_LEN: &str = "23";
+
+        pub const SERVER_ERROR: &[u8] = b"Internal server error";
+        pub const SERVER_ERROR_LEN: &str = "21";
     }
 
     pub mod header {
@@ -489,13 +494,16 @@ pub mod http {
     }
 
     /// Make a single HTTP request.
-    pub fn request(
-        method: &'static str,
-        path: &'static str,
+    pub fn request<P>(
+        method: &str,
+        path: P,
         port: u16,
-        headers: &[(HeaderName, &'static str)],
+        headers: &[(HeaderName, &str)],
         body: &[u8],
-    ) -> Response<Vec<u8>> {
+    ) -> Response<Vec<u8>>
+    where
+        P: Into<Cow<'static, str>>,
+    {
         let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let address = SocketAddr::new(ip, port);
         let mut stream = TcpStream::connect(address).expect("failed to connect");
@@ -515,21 +523,27 @@ pub mod http {
     const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 
     /// Write a HTTP request to `stream`.
-    pub fn write_request(
+    pub fn write_request<P>(
         stream: &mut TcpStream,
-        method: &'static str,
-        path: &'static str,
-        headers: &[(HeaderName, &'static str)],
+        method: &str,
+        path: P,
+        headers: &[(HeaderName, &str)],
         body: &[u8],
-    ) {
+    ) where
+        P: Into<Cow<'static, str>>,
+    {
+        let uri = match path.into() {
+            Cow::Borrowed(path) => Uri::from_static(path),
+            Cow::Owned(path) => Uri::from_maybe_shared(path).expect("invalid Uri"),
+        };
         let mut req = Request::builder()
             .method(method)
-            .uri(Uri::from_static(path))
+            .uri(uri)
             .version(Version::HTTP_11);
 
         let req_headers = req.headers_mut().unwrap();
         for (name, value) in headers {
-            req_headers.insert(name, HeaderValue::from_static(value));
+            req_headers.insert(name, HeaderValue::from_str(value).expect("invalid header"));
         }
 
         let req = req.body(body).unwrap();
