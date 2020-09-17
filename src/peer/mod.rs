@@ -488,7 +488,13 @@ impl Peers {
 
     fn new_consensus_id(&self) -> ConsensusId {
         // This wraps around, which is OK.
-        ConsensusId(self.inner.consensus_id.fetch_add(1, Ordering::AcqRel))
+        // TODO: can the ordering be lowered to `Relaxed`?
+        let id = ConsensusId(self.inner.consensus_id.fetch_add(1, Ordering::AcqRel));
+        if id == PARTICIPANT_CONSENSUS_ID {
+            ConsensusId(self.inner.consensus_id.fetch_add(1, Ordering::AcqRel))
+        } else {
+            id
+        }
     }
 
     /// Get a private copy of all currently known peer addresses.
@@ -648,6 +654,7 @@ pub struct PeerRpc<Res> {
     rpcs: Box<[SinglePeerRpc<Res>]>,
     timer: Timer,
 }
+
 impl<Res> PeerRpc<Res> {
     fn timeout_peers(&self) -> DisplayTimedoutPeers<Res> {
         DisplayTimedoutPeers { peers: self }
