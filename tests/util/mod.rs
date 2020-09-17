@@ -516,7 +516,12 @@ pub mod http {
             .expect("failed to shutdown writing side");
 
         let mut responses = read_responses(&mut stream, method == "HEAD");
-        assert_eq!(responses.len(), 1, "unexpected number of responses");
+        assert_eq!(
+            responses.len(),
+            1,
+            "unexpected number of responses: {:?}",
+            responses
+        );
         responses.pop().unwrap()
     }
 

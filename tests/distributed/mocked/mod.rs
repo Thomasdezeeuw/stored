@@ -17,6 +17,7 @@ use stored::Key;
 
 use crate::util::http::{body, date_header, header};
 
+mod remove_blob;
 mod store_blob;
 mod sync;
 
@@ -60,10 +61,60 @@ impl TestPeer {
 
     /// Expect a stream running a full synchronisation.
     #[track_caller]
-    fn expect_full_sync(&mut self, keys: &[Key]) {
+    fn expect_full_sync(&mut self, keys: &[Key], request_blobs: &[&[u8]]) {
         let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
         sync_stream.expect_coordinator_magic();
         sync_stream.expect_request_keys(keys);
+        let mut request_blobs: Vec<(Key, &[u8])> = request_blobs
+            .iter()
+            .copied()
+            .map(|blob| (Key::for_blob(blob), blob))
+            .collect();
+        while !request_blobs.is_empty() {
+            let mut buf = [0; 1];
+            let n = sync_stream
+                .socket
+                .read(&mut buf)
+                .expect("failed to read REQUEST_BLOB request");
+            assert_eq!(n, 1, "unexpected read length");
+            assert_eq!(
+                buf[0], REQUEST_BLOB,
+                "unexpected request, expected REQUEST_KEYS"
+            );
+
+            let mut buf = [0; size_of::<Key>()];
+            let n = sync_stream
+                .socket
+                .read(&mut buf)
+                .expect("failed to read Key in REQUEST_BLOB request");
+            assert_eq!(n, buf.len(), "unexpected read length");
+            let key = Key::new(buf);
+            let pos = request_blobs
+                .iter()
+                .position(|(k, _)| *k == key)
+                .expect("unexpected sync request");
+            let (expected_key, expected_blob) = request_blobs.remove(pos);
+            assert_eq!(key, expected_key, "read unexpected key");
+
+            let timestamp = DateTime::from(SystemTime::now());
+            sync_stream
+                .socket
+                .write_all(timestamp.as_bytes())
+                .expect("failed to write timestamp in response to REQUEST_BLOB request");
+            sync_stream
+                .socket
+                .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
+                .expect("failed to write blob length in response to REQUEST_BLOB request");
+            sync_stream
+                .socket
+                .write_all(expected_blob)
+                .expect("failed to write blob in response to REQUEST_BLOB request");
+        }
+        assert!(
+            request_blobs.is_empty(),
+            "didn't receive retrieve request for blobs: {:?}",
+            request_blobs
+        );
         sync_stream.expect_end();
     }
 
@@ -101,9 +152,9 @@ impl<A> TestStream<A> {
     /// Expect the stream to be closed.
     #[track_caller]
     fn expect_end(mut self) {
-        let mut buf = [0; 10];
+        let mut buf = [0; 512];
         match self.socket.read(&mut buf) {
-            Ok(n) => assert_eq!(n, 0, "unexpected read: {:?}", &buf[..n]),
+            Ok(n) => assert_eq!(n, 0, "unexpected read: {:?}, str: {:?}", &buf[..n], std::str::from_utf8(&buf[..n])),
             // FIXME: something on macOS this returns a connection reset error. Find
             // out why and fix it and then remove this.
             Err(ref err) if err.kind() == std::io::ErrorKind::ConnectionReset => {}
@@ -342,7 +393,8 @@ impl TestStream<Dispatcher> {
         assert_eq!(request.key, *key, "unexpected key");
         assert!(
             matches!(request.op, Operation::AddBlob),
-            "unexpected operation"
+            "unexpected operation: {:?}",
+            request.op,
         );
         self.write_response(request.id, response_vote)
             .expect("failed to write response to AddBlob request");
@@ -351,7 +403,7 @@ impl TestStream<Dispatcher> {
 
     /// Expects a `CommitStoreBlob` request, responding with `response_vote`.
     #[track_caller]
-    fn expect_commit_blob_request(
+    fn expect_commit_store_blob_request(
         &mut self,
         key: &Key,
         consensus_id: ConsensusId,
@@ -367,7 +419,8 @@ impl TestStream<Dispatcher> {
         );
         assert!(
             matches!(request.op, Operation::CommitStoreBlob(..)),
-            "unexpected operation"
+            "unexpected operation: {:?}",
+            request.op,
         );
         self.write_response(request.id, response_vote)
             .expect("failed to write response to CommitStoreBlob request");
@@ -391,7 +444,8 @@ impl TestStream<Dispatcher> {
         );
         assert!(
             matches!(request.op, Operation::AbortStoreBlob),
-            "unexpected operation"
+            "unexpected operation: {:?}",
+            request.op,
         );
         self.write_response(request.id, response_vote)
             .expect("failed to write response to AbortStoreBlob request");
@@ -399,7 +453,7 @@ impl TestStream<Dispatcher> {
 
     /// Expects a `StoreCommitted` request, sending back no response.
     #[track_caller]
-    fn expect_blob_committed_request(&mut self, key: &Key, consensus_id: ConsensusId) {
+    fn expect_blob_store_committed_request(&mut self, key: &Key, consensus_id: ConsensusId) {
         let request = self
             .read_request()
             .expect("failed to read StoreCommitted request");
@@ -410,16 +464,99 @@ impl TestStream<Dispatcher> {
         );
         assert!(
             matches!(request.op, Operation::StoreCommitted(..)),
-            "unexpected operation"
+            "unexpected operation: {:?}",
+            request.op,
         );
     }
 
-    /* TODO: add remove related request functions.
-    RemoveBlob,
-    CommitRemoveBlob(SystemTime),
-    AbortRemoveBlob,
-    RemoveCommitted(SystemTime),
-    */
+    /// Expects an `RemoveBlob` request, responding with `response_vote`.
+    #[track_caller]
+    fn expect_remove_blob_request(
+        &mut self,
+        key: &Key,
+        response_vote: ConsensusVote,
+    ) -> ConsensusId {
+        let request = self
+            .read_request()
+            .expect("failed to read RemoveBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert!(
+            matches!(request.op, Operation::RemoveBlob),
+            "unexpected operation: {:?}",
+            request.op,
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to RemoveBlob request");
+        request.consensus_id
+    }
+
+    /// Expects a `CommitRemoveBlob` request, responding with `response_vote`.
+    #[track_caller]
+    fn expect_commit_remove_blob_request(
+        &mut self,
+        key: &Key,
+        consensus_id: ConsensusId,
+        response_vote: ConsensusVote,
+    ) {
+        let request = self
+            .read_request()
+            .expect("failed to read CommitRemoveBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::CommitRemoveBlob(..)),
+            "unexpected operation: {:?}",
+            request.op,
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to CommitRemoveBlob request");
+    }
+
+    /// Expects a `AbortRemoveBlob` request, responding with `response_vote`.
+    #[track_caller]
+    fn expect_abort_remove_blob_request(
+        &mut self,
+        key: &Key,
+        consensus_id: ConsensusId,
+        response_vote: ConsensusVote,
+    ) {
+        let request = self
+            .read_request()
+            .expect("failed to read AbortRemoveBlob request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::AbortRemoveBlob),
+            "unexpected operation: {:?}",
+            request.op,
+        );
+        self.write_response(request.id, response_vote)
+            .expect("failed to write response to AbortRemoveBlob request");
+    }
+
+    /// Expects a `RemoveCommitted` request, sending back no response.
+    #[track_caller]
+    fn expect_blob_remove_committed_request(&mut self, key: &Key, consensus_id: ConsensusId) {
+        let request = self
+            .read_request()
+            .expect("failed to read RemoveCommitted request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, consensus_id,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::RemoveCommitted(..)),
+            "unexpected operation: {:?}",
+            request.op,
+        );
+    }
 
     fn read_request(&mut self) -> io::Result<Request> {
         let mut buf = [0; 1024];
@@ -453,6 +590,20 @@ fn store_blob(port: u16, blob: &[u8]) {
         expected: StatusCode::OK, blob,
         CONTENT_LENGTH => &*length,
         LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+/// Remove `blob` on a server running on localhost `port`.
+#[track_caller]
+fn remove_blob(port: u16, blob: &[u8]) {
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    request!(
+        DELETE port, url, body::EMPTY,
+        expected: StatusCode::GONE, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LAST_MODIFIED => &date_header(),
         CONNECTION => header::KEEP_ALIVE,
     );
 }

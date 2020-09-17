@@ -1,0 +1,11 @@
+path = "/tmp/stored/mocked_remove_blob.db"
+
+[http]
+address = "127.0.0.1:13020"
+
+[distributed]
+peer_address = "127.0.0.1:13120"
+replicas = "all"
+peers = [
+	"127.0.0.1:13121",
+]

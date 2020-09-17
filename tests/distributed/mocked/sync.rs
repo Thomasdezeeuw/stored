@@ -56,12 +56,12 @@ fn peer_sync_after_disconnect() {
     let key = Key::for_blob(BLOB);
     let consensus_id =
         peer_stream.expect_add_blob_request(&key, ConsensusVote::Commit(SystemTime::now()));
-    peer_stream.expect_commit_blob_request(
+    peer_stream.expect_commit_store_blob_request(
         &key,
         consensus_id,
         ConsensusVote::Commit(SystemTime::now()),
     );
-    peer_stream.expect_blob_committed_request(&key, consensus_id);
+    peer_stream.expect_blob_store_committed_request(&key, consensus_id);
 
     handle.join().expect("failed to store blob");
 
