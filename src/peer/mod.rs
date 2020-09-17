@@ -645,7 +645,7 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
     peers.iter().any(|peer| peer.address == *address)
 }
 
-const PEER_TIMEOUT: Duration = Duration::from_secs(5);
+const PEER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// [`Future`] implementation that makes RPCs with one or more peers, see
 /// [`Peers`].
