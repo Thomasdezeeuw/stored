@@ -9,7 +9,7 @@ use heph::actor;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 
 use crate::buffer::BufView;
 use crate::db::{self, HealthCheck, HealthOk};
@@ -644,7 +644,7 @@ async fn abort_consensus(
     let results = abort_rpc.await;
     passport.mark(Event::AbortedConsensusRun);
     let (committed, aborted, failed) = count_consensus_votes(&results);
-    warn!(
+    info!(
         "aborted consensus algorithm: request_id=\"{}\", consensus_id=\"{}\", key=\"{}\", success={}, failed={}",
         passport.id(),
         consensus_id,
