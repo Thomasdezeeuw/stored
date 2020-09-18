@@ -156,6 +156,59 @@ impl TestStream<Server> {
         }
     }
 
+    /// Expects a `REQUEST_BLOB` request, using `f` to retrieve the blob.
+    /// Returns `true` if a blob was requested, or `false` if no bytes were read.
+    fn try_expect_request_blob<F>(&mut self, f: F) -> bool
+    where
+        F: FnOnce(&Key) -> (&[u8], DateTime),
+    {
+        let mut buf = [0; 1];
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read REQUEST_BLOB request");
+        if n == 0 {
+            return false;
+        }
+
+        assert_eq!(n, 1, "unexpected read length");
+        assert_eq!(
+            buf[0], REQUEST_BLOB,
+            "unexpected request, expected REQUEST_KEYS"
+        );
+
+        let mut buf = [0; size_of::<Key>()];
+        let n = self
+            .socket
+            .read(&mut buf)
+            .expect("failed to read Key in REQUEST_BLOB request");
+        assert_eq!(n, buf.len(), "unexpected read length");
+        let key = Key::new(buf);
+
+        let (blob, timestamp) = f(&key);
+        if !timestamp.is_removed() && !timestamp.is_invalid() {
+            assert_eq!(key, Key::for_blob(blob));
+        }
+
+        // Don't want to send removed/invalid blobs.
+        let blob = if timestamp.is_removed() || timestamp.is_invalid() {
+            &[][..]
+        } else {
+            blob
+        };
+
+        self.socket
+            .write_all(timestamp.as_bytes())
+            .expect("failed to write timestamp in response to REQUEST_BLOB request");
+        self.socket
+            .write_all(&u64::to_be_bytes(blob.len() as u64))
+            .expect("failed to write blob length in response to REQUEST_BLOB request");
+        self.socket
+            .write_all(blob)
+            .expect("failed to write blob in response to REQUEST_BLOB request");
+        true
+    }
+
     /// Expect multiple `REQUEST_BLOB` requests for all blobs in
     /// `expected_blobs` (in an arbritary order).
     #[track_caller]

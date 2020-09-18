@@ -41,6 +41,22 @@ macro_rules! start_stored_fn {
             $crate::util::start_stored(&[$( $conf_path ),*], &PROC, $filter)
         }
     };
+    (
+        // Starts a new stored process for each configuration.
+        &[ $( $conf_path: expr ),* ],
+        // Log severity that gets printed.
+        $filter: ident $(,)*
+    ) => {
+        /// Start the stored server.
+        fn start_stored() -> $crate::util::Proc<'static> {
+            // Ensure the processes are shared between all tests in a module.
+            lazy_static::lazy_static! {
+                static ref PROC: $crate::util::ProcLock = $crate::util::ProcLock::new(None);
+            }
+
+            $crate::util::start_stored(&[$( $conf_path ),*], &PROC, $filter)
+        }
+    };
 }
 
 pub fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
@@ -311,9 +327,13 @@ impl Drop for ChildCommand {
             let _ = libc::kill(self.inner.id() as libc::pid_t, libc::SIGTERM);
         }
         sleep(Duration::from_millis(500));
-        self.inner.try_wait().expect("can't wait on child process");
+        match self.inner.try_wait() {
+            Ok(Some(..)) => return,
+            Ok(None) | Err(..) => {
+                let _ = self.inner.kill();
+            }
+        }
 
-        let _ = self.inner.kill();
         self.inner.wait().expect("can't wait on child process");
     }
 }

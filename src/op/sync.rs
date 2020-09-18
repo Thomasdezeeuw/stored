@@ -1,7 +1,6 @@
 use std::cmp::min;
 use std::collections::HashSet;
 use std::convert::TryInto;
-use std::fmt;
 use std::future::Future;
 use std::io::IoSlice;
 use std::mem::replace;
@@ -9,6 +8,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Poll;
 use std::time::{Duration, SystemTime};
+use std::{fmt, io};
 
 use futures_util::future::poll_fn;
 use futures_util::io::AsyncWriteExt;
@@ -71,7 +71,7 @@ pub async fn full_sync<M>(
     // TODO: use `retrieve_keys` here once peers use passports.
     let stored_keys: Keys = db_rpc(ctx, db_ref, Uuid::empty(), ())?.await?;
     // Keys missing locally.
-    let mut missing_keys = Vec::new();
+    let mut missing_keys = HashSet::new();
 
     let mut peers = peers
         .addresses()
@@ -287,7 +287,7 @@ fn ok_peers(peers: &[SyncingPeer]) -> usize {
 }
 
 /// Partitions `keys`, returning a list of `n` lists of keys.
-fn partition(keys: &[Key], n: usize) -> Vec<Vec<Key>> {
+fn partition(keys: &HashSet<Key>, n: usize) -> Vec<Vec<Key>> {
     debug_assert!(n != 0, "called `partition` with 0");
     let mut size = keys.len() / n;
     if size * n != keys.len() {
@@ -304,7 +304,7 @@ fn partition(keys: &[Key], n: usize) -> Vec<Vec<Key>> {
 fn split_keys<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     peers: &mut [SyncingPeer],
-    missing_keys: &[Key],
+    missing_keys: &HashSet<Key>,
 ) -> Result<(), ()> {
     let n = ok_peers(&peers);
     if n == 0 {
@@ -333,11 +333,9 @@ fn split_keys<M>(
 }
 
 /// Removes `keys` from `missing_keys`.
-fn remove_from(keys: Vec<Key>, missing_keys: &mut Vec<Key>) {
+fn remove_from(keys: Vec<Key>, missing_keys: &mut HashSet<Key>) {
     for key in keys {
-        if let Some(pos) = missing_keys.iter().position(|k| *k == key) {
-            missing_keys.swap_remove(pos);
-        }
+        missing_keys.remove(&key);
     }
 }
 
@@ -764,6 +762,12 @@ where
                 .unwrap();
             let blob_length = u64::from_be_bytes(blob_length_bytes) as usize;
 
+            if (timestamp.is_invalid() || timestamp.is_removed()) && blob_length != 0 {
+                return Err(io::Error::from(io::ErrorKind::InvalidData)
+                    .describe("got send an removed/invalid blob, with a non-zero length"));
+            }
+
+            // FIXME: put a limit on `blob_length`.
             if buf.len() < blob_length + METADATA_LEN {
                 // Don't have the entire blob yet.
                 want_read = blob_length + METADATA_LEN;

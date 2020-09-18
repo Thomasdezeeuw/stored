@@ -1,0 +1,12 @@
+path = "/tmp/stored/mocked_full_sync_less_blobs.db"
+
+[http]
+address = "127.0.0.1:13040"
+
+[distributed]
+peer_address = "127.0.0.1:13140"
+replicas = "all"
+peers = [
+	# A TestPeer is used for this.
+	"127.0.0.1:13141",
+]
