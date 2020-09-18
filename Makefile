@@ -8,11 +8,14 @@ export COMMIT_VERSION            = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
 build:
 	cargo build --release
 
+.ONESHELL:
 test:
-	cargo test
+	@# FIXME: currently we leave behind zombie processes, fix that.
+	@trap "killall -u $$(whoami) -KILL stored" EXIT
+	cargo test -q
 
 dev:
-	find src/ tests/ | RUST_BACKTRACE=0 entr -d -c cargo test -q
+	find src/ tests/ | RUST_BACKTRACE=0 entr -d -c $(MAKE) test
 
 lint:
 	cargo clippy --all-targets -- --warn warnings \
