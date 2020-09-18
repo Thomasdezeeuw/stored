@@ -9,7 +9,7 @@ use log::LevelFilter;
 use stored::peer::{ConsensusVote, Operation};
 use stored::Key;
 
-use super::{store_blob, Dispatcher, TestPeer, TestStream};
+use super::{store_blob, Dispatcher, TestPeer, TestStream, BLOBS, IGN_FAILURE};
 use crate::util::http::{body, header};
 use crate::util::Proc;
 
@@ -42,15 +42,13 @@ lazy_static! {
     };
 }
 
-const IGN_MSG: &str = "IGNORE THIS FAILURE. Another test failed, but tests share a process";
-
 #[test]
 fn successfull_store() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Mercury";
+    const BLOB: &[u8] = BLOBS[0];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -77,11 +75,11 @@ fn successfull_store() {
 
 #[test]
 fn fail_2pc_phase_one_vote_fail() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Venus";
+    const BLOB: &[u8] = BLOBS[1];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -113,11 +111,11 @@ fn fail_2pc_phase_one_vote_fail() {
 
 #[test]
 fn fail_2pc_phase_one_vote_fail_no_response_timeout() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Earth";
+    const BLOB: &[u8] = BLOBS[2];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -158,11 +156,11 @@ fn fail_2pc_phase_one_vote_fail_no_response_timeout() {
 
 #[test]
 fn fail_2pc_phase_one_vote_fail_disconnect() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (peer, p_stream, _p, keys) = &mut *guard;
-    let mut peer_stream = p_stream.take().expect(IGN_MSG);
+    let mut peer_stream = p_stream.take().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Mars";
+    const BLOB: &[u8] = BLOBS[3];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -183,7 +181,7 @@ fn fail_2pc_phase_one_vote_fail_disconnect() {
     // The peer should try to reconnect.
     let mut peer_stream = peer.expect_participant_conn("127.0.0.1:13110".parse().unwrap(), &[]);
     // Running a peer sync as well.
-    peer.expect_peer_sync(keys);
+    peer.expect_peer_sync(keys, &[]);
 
     // Expect another 2PC query.
     let consensus_id =
@@ -211,11 +209,11 @@ fn fail_2pc_phase_one_vote_fail_disconnect() {
 
 #[test]
 fn fail_2pc_phase_one_vote_abort() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Jupiter";
+    const BLOB: &[u8] = BLOBS[4];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -247,11 +245,11 @@ fn fail_2pc_phase_one_vote_abort() {
 
 #[test]
 fn fail_2pc_phase_one_vote_abort_already_stored() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Saturn";
+    const BLOB: &[u8] = BLOBS[5];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -300,11 +298,11 @@ fn fail_2pc_phase_one_vote_abort_already_stored() {
 
 #[test]
 fn fail_2pc_phase_two_vote_fail() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Uranus";
+    const BLOB: &[u8] = BLOBS[6];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -340,11 +338,11 @@ fn fail_2pc_phase_two_vote_fail() {
 
 #[test]
 fn fail_2pc_phase_two_vote_fail_no_response_timeout() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Nepture";
+    const BLOB: &[u8] = BLOBS[7];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -387,11 +385,11 @@ fn fail_2pc_phase_two_vote_fail_no_response_timeout() {
 
 #[test]
 fn fail_2pc_phase_two_vote_fail_disconnect() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (peer, p_stream, _p, keys) = &mut *guard;
-    let mut peer_stream = p_stream.take().expect(IGN_MSG);
+    let mut peer_stream = p_stream.take().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Orcus";
+    const BLOB: &[u8] = BLOBS[8];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -414,7 +412,7 @@ fn fail_2pc_phase_two_vote_fail_disconnect() {
     // The peer should try to reconnect.
     let mut peer_stream = peer.expect_participant_conn("127.0.0.1:13110".parse().unwrap(), &[]);
     // Running a peer sync as well.
-    peer.expect_peer_sync(keys);
+    peer.expect_peer_sync(keys, &[]);
 
     // Expect another 2PC query.
     let consensus_id =
@@ -442,11 +440,11 @@ fn fail_2pc_phase_two_vote_fail_disconnect() {
 
 #[test]
 fn fail_2pc_phase_two_vote_abort() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Pluto";
+    const BLOB: &[u8] = BLOBS[9];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -482,11 +480,11 @@ fn fail_2pc_phase_two_vote_abort() {
 
 #[test]
 fn fail_2pc_phase_two_vote_abort_already_stored() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, keys) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Salacia";
+    const BLOB: &[u8] = BLOBS[10];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -536,11 +534,11 @@ fn fail_2pc_phase_two_vote_abort_already_stored() {
 
 #[test]
 fn fail_2pc_completely_phase_one_vote_fail() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Eris";
+    const BLOB: &[u8] = BLOBS[11];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -577,11 +575,11 @@ fn fail_2pc_completely_phase_one_vote_fail() {
 
 #[test]
 fn fail_2pc_completely_phase_one_vote_abort() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Eris";
+    const BLOB: &[u8] = BLOBS[11];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -618,11 +616,11 @@ fn fail_2pc_completely_phase_one_vote_abort() {
 
 #[test]
 fn fail_2pc_completely_phase_two_vote_fail() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Eris";
+    const BLOB: &[u8] = BLOBS[11];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -666,11 +664,11 @@ fn fail_2pc_completely_phase_two_vote_fail() {
 
 #[test]
 fn fail_2pc_completely_phase_two_vote_abort() {
-    let mut guard = PROC.lock().expect(IGN_MSG);
+    let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;
-    let peer_stream = peer_stream.as_mut().expect(IGN_MSG);
+    let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = b"Hello Eris";
+    const BLOB: &[u8] = BLOBS[11];
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.

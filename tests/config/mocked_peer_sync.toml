@@ -1,4 +1,4 @@
-path = "/tmp/stored/mocked_sync_after_disconnect.db"
+path = "/tmp/stored/mocked_peer_sync.db"
 
 [http]
 address = "127.0.0.1:13000"

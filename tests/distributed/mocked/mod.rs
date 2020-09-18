@@ -21,6 +21,25 @@ mod remove_blob;
 mod store_blob;
 mod sync;
 
+/// Fore tests that share a test process.
+const IGN_FAILURE: &str = "IGNORE THIS FAILURE. Another test failed, but tests share a process";
+
+/// Blobs we use in various tests.
+const BLOBS: &[&[u8]] = &[
+    b"Hello Mercury",
+    b"Hello Venus",
+    b"Hello Earth",
+    b"Hello Mars",
+    b"Hello Jupiter",
+    b"Hello Saturn",
+    b"Hello Uranus",
+    b"Hello Nepture",
+    b"Hello Orcus",
+    b"Hello Pluto",
+    b"Hello Salacia",
+    b"Hello Eris",
+];
+
 struct TestPeer {
     socket: TcpListener,
 }
@@ -65,66 +84,18 @@ impl TestPeer {
         let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
         sync_stream.expect_coordinator_magic();
         sync_stream.expect_request_keys(keys);
-        let mut request_blobs: Vec<(Key, &[u8])> = request_blobs
-            .iter()
-            .copied()
-            .map(|blob| (Key::for_blob(blob), blob))
-            .collect();
-        while !request_blobs.is_empty() {
-            let mut buf = [0; 1];
-            let n = sync_stream
-                .socket
-                .read(&mut buf)
-                .expect("failed to read REQUEST_BLOB request");
-            assert_eq!(n, 1, "unexpected read length");
-            assert_eq!(
-                buf[0], REQUEST_BLOB,
-                "unexpected request, expected REQUEST_KEYS"
-            );
-
-            let mut buf = [0; size_of::<Key>()];
-            let n = sync_stream
-                .socket
-                .read(&mut buf)
-                .expect("failed to read Key in REQUEST_BLOB request");
-            assert_eq!(n, buf.len(), "unexpected read length");
-            let key = Key::new(buf);
-            let pos = request_blobs
-                .iter()
-                .position(|(k, _)| *k == key)
-                .expect("unexpected sync request");
-            let (expected_key, expected_blob) = request_blobs.remove(pos);
-            assert_eq!(key, expected_key, "read unexpected key");
-
-            let timestamp = DateTime::from(SystemTime::now());
-            sync_stream
-                .socket
-                .write_all(timestamp.as_bytes())
-                .expect("failed to write timestamp in response to REQUEST_BLOB request");
-            sync_stream
-                .socket
-                .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
-                .expect("failed to write blob length in response to REQUEST_BLOB request");
-            sync_stream
-                .socket
-                .write_all(expected_blob)
-                .expect("failed to write blob in response to REQUEST_BLOB request");
-        }
-        assert!(
-            request_blobs.is_empty(),
-            "didn't receive retrieve request for blobs: {:?}",
-            request_blobs
-        );
+        sync_stream.expect_request_blobs(request_blobs);
         sync_stream.expect_end();
     }
 
     /// Expect a stream that wants to run peer synchronisation. Returns a
     /// response with `keys`, expecting both peers to be fully synced.
     #[track_caller]
-    fn expect_peer_sync(&mut self, keys: &[Key]) {
+    fn expect_peer_sync(&mut self, keys: &[Key], request_blobs: &[&[u8]]) {
         let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
         sync_stream.expect_coordinator_magic();
         sync_stream.expect_request_keys_since(keys);
+        sync_stream.expect_request_blobs(request_blobs);
         sync_stream.expect_end();
     }
 }
@@ -185,40 +156,61 @@ impl TestStream<Server> {
         }
     }
 
-    /// Expect a `REQUEST_BLOB` request and write `keys` as response.
+    /// Expect multiple `REQUEST_BLOB` requests for all blobs in
+    /// `expected_blobs` (in an arbritary order).
     #[track_caller]
-    fn expect_request_blob(&mut self, expected_blob: &[u8]) {
-        let mut buf = [0; 1];
-        let n = self
-            .socket
-            .read(&mut buf)
-            .expect("failed to read REQUEST_BLOB request");
-        assert_eq!(n, 1, "unexpected read length");
-        assert_eq!(
-            buf[0], REQUEST_BLOB,
-            "unexpected request, expected REQUEST_KEYS"
+    fn expect_request_blobs(&mut self, expected_blobs: &[&[u8]]) {
+        if expected_blobs.is_empty() {
+            return;
+        }
+
+        let mut request_blobs: Vec<(Key, &[u8])> = expected_blobs
+            .iter()
+            .copied()
+            .map(|blob| (Key::for_blob(blob), blob))
+            .collect();
+        while !request_blobs.is_empty() {
+            let mut buf = [0; 1];
+            let n = self
+                .socket
+                .read(&mut buf)
+                .expect("failed to read REQUEST_BLOB request");
+            assert_eq!(n, 1, "unexpected read length");
+            assert_eq!(
+                buf[0], REQUEST_BLOB,
+                "unexpected request, expected REQUEST_KEYS"
+            );
+
+            let mut buf = [0; size_of::<Key>()];
+            let n = self
+                .socket
+                .read(&mut buf)
+                .expect("failed to read Key in REQUEST_BLOB request");
+            assert_eq!(n, buf.len(), "unexpected read length");
+            let key = Key::new(buf);
+            let pos = request_blobs
+                .iter()
+                .position(|(k, _)| *k == key)
+                .expect("unexpected sync request");
+            let (expected_key, expected_blob) = request_blobs.remove(pos);
+            assert_eq!(key, expected_key, "read unexpected key");
+
+            let timestamp = DateTime::from(SystemTime::now());
+            self.socket
+                .write_all(timestamp.as_bytes())
+                .expect("failed to write timestamp in response to REQUEST_BLOB request");
+            self.socket
+                .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
+                .expect("failed to write blob length in response to REQUEST_BLOB request");
+            self.socket
+                .write_all(expected_blob)
+                .expect("failed to write blob in response to REQUEST_BLOB request");
+        }
+        assert!(
+            request_blobs.is_empty(),
+            "didn't receive retrieve request for blobs: {:?}",
+            request_blobs
         );
-
-        let mut buf = [0; size_of::<Key>()];
-        let n = self
-            .socket
-            .read(&mut buf)
-            .expect("failed to read Key in REQUEST_BLOB request");
-        assert_eq!(n, buf.len(), "unexpected read length");
-        let key = Key::new(buf);
-        let expected_key = Key::for_blob(expected_blob);
-        assert_eq!(key, expected_key, "read unexpected key");
-
-        let timestamp = DateTime::from(SystemTime::now());
-        self.socket
-            .write_all(timestamp.as_bytes())
-            .expect("failed to write timestamp in response to REQUEST_BLOB request");
-        self.socket
-            .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
-            .expect("failed to write blob length in response to REQUEST_BLOB request");
-        self.socket
-            .write_all(expected_blob)
-            .expect("failed to write blob in response to REQUEST_BLOB request");
     }
 
     /// Expect a `REQUEST_KEYS` request and write `keys` as response.
@@ -384,6 +376,20 @@ impl TestStream<Dispatcher> {
             write!(self.socket, "\"{}\"", peer)?;
         }
         self.socket.write_all(b"]")
+    }
+
+    /// Expects a full interaction of storing `blob`.
+    #[track_caller]
+    fn expect_store_blob_full(&mut self, blob: &[u8]) {
+        let key = Key::for_blob(blob);
+        let consensus_id =
+            self.expect_add_blob_request(&key, ConsensusVote::Commit(SystemTime::now()));
+        self.expect_commit_store_blob_request(
+            &key,
+            consensus_id,
+            ConsensusVote::Commit(SystemTime::now()),
+        );
+        self.expect_blob_store_committed_request(&key, consensus_id);
     }
 
     /// Expects an `AddBlob` request, responding with `response_vote`.
