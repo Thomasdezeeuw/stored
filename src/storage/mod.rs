@@ -635,7 +635,7 @@ impl StreamBlob {
     /// words following must be safe.
     ///
     /// ```no_run
-    /// # #![feature(maybe_uninit_slice_assume_init)]
+    /// # #![feature(maybe_uninit_slice)]
     /// # use std::mem::MaybeUninit;
     /// # fn io() -> std::io::Result<()> {
     /// # let mut bytes: [MaybeUninit<u8>; 0] = [];
@@ -643,7 +643,7 @@ impl StreamBlob {
     /// let n = write(&mut bytes)?;
     /// // If `n` is larger then the actually initialised bytes the following
     /// // line would be undefined behaviour.
-    /// let read_bytes = unsafe { MaybeUninit::slice_get_ref(&bytes[..n]) };
+    /// let read_bytes = unsafe { MaybeUninit::slice_assume_init_ref(&bytes[..n]) };
     /// # Ok(()) }
     /// ```
     ///
