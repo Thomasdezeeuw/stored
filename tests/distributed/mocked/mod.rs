@@ -142,7 +142,7 @@ enum Server {}
 
 /// Connection acting as `peer::server::actor`.
 impl TestStream<Server> {
-    /// Returns `true` if it could read `COORDINATOR_MAGIC` from the connection.
+    /// Expects to read `COORDINATOR_MAGIC` from the connection.
     #[track_caller]
     fn expect_coordinator_magic(&mut self) {
         let mut buf = [0; COORDINATOR_MAGIC.len()];
@@ -386,7 +386,7 @@ enum Dispatcher {}
 
 /// Connection acting as `participant::dispatcher::actor`.
 impl TestStream<Dispatcher> {
-    /// Returns `true` if it could read `PARTICIPANT_MAGIC` from the connection.
+    /// Expects to read `PARTICIPANT_MAGIC` from the connection.
     #[track_caller]
     fn expect_participant_magic(&mut self) {
         let mut buf = [0; PARTICIPANT_MAGIC.len()];
@@ -644,11 +644,20 @@ fn store_blob(port: u16, blob: &[u8]) {
         CONNECTION => header::KEEP_ALIVE,
     );
     let last_modified = date_header();
+    retrieve_blob(port, blob, &last_modified);
+}
+
+/// Retrieves `blob` on a server running on localhost `port`, checking its
+/// present.
+fn retrieve_blob(port: u16, blob: &[u8], last_modified: &str) {
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    let length = blob.len().to_string();
     request!(
         GET port, url, body::EMPTY,
         expected: StatusCode::OK, blob,
         CONTENT_LENGTH => &*length,
-        LAST_MODIFIED => &last_modified,
+        LAST_MODIFIED => last_modified,
         CONNECTION => header::KEEP_ALIVE,
     );
 }
@@ -658,11 +667,27 @@ fn store_blob(port: u16, blob: &[u8]) {
 fn remove_blob(port: u16, blob: &[u8]) {
     let key = Key::for_blob(blob);
     let url = format!("/blob/{}", key);
+    let last_modified = date_header();
     request!(
         DELETE port, url, body::EMPTY,
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
-        LAST_MODIFIED => &date_header(),
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+    check_blob_removed(port, blob, &last_modified);
+}
+
+/// Retrieves `blob` on a server running on localhost `port`, checking its
+/// present.
+fn check_blob_removed(port: u16, blob: &[u8], last_modified: &str) {
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    request!(
+        GET port, url, body::EMPTY,
+        expected: StatusCode::GONE, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LAST_MODIFIED => last_modified,
         CONNECTION => header::KEEP_ALIVE,
     );
 }
