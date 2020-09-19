@@ -158,6 +158,14 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
+            Message::ContainsBlob(RpcMessage { request, response }) => {
+                let key = request;
+                debug!("checking if blob is stored: key=\"{}\"", key);
+                let result = storage.contains(&key);
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
             Message::GetUncommittedBlob(RpcMessage { request, response }) => {
                 let key = request;
                 debug!("retrieving uncommitted blob: key=\"{}\"", key);
@@ -284,10 +292,16 @@ pub enum Message {
 
     /// Get a blob from storage.
     ///
-    /// Request is the key to look up.
+    /// Request is the blob's key to look up.
     ///
     /// Responds with the `Blob`, if its in the database.
     GetBlob(RpcMessage<Key, Option<BlobEntry>>),
+    /// Check is a blob is stored.
+    ///
+    /// Request is the blob's key to look up.
+    ///
+    /// Responds with `true`, if the blob is in the database.
+    ContainsBlob(RpcMessage<Key, bool>),
 
     /// Get an uncommitted blob from storage.
     ///
@@ -388,6 +402,7 @@ from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
 from_rpc_message!(Message::StreamBlob(usize) -> Box<StreamBlob>);
 from_rpc_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
 from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
+from_rpc_message!(Message::ContainsBlob(Key) -> bool);
 from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
 from_rpc_message!(Message::GetKeys(()) -> Keys);
 from_rpc_message!(Message::GetEntries(()) -> Entries);

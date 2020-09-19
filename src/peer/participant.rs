@@ -685,6 +685,23 @@ pub mod consensus {
             passport.id(), key, remote
         );
 
+        // Before we attempt to retrieve the blob we check if its already
+        // stored.
+        match contains_blob(&mut ctx, &mut db_ref, &mut passport, key.clone()).await {
+            Ok(true) => {
+                info!(
+                    "blob already stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(),
+                    key
+                );
+                responder.respond(ConsensusVote::Abort);
+                return Ok(());
+            }
+            // Blob not stored so we can continue.
+            Ok(false) => {}
+            Err(()) => return Err(db_error()),
+        }
+
         // TODO: reuse stream and buffer.
         // TODO: stream large blob to a file directly? Preallocating disk space in
         // the data file?

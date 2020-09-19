@@ -81,6 +81,41 @@ where
     }
 }
 
+/// Check if the blob with `key` is stored.
+///
+/// Returns an error if the database actor can't be accessed.
+pub async fn contains_blob<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    key: Key,
+) -> Result<bool, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!(
+        "running contains key operation: request_id=\"{}\", key=\"{}\"",
+        passport.id(),
+        key
+    );
+    match db_rpc(ctx, db_ref, *passport.id(), key) {
+        Ok(rpc) => match rpc.await {
+            Ok(contains) => {
+                passport.mark(Event::ContainsBlob);
+                Ok(contains)
+            }
+            Err(()) => {
+                passport.mark(Event::FailedToCheckIfContainsBlob);
+                Err(())
+            }
+        },
+        Err(()) => {
+            passport.mark(Event::FailedToCheckIfContainsBlob);
+            Err(())
+        }
+    }
+}
+
 /// Retrieve a possibly uncommitted blob with `key`.
 ///
 /// Returns an error if the database actor can't be accessed.

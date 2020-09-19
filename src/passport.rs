@@ -362,6 +362,9 @@ events!(
     // Retrieve blob.
     RetrievedBlob => "retrieved blob",
     FailedToRetrieveBlob => "failed to retrieve blob",
+    // Contains blob.
+    ContainsBlob => "checked if blob is stored",
+    FailedToCheckIfContainsBlob => "failed to check if blob is stored",
     // Remove blob.
     PreppedRemoveBlob => "prepared storage for removing blob",
     FailedToPrepRemoveBlob => "failed to prepare storage for removing blob",
