@@ -966,6 +966,7 @@ mod coordinator {
         // one: adding the blob.
         let request_id_a = next_request_id();
         stream.write_add_blob_request(request_id_a, consensus_id_a, key.clone());
+        sleep(Duration::from_millis(100));
         let request_id_b = next_request_id();
         stream.write_add_blob_request(request_id_b, consensus_id_b, key.clone());
 
