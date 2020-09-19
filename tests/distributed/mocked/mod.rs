@@ -42,6 +42,9 @@ const BLOBS: &[&[u8]] = &[
     b"Hello Eris",
 ];
 
+/// A blob that is never stored, but used to fail in various phases.
+const BLOB_NEVER_STORED: &[u8] = BLOBS[11];
+
 struct TestPeer {
     socket: TcpListener,
 }

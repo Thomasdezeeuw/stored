@@ -9,7 +9,7 @@ use log::LevelFilter;
 use stored::peer::{ConsensusVote, Operation};
 use stored::Key;
 
-use super::{store_blob, Dispatcher, TestPeer, TestStream, BLOBS, IGN_FAILURE};
+use super::{store_blob, Dispatcher, TestPeer, TestStream, BLOBS, BLOB_NEVER_STORED, IGN_FAILURE};
 use crate::util::http::{body, header};
 use crate::util::Proc;
 
@@ -538,7 +538,7 @@ fn fail_2pc_completely_phase_one_vote_fail() {
     let (_, peer_stream, _p, _) = &mut *guard;
     let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = BLOBS[11];
+    const BLOB: &[u8] = BLOB_NEVER_STORED;
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -579,7 +579,7 @@ fn fail_2pc_completely_phase_one_vote_abort() {
     let (_, peer_stream, _p, _) = &mut *guard;
     let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = BLOBS[11];
+    const BLOB: &[u8] = BLOB_NEVER_STORED;
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -620,7 +620,7 @@ fn fail_2pc_completely_phase_two_vote_fail() {
     let (_, peer_stream, _p, _) = &mut *guard;
     let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = BLOBS[11];
+    const BLOB: &[u8] = BLOB_NEVER_STORED;
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -668,7 +668,7 @@ fn fail_2pc_completely_phase_two_vote_abort() {
     let (_, peer_stream, _p, _) = &mut *guard;
     let peer_stream = peer_stream.as_mut().expect(IGN_FAILURE);
 
-    const BLOB: &[u8] = BLOBS[11];
+    const BLOB: &[u8] = BLOB_NEVER_STORED;
     let key = Key::for_blob(BLOB);
 
     // Store a blob, while concurrently doing the peer interaction.
@@ -756,14 +756,14 @@ mod coordinator {
     use crate::util::Proc;
 
     use super::super::{
-        check_blob_not_stored, retrieve_blob, Dispatcher, TestPeer, TestStream, BLOBS, IGN_FAILURE,
+        check_blob_not_stored, retrieve_blob, Dispatcher, TestPeer, TestStream, BLOBS,
+        BLOB_NEVER_STORED, IGN_FAILURE,
     };
 
     const DB_PORT: u16 = 13060;
     const DB_PATH: &str = "/tmp/stored/mocked_coordinator_store_blob.db";
     const CONF_PATH: &str = "tests/config/mocked_coordinator_store_blob.toml";
-    // TODO: determine the log level.
-    const FILTER: LevelFilter = LevelFilter::Warn;
+    const FILTER: LevelFilter = LevelFilter::Off;
 
     start_stored_fn!(&[CONF_PATH], &[DB_PATH], FILTER);
 
@@ -843,9 +843,6 @@ mod coordinator {
 
         retrieve_blob(DB_PORT, BLOB, &date_header());
     }
-
-    /// A blob that is never stored, but used to fail in various phases.
-    const BLOB_NEVER_STORED: &[u8] = BLOBS[11];
 
     #[test]
     fn abort_after_2pc_phase_one() {
