@@ -11,6 +11,7 @@ use crate::util::http::{body, date_header, header};
 const FILTER: LevelFilter = LevelFilter::Warn;
 
 #[test]
+#[ignore]
 fn syncing_peers() {
     // Node connections in configuration:
     // Node 1 --> Node 2 --> Node 3 (not connected to any peers).
@@ -67,6 +68,7 @@ fn syncing_peers() {
 }
 
 #[test]
+#[ignore]
 fn syncing_blobs() {
     // All three nodes are fully connection, but only node 1 has the blobs
     // stored.
