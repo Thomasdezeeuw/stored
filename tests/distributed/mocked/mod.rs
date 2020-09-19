@@ -3,14 +3,16 @@ use std::marker::PhantomData;
 use std::mem::size_of;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::from_utf8;
+use std::thread::sleep;
 use std::time::{Duration, SystemTime};
 
-use http::header::{CONNECTION, CONTENT_LENGTH, LAST_MODIFIED, LOCATION};
+use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use serde_json;
 use stored::peer::server::{REQUEST_BLOB, REQUEST_KEYS, REQUEST_KEYS_SINCE, STORE_BLOB};
 use stored::peer::{
-    ConsensusId, ConsensusVote, Operation, Request, Response, COORDINATOR_MAGIC, PARTICIPANT_MAGIC,
+    ConsensusId, ConsensusVote, Operation, Request, RequestId, Response, COORDINATOR_MAGIC,
+    EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_MAGIC,
 };
 use stored::storage::DateTime;
 use stored::Key;
@@ -78,9 +80,17 @@ impl TestPeer {
         peer_stream
     }
 
+    /// Accept a server connection.
+    #[track_caller]
+    fn expect_server_conn(&mut self) -> TestStream<Server> {
+        let (mut peer_stream, _) = self.accept().expect("failed to accept peer connection");
+        peer_stream.expect_coordinator_magic();
+        peer_stream
+    }
+
     /// Expect a stream running a full synchronisation.
     #[track_caller]
-    fn expect_full_sync(&mut self, keys: &[Key], request_blobs: &[&[u8]]) {
+    fn expect_full_sync(&mut self, keys: &[Key], request_blobs: &[&'static [u8]]) {
         let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
         sync_stream.expect_coordinator_magic();
         sync_stream.expect_request_keys(keys);
@@ -91,7 +101,7 @@ impl TestPeer {
     /// Expect a stream that wants to run peer synchronisation. Returns a
     /// response with `keys`, expecting both peers to be fully synced.
     #[track_caller]
-    fn expect_peer_sync(&mut self, keys: &[Key], request_blobs: &[&[u8]]) {
+    fn expect_peer_sync(&mut self, keys: &[Key], request_blobs: &[&'static [u8]]) {
         let (mut sync_stream, _) = self.accept().expect("failed to accept peer connection");
         sync_stream.expect_coordinator_magic();
         sync_stream.expect_request_keys_since(keys);
@@ -156,8 +166,20 @@ impl TestStream<Server> {
         }
     }
 
+    /// Expects a `REQUEST_BLOB` request for `expected_blob`.
+    #[track_caller]
+    fn expect_request_blob(&mut self, expected_blob: &'static [u8]) {
+        self.try_expect_request_blob(|key| {
+            let expected_key = Key::for_blob(expected_blob);
+            assert_eq!(*key, expected_key);
+            let timestamp = DateTime::from(SystemTime::now());
+            (expected_blob, timestamp)
+        });
+    }
+
     /// Expects a `REQUEST_BLOB` request, using `f` to retrieve the blob.
     /// Returns `true` if a blob was requested, or `false` if no bytes were read.
+    #[track_caller]
     fn try_expect_request_blob<F>(&mut self, f: F) -> bool
     where
         F: FnOnce(&Key) -> (&[u8], DateTime),
@@ -212,7 +234,7 @@ impl TestStream<Server> {
     /// Expect multiple `REQUEST_BLOB` requests for all blobs in
     /// `expected_blobs` (in an arbritary order).
     #[track_caller]
-    fn expect_request_blobs(&mut self, expected_blobs: &[&[u8]]) {
+    fn expect_request_blobs(&mut self, expected_blobs: &[&'static [u8]]) {
         if expected_blobs.is_empty() {
             return;
         }
@@ -223,41 +245,16 @@ impl TestStream<Server> {
             .map(|blob| (Key::for_blob(blob), blob))
             .collect();
         while !request_blobs.is_empty() {
-            let mut buf = [0; 1];
-            let n = self
-                .socket
-                .read(&mut buf)
-                .expect("failed to read REQUEST_BLOB request");
-            assert_eq!(n, 1, "unexpected read length");
-            assert_eq!(
-                buf[0], REQUEST_BLOB,
-                "unexpected request, expected REQUEST_KEYS"
-            );
-
-            let mut buf = [0; size_of::<Key>()];
-            let n = self
-                .socket
-                .read(&mut buf)
-                .expect("failed to read Key in REQUEST_BLOB request");
-            assert_eq!(n, buf.len(), "unexpected read length");
-            let key = Key::new(buf);
-            let pos = request_blobs
-                .iter()
-                .position(|(k, _)| *k == key)
-                .expect("unexpected sync request");
-            let (expected_key, expected_blob) = request_blobs.remove(pos);
-            assert_eq!(key, expected_key, "read unexpected key");
-
-            let timestamp = DateTime::from(SystemTime::now());
-            self.socket
-                .write_all(timestamp.as_bytes())
-                .expect("failed to write timestamp in response to REQUEST_BLOB request");
-            self.socket
-                .write_all(&u64::to_be_bytes(expected_blob.len() as u64))
-                .expect("failed to write blob length in response to REQUEST_BLOB request");
-            self.socket
-                .write_all(expected_blob)
-                .expect("failed to write blob in response to REQUEST_BLOB request");
+            self.try_expect_request_blob(|key| {
+                let pos = request_blobs
+                    .iter()
+                    .position(|(k, _)| *k == *key)
+                    .expect("unexpected sync request");
+                let (expected_key, expected_blob) = request_blobs.remove(pos);
+                assert_eq!(*key, expected_key, "read unexpected key");
+                let timestamp = DateTime::from(SystemTime::now());
+                (expected_blob, timestamp)
+            });
         }
         assert!(
             request_blobs.is_empty(),
@@ -623,9 +620,203 @@ impl TestStream<Dispatcher> {
         serde_json::from_slice(&buf[..n]).map_err(io::Error::from)
     }
 
-    fn write_response(&mut self, request_id: usize, vote: ConsensusVote) -> io::Result<()> {
+    fn write_response(&mut self, request_id: RequestId, vote: ConsensusVote) -> io::Result<()> {
         let response = Response { request_id, vote };
         serde_json::to_writer(&mut self.socket, &response).map_err(io::Error::from)
+    }
+}
+
+/// Actor as `coordinator::relay::actor`.
+enum Relay {}
+
+impl TestStream<Relay> {
+    /// Connect to a peer, acting as a `coordinator::relay::actor`.
+    #[track_caller]
+    fn connect(
+        addr: SocketAddr,
+        server_addr: SocketAddr,
+        peers: &[SocketAddr],
+    ) -> TestStream<Relay> {
+        let mut stream = TcpStream::connect(addr)
+            .and_then(TestStream::new)
+            .expect("failed to connect");
+        stream.write_participant_magic();
+        stream.write_server_address(server_addr);
+        stream.expect_known_peers(peers);
+        stream
+    }
+
+    /// Writes `PARTICIPANT_MAGIC` to the connection.
+    #[track_caller]
+    fn write_participant_magic(&mut self) {
+        self.socket
+            .write_all(PARTICIPANT_MAGIC)
+            .expect("failed to write PARTICIPANT_MAGIC");
+    }
+
+    /// Writes the `server` address to the connection.
+    #[track_caller]
+    fn write_server_address(&mut self, server: SocketAddr) {
+        serde_json::to_writer(&mut self.socket, &server)
+            .expect("failed to write the server address");
+    }
+
+    /// Expects to read the `expected_peers` from the connection.
+    #[track_caller]
+    fn expect_known_peers(&mut self, expected_peers: &[SocketAddr]) {
+        let mut buf = [0; 1024];
+        let n = self.socket.read(&mut buf).expect("failed to read peers");
+
+        let mut addresses: Vec<SocketAddr> =
+            serde_json::from_slice(&mut buf[..n]).expect("failed to parse peers");
+
+        addresses.retain(|addr| expected_peers.contains(addr));
+
+        assert!(
+            addresses.is_empty(),
+            "unexpected peer addresses: {:?}",
+            addresses
+        );
+    }
+
+    /// Writes a `AddBlob` request.
+    #[track_caller]
+    fn write_add_blob_request(&mut self, id: RequestId, consensus_id: ConsensusId, key: Key) {
+        let request = Request {
+            id,
+            consensus_id,
+            key,
+            op: Operation::AddBlob,
+        };
+        self.write_request(&request);
+    }
+
+    /// Writes a `CommitStoreBlob` request.
+    #[track_caller]
+    fn write_commit_store_blob_request(
+        &mut self,
+        id: RequestId,
+        consensus_id: ConsensusId,
+        key: Key,
+    ) {
+        let request = Request {
+            id,
+            consensus_id,
+            key,
+            op: Operation::CommitStoreBlob(SystemTime::now()),
+        };
+        self.write_request(&request);
+    }
+
+    /// Writes a `AbortStoreBlob` request.
+    #[track_caller]
+    fn write_abort_store_blob_request(
+        &mut self,
+        id: RequestId,
+        consensus_id: ConsensusId,
+        key: Key,
+    ) {
+        let request = Request {
+            id,
+            consensus_id,
+            key,
+            op: Operation::AbortStoreBlob,
+        };
+        self.write_request(&request);
+    }
+
+    /// Writes a `StoreCommitted` request.
+    #[track_caller]
+    fn write_store_committed_request(
+        &mut self,
+        id: RequestId,
+        consensus_id: ConsensusId,
+        key: Key,
+    ) {
+        let request = Request {
+            id,
+            consensus_id,
+            key,
+            op: Operation::StoreCommitted(SystemTime::now()),
+        };
+        self.write_request(&request);
+    }
+
+    /* TODO: add functions for the following:
+        RemoveBlob,
+        CommitRemoveBlob(SystemTime),
+        AbortRemoveBlob,
+        RemoveCommitted(SystemTime),
+    */
+
+    /// Writes `request` to the connection.
+    #[track_caller]
+    fn write_request(&mut self, request: &Request) {
+        serde_json::to_writer(&mut self.socket, request).expect("failed to write request");
+    }
+
+    /// Expect to read `Commit` from the connection.
+    #[track_caller]
+    fn expect_commit_response(&mut self, id: RequestId) -> SystemTime {
+        let response = self.read_response();
+        assert_eq!(response.request_id, id);
+        match response.vote {
+            ConsensusVote::Commit(timestamp) => timestamp,
+            vote => panic!("unexpected vote: {:?}, expected vote to commit", vote),
+        }
+    }
+
+    /// Expect to read `Abort` from the connection.
+    #[track_caller]
+    fn expect_abort_response(&mut self, id: RequestId) {
+        let response = self.read_response();
+        assert_eq!(response.request_id, id);
+        match response.vote {
+            ConsensusVote::Abort => {}
+            vote => panic!("unexpected vote: {:?}, expected vote to abort", vote),
+        }
+    }
+
+    /// Expect to read `Fail` from the connection.
+    #[track_caller]
+    fn expect_fail_response(&mut self, id: RequestId) {
+        let response = self.read_response();
+        assert_eq!(response.request_id, id);
+        match response.vote {
+            ConsensusVote::Fail => {}
+            vote => panic!("unexpected vote: {:?}, expected vote to fail", vote),
+        }
+    }
+
+    /// Reads response  from the connection.
+    #[track_caller]
+    fn read_response(&mut self) -> Response {
+        let mut de = serde_json::Deserializer::from_reader(&mut self.socket).into_iter();
+        de.next()
+            .expect("expected a response")
+            .expect("failed to read response")
+    }
+
+    /// Cleanly closes the connection.
+    #[track_caller]
+    fn close(mut self) {
+        // Use the setting of no-delay and sleeping a sort of flush function.
+        // When quickly calling this function after sending a request without a
+        // response (e.g. a `StoreCommitted` request) it would include
+        // `EXIT_COORDINATOR` in the same read buffer causing `serde_json` to
+        // complain about unexpected input.
+        self.socket.set_nodelay(true).unwrap();
+        sleep(Duration::from_millis(10));
+
+        self.socket
+            .write_all(EXIT_COORDINATOR)
+            .expect("failed to write exit message");
+        let mut buf = [0; EXIT_COORDINATOR.len()];
+        self.socket
+            .read_exact(&mut buf)
+            .expect("failed to read EXIT_PARTICIPANT");
+        assert_eq!(buf, EXIT_PARTICIPANT, "unexpected bytes");
+        self.expect_end()
     }
 }
 
@@ -649,6 +840,7 @@ fn store_blob(port: u16, blob: &[u8]) {
 
 /// Retrieves `blob` on a server running on localhost `port`, checking its
 /// present.
+#[track_caller]
 fn retrieve_blob(port: u16, blob: &[u8], last_modified: &str) {
     let key = Key::for_blob(blob);
     let url = format!("/blob/{}", key);
@@ -678,8 +870,8 @@ fn remove_blob(port: u16, blob: &[u8]) {
     check_blob_removed(port, blob, &last_modified);
 }
 
-/// Retrieves `blob` on a server running on localhost `port`, checking its
-/// present.
+/// Check that `blob` is removed from the server running on localhost `port`.
+#[track_caller]
 fn check_blob_removed(port: u16, blob: &[u8], last_modified: &str) {
     let key = Key::for_blob(blob);
     let url = format!("/blob/{}", key);
@@ -688,6 +880,21 @@ fn check_blob_removed(port: u16, blob: &[u8], last_modified: &str) {
         expected: StatusCode::GONE, body::EMPTY,
         CONTENT_LENGTH => body::EMPTY_LEN,
         LAST_MODIFIED => last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+/// Check that the `blob` is **not** stored a server running on localhost
+/// `port`.
+#[track_caller]
+fn check_blob_not_stored(port: u16, blob: &[u8]) {
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    request!(
+        GET port, url, body::EMPTY,
+        expected: StatusCode::NOT_FOUND, body::NOT_FOUND,
+        CONTENT_LENGTH => body::NOT_FOUND_LEN,
+        CONTENT_TYPE => header::PLAIN_TEXT,
         CONNECTION => header::KEEP_ALIVE,
     );
 }

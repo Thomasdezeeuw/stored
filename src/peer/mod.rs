@@ -170,14 +170,14 @@ fn start_sync_actor(
 }
 
 /// Exit message send by coordinator for a clean shutdown.
-const EXIT_COORDINATOR: &[u8] = b"EXIT COORDINATOR";
+pub const EXIT_COORDINATOR: &[u8] = b"EXIT COORDINATOR";
 /// Exit message send by participant for a clean shutdown.
-const EXIT_PARTICIPANT: &[u8] = b"EXIT PARTICIPANT";
+pub const EXIT_PARTICIPANT: &[u8] = b"EXIT PARTICIPANT";
 
 /// Id of a consensus algorithm run.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 #[repr(transparent)]
-pub struct ConsensusId(usize);
+pub struct ConsensusId(pub usize);
 
 impl fmt::Display for ConsensusId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

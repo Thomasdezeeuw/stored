@@ -14,6 +14,8 @@ test:
 	@trap "killall -u $$(whoami) -KILL stored" EXIT
 	cargo test -q
 
+# NOTE: when using this command you might want to change the `test` target to
+# only run a subset of the tests you're actively working on.
 .ONESHELL:
 dev:
 	find src/ tests/ Makefile Cargo.toml | RUST_BACKTRACE=0 entr -d -c $(MAKE) test

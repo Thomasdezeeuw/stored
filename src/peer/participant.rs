@@ -644,7 +644,7 @@ pub mod consensus {
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
     };
     use crate::peer::{ConsensusVote, Operation, Peers, RequestId, COORDINATOR_MAGIC};
-    use crate::storage::{Query, RemoveBlob, StoreBlob};
+    use crate::storage::{DateTime, Query, RemoveBlob, StoreBlob};
     use crate::{Buffer, Key};
 
     /// Timeout used for I/O between peers.
@@ -738,14 +738,18 @@ pub mod consensus {
             }
             Ok(None) => {
                 error!(
-                    "couldn't get blob from coordinator server, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    "couldn't get blob from coordinator server, failing consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(), key
                 );
-                responder.respond(ConsensusVote::Abort);
+                // As this shouldn't happen we don't vote to abort, but to fail
+                // it.
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
             Err(err) => return Err(err),
         };
+        // Don't need it anymore so we can drop it to cleanup resources.
+        drop(stream);
 
         // Phase one: storing the blob, readying it to be added to the database.
         let query = match add_blob(&mut ctx, &mut db_ref, &mut passport, &mut buf, blob_len).await {
@@ -797,9 +801,12 @@ pub mod consensus {
 
         let response = match vote_result.result {
             ConsensusVote::Commit(timestamp) => {
-                commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp)
-                    .await
-                    .map(Some)
+                match commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp).await {
+                    Ok(got_timestamp) if got_timestamp == timestamp => Ok(Some(timestamp)),
+                    // If the timestamp is different it means the blob was
+                    // already store, so we'll want to abort this run.
+                    Ok(..) | Err(()) => Err(()),
+                }
             }
             ConsensusVote::Abort | ConsensusVote::Fail => {
                 abort_query(&mut ctx, &mut db_ref, &mut passport, query)
@@ -887,17 +894,24 @@ pub mod consensus {
 
         // Safety: we just read enough bytes, so the marking processed and
         // indexing won't panic.
-        buf.processed(DATE_TIME_LEN); // We don't care about the timestamp.
-        let blob_length_bytes = buf.as_bytes()[..BLOB_LENGTH_LEN].try_into().unwrap();
+        let timestamp =
+            DateTime::from_bytes(&buf.as_bytes()[..DATE_TIME_LEN]).unwrap_or(DateTime::INVALID);
+
+        let blob_length_bytes = buf.as_bytes()[DATE_TIME_LEN..DATE_TIME_LEN + BLOB_LENGTH_LEN]
+            .try_into()
+            .unwrap();
         let blob_length = u64::from_be_bytes(blob_length_bytes);
-        buf.processed(BLOB_LENGTH_LEN);
+        buf.processed(DATE_TIME_LEN + BLOB_LENGTH_LEN);
         trace!(
             "read blob length from coordinator server: request_id=\"{}\", blob_length={}",
             passport.id(),
             blob_length
         );
 
-        if blob_length == u64::from_be_bytes(NO_BLOB) {
+        if timestamp.is_removed()
+            || timestamp.is_invalid()
+            || blob_length == u64::from_be_bytes(NO_BLOB)
+        {
             return Ok(None);
         }
 
