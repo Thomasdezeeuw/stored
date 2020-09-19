@@ -1,14 +1,7 @@
 //! Coordinator side of the consensus connection.
 
-use std::time::Duration;
-
-/// Maximum number of tries `start_participant_connection` attempts to make
-/// a connection to the peer before stopping.
+/// Maximum number of attempts to make connecting to the peer before stopping.
 const CONNECT_TRIES: usize = 5;
-
-/// Time to wait between connection tries in [`connect_to_participant`], get
-/// doubled after each try.
-const START_WAIT: Duration = Duration::from_millis(500);
 
 pub mod relay {
     //! Module with the [coordinator relay actor].
@@ -18,7 +11,7 @@ pub mod relay {
     use std::collections::HashMap;
     use std::io;
     use std::net::SocketAddr;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -38,12 +31,9 @@ pub mod relay {
         EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
     };
     use crate::util::wait_for_wakeup;
-    use crate::{db, Key};
+    use crate::{db, timeout, Key};
 
-    use super::{CONNECT_TRIES, START_WAIT};
-
-    /// Timeout used for I/O.
-    const IO_TIMEOUT: Duration = Duration::from_secs(5);
+    use super::CONNECT_TRIES;
 
     /// An estimate of the largest size of an [`Request`] in bytes.
     const MAX_REQ_SIZE: usize = 300;
@@ -445,7 +435,7 @@ pub mod relay {
             "coordinator relay connecting to peer participant: remote_address=\"{}\"",
             remote
         );
-        let mut wait = START_WAIT;
+        let mut wait = timeout::PEER_CONNECT;
         let mut i = 1;
         let mut stream = loop {
             match TcpStream::connect(ctx, remote) {
@@ -501,7 +491,7 @@ pub mod relay {
             remote,
             server,
         );
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
             Ok(()) => {
                 buf.reset();
                 Ok(stream)
@@ -521,7 +511,7 @@ pub mod relay {
     ) -> crate::Result<()> {
         trace!("coordinator relay reading known peers from connection");
         loop {
-            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_from(&mut *stream)).await {
                 Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading known peers"))
@@ -623,7 +613,8 @@ pub mod relay {
         );
         serde_json::to_writer(&mut wbuf, &request)
             .map_err(|err| io::Error::from(err).describe("serializing request"))?;
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&wbuf.as_bytes())).await
+        {
             Ok(()) => {
                 if let Some(response) = response {
                     responses.insert(id, response);
@@ -707,14 +698,14 @@ pub mod sync {
     use log::{debug, trace, warn};
 
     use crate::buffer::Buffer;
-    use crate::db;
     use crate::error::Describe;
     use crate::op::peer_sync;
     use crate::passport::Passport;
     use crate::peer::COORDINATOR_MAGIC;
     use crate::util::wait_for_wakeup;
+    use crate::{db, timeout};
 
-    use super::{CONNECT_TRIES, START_WAIT};
+    use super::CONNECT_TRIES;
 
     // TODO: replace with `heph::restart_supervisor` once it can log extra
     // arguments.
@@ -813,7 +804,7 @@ pub mod sync {
             "coordinator sync connecting to peer server: remote_address=\"{}\"",
             remote
         );
-        let mut wait = START_WAIT;
+        let mut wait = timeout::PEER_CONNECT;
         let mut i = 1;
         loop {
             match TcpStream::connect(ctx, remote) {

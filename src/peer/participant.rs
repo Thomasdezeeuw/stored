@@ -108,7 +108,7 @@ pub mod dispatcher {
     use std::collections::HashMap;
     use std::io;
     use std::net::SocketAddr;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -128,10 +128,7 @@ pub mod dispatcher {
         ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
         EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID,
     };
-    use crate::{db, Buffer};
-
-    /// Timeout used for I/O between peers.
-    const IO_TIMEOUT: Duration = Duration::from_secs(2);
+    use crate::{db, timeout, Buffer};
 
     /// An estimate of the largest size of an [`Response`] in bytes.
     const MAX_RES_SIZE: usize = 100;
@@ -248,7 +245,7 @@ pub mod dispatcher {
                 }
             }
 
-            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_from(&mut *stream)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_from(&mut *stream)).await {
                 Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading peer's server address"));
@@ -274,7 +271,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(addresses.len() * (45 + 2 + 1) + 2).1;
         serde_json::to_writer(&mut wbuf, &addresses)
             .map_err(|err| io::Error::from(err).describe("serializing peers addresses"))?;
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing known peers")),
         }
@@ -291,7 +288,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(MAX_RES_SIZE).1;
         serde_json::to_writer(&mut wbuf, &response)
             .map_err(|err| io::Error::from(err).describe("serializing response"))?;
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing response")),
         }
@@ -621,7 +618,7 @@ pub mod consensus {
     use std::convert::TryInto;
     use std::io::IoSlice;
     use std::net::SocketAddr;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -645,13 +642,7 @@ pub mod consensus {
     };
     use crate::peer::{ConsensusVote, Operation, Peers, RequestId, COORDINATOR_MAGIC};
     use crate::storage::{DateTime, Query, RemoveBlob, StoreBlob};
-    use crate::{Buffer, Key};
-
-    /// Timeout used for I/O between peers.
-    const IO_TIMEOUT: Duration = Duration::from_secs(5);
-
-    /// Timeout used for waiting for the result of the census (in each phase).
-    const RESULT_TIMEOUT: Duration = Duration::from_secs(10);
+    use crate::{timeout, Buffer, Key};
 
     /// Result of the consensus vote.
     #[derive(Debug)]
@@ -718,7 +709,13 @@ pub mod consensus {
         let mut buf = Buffer::new();
 
         trace!("writing connection magic: request_id=\"{}\"", passport.id());
-        match Deadline::timeout(&mut ctx, IO_TIMEOUT, stream.write_all(COORDINATOR_MAGIC)).await {
+        match Deadline::timeout(
+            &mut ctx,
+            timeout::PEER_WRITE,
+            stream.write_all(COORDINATOR_MAGIC),
+        )
+        .await
+        {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing connection magic")),
         }
@@ -780,7 +777,7 @@ pub mod consensus {
         debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
-        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let timer = Timer::timeout(&mut ctx, timeout::PEER_CONSENSUS);
         let f = select(ctx.receive_next(), timer);
         let vote_result = match f.await {
             Either::Left((vote_result, ..)) => {
@@ -831,7 +828,7 @@ pub mod consensus {
             }
         };
 
-        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let timer = Timer::timeout(&mut ctx, timeout::PEER_CONSENSUS);
         let f = select(ctx.receive_next(), timer);
         match f.await {
             // Coordinator committed, so we're done.
@@ -877,7 +874,7 @@ pub mod consensus {
             IoSlice::new(&[REQUEST_BLOB]),
             IoSlice::new(request_key.as_bytes()),
         ];
-        match Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs)).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs)).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing request")),
         }
@@ -886,7 +883,11 @@ pub mod consensus {
         let mut calc = Key::calculator_skip(stream, METADATA_LEN);
 
         // Read at least the metadata of the blob.
-        let f = Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut calc, METADATA_LEN));
+        let f = Deadline::timeout(
+            ctx,
+            timeout::PEER_READ,
+            buf.read_n_from(&mut calc, METADATA_LEN),
+        );
         match f.await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("reading blob length")),
@@ -919,7 +920,7 @@ pub mod consensus {
             // Haven't read entire blob yet.
             let want_n = blob_length - buf.len() as u64;
             let read_n = buf.read_n_from(&mut calc, want_n as usize);
-            match Deadline::timeout(ctx, IO_TIMEOUT, read_n).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, read_n).await {
                 Ok(()) => {}
                 Err(err) => return Err(err.describe("reading blob")),
             }
@@ -985,7 +986,7 @@ pub mod consensus {
         debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
-        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let timer = Timer::timeout(&mut ctx, timeout::PEER_CONSENSUS);
         let f = select(ctx.receive_next(), timer);
         let vote_result = match f.await {
             Either::Left((vote_result, ..)) => {
@@ -1034,7 +1035,7 @@ pub mod consensus {
             }
         };
 
-        let timer = Timer::timeout(&mut ctx, RESULT_TIMEOUT);
+        let timer = Timer::timeout(&mut ctx, timeout::PEER_CONSENSUS);
         let f = select(ctx.receive_next(), timer);
         match f.await {
             // Coordinator committed, so we're done.

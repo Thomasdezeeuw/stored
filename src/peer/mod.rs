@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::task::{self, Poll};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use heph::actor::context::{ThreadLocal, ThreadSafe};
 use heph::actor::messages::Start;
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::Describe;
 use crate::storage::{RemoveBlob, StoreBlob};
 use crate::util::CountDownLatch;
-use crate::{config, db, Key};
+use crate::{config, db, timeout, Key};
 
 // TODO: Run syncs after we disconnected from a peer.
 
@@ -477,7 +477,7 @@ impl Peers {
                 }
             })
             .collect();
-        let timer = Timer::timeout(ctx, PEER_TIMEOUT);
+        let timer = Timer::timeout(ctx, timeout::PEER_READ);
         PeerRpc { rpcs, timer }
     }
 
@@ -656,8 +656,6 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
     peers.iter().any(|peer| peer.address == *address)
 }
 
-const PEER_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// [`Future`] implementation that makes RPCs with one or more peers, see
 /// [`Peers`].
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -782,7 +780,6 @@ pub mod switcher {
 
     use std::io;
     use std::net::SocketAddr;
-    use std::time::Duration;
 
     use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
@@ -794,11 +791,9 @@ pub mod switcher {
     use crate::peer::{
         participant, server, Peers, Response, COORDINATOR_MAGIC, MAGIC_LENGTH, PARTICIPANT_MAGIC,
     };
-    use crate::{db, Buffer};
+    use crate::{db, timeout, Buffer};
 
     const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
-
-    const TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Actor that acts as switcher between acting as a coordinator server or
     /// participant.
@@ -816,7 +811,7 @@ pub mod switcher {
         let mut buf = Buffer::new();
 
         let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
-        match Deadline::timeout(&mut ctx, TIMEOUT, read_n).await {
+        match Deadline::timeout(&mut ctx, timeout::PEER_READ, read_n).await {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!(

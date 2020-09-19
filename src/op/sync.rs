@@ -32,10 +32,7 @@ use crate::peer::server::{
 use crate::peer::{Peers, COORDINATOR_MAGIC};
 use crate::storage::{BlobEntry, DateTime, Keys, ModifiedTime};
 use crate::util::wait_for_wakeup;
-use crate::{Describe, Key};
-
-/// Timeout used for I/O.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
+use crate::{timeout, Describe, Key};
 
 // FIXME: what happens to the consensus algorithm when we're not synced and a
 // request is made to remove a blob?
@@ -540,7 +537,7 @@ where
 
     if buf.len() < KEY_SET_SIZE_LEN {
         let n = KEY_SET_SIZE_LEN - buf.len();
-        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading number of keys")),
         }
@@ -558,7 +555,8 @@ where
     for _ in 0..size {
         if buf.len() < Key::LENGTH {
             let n = Key::LENGTH - buf.len();
-            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await
+            {
                 Ok(..) => {}
                 Err(err) => return Err(err.describe("reading known keys")),
             }
@@ -601,7 +599,8 @@ where
         // Read the number of keys in this part.
         if buf.len() < KEY_SET_SIZE_LEN {
             let n = KEY_SET_SIZE_LEN - buf.len();
-            match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await
+            {
                 Ok(..) => {}
                 Err(err) => return Err(err.describe("reading number of keys")),
             }
@@ -622,7 +621,9 @@ where
         for _ in 0..size {
             if buf.len() < Key::LENGTH {
                 let n = Key::LENGTH - buf.len();
-                match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n))
+                    .await
+                {
                     Ok(..) => {}
                     Err(err) => return Err(err.describe("reading known keys")),
                 }
@@ -700,7 +701,7 @@ where
         IoSlice::new(&length),
         IoSlice::new(bytes),
     ];
-    Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
+    Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
         .await
         .map_err(|err| err.describe("writing blob"))
 }
@@ -737,7 +738,7 @@ where
 
         let length = min(RETRIEVE_MAX_KEYS, keys.len());
         let bufs = &mut bufs[0..length * 2];
-        Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
             .await
             .map_err(|err| err.describe("writing blob"))?;
 
@@ -746,7 +747,9 @@ where
         while left > 0 {
             if buf.len() < want_read {
                 let n = want_read - buf.len();
-                match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+                match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n))
+                    .await
+                {
                     Ok(..) => {}
                     Err(err) => return Err(err.describe("reading blob")),
                 }

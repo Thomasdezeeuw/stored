@@ -27,7 +27,7 @@ use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use std::{fmt, ptr, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
@@ -52,7 +52,7 @@ use crate::passport::{Event, Passport, Uuid};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, StreamBlob};
 use crate::util::wait_for_wakeup;
-use crate::{db, Key};
+use crate::{db, timeout, Key};
 
 // TODO: get this from a configuration.
 /// Maximum blob size acceptable.
@@ -180,11 +180,6 @@ pub fn supervisor(err: crate::Error) -> SupervisorStrategy<(TcpStream, SocketAdd
     SupervisorStrategy::Stop
 }
 
-/// Default timeout in I/O operations.
-const TIMEOUT: Duration = Duration::from_secs(10);
-/// Timeout used when reading a second request.
-const ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
-
 /// Actor that handles a single TCP `stream`, expecting HTTP requests.
 ///
 /// Returns any and all I/O errors.
@@ -199,7 +194,7 @@ pub async fn actor(
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
 
-    let mut timeout = TIMEOUT;
+    let mut timeout = timeout::CLIENT_READ;
     loop {
         let result = Deadline::timeout(&mut ctx, timeout, conn.read_request(&mut request)).await;
         let response = match result {
@@ -215,7 +210,7 @@ pub async fn actor(
 
         let result = Deadline::timeout(
             &mut ctx,
-            TIMEOUT,
+            timeout::CLIENT_WRITE,
             conn.write_response(&response, &mut request.passport),
         )
         .await;
@@ -248,7 +243,7 @@ pub async fn actor(
         }
 
         // Keep the connection alive for longer.
-        timeout = ALIVE_TIMEOUT;
+        timeout = timeout::CLIENT_ALIVE;
     }
 
     debug!("closing connection: remote_address=\"{}\"", address);
@@ -809,7 +804,7 @@ async fn read_blob(
         // Haven't read entire body yet.
         let want_n = body_length - conn.buf.len();
         let read_n = conn.buf.read_n_from(&mut conn.stream, want_n);
-        match Deadline::timeout(ctx, TIMEOUT, read_n).await {
+        match Deadline::timeout(ctx, timeout::CLIENT_ALIVE, read_n).await {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 return Ok(Outcome::Done((

@@ -20,6 +20,7 @@ pub mod op;
 pub mod passport;
 pub mod peer;
 pub mod storage;
+pub mod timeout;
 pub mod util;
 
 pub use buffer::Buffer;

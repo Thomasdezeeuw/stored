@@ -8,7 +8,7 @@ use std::convert::TryInto;
 use std::io::{self, IoSlice, Write};
 use std::mem::{replace, size_of};
 use std::net::SocketAddr;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use futures_util::io::AsyncWriteExt;
 use heph::actor::context::ThreadSafe;
@@ -23,7 +23,7 @@ use crate::error::Describe;
 use crate::op::{self, sync_removed_blob, sync_stored_blob};
 use crate::passport::{Event, Passport, Uuid};
 use crate::storage::{self, BlobEntry, DateTime, ModifiedTime};
-use crate::Key;
+use crate::{timeout, Key};
 
 /// The length (in bytes) that make the metadata that prefixes the blob send.
 pub const METADATA_LEN: usize = DATE_TIME_LEN + BLOB_LENGTH_LEN;
@@ -58,12 +58,6 @@ pub const REQUEST_KEYS: u8 = 2;
 pub const REQUEST_KEYS_SINCE: u8 = 3;
 /// Request type to store a blob, used by the synchronisation process.
 pub const STORE_BLOB: u8 = 4;
-
-/// Timeout used for I/O.
-const IO_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Timeout used to keep the connection alive.
-const ALIVE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Function to change the log target and module for the warning message,
 /// the [`peer::switcher`] has little to do with the error.
@@ -167,7 +161,7 @@ pub async fn actor<M>(
         }
 
         // Read some more bytes.
-        match Deadline::timeout(&mut ctx, ALIVE_TIMEOUT, buf.read_from(&mut stream)).await {
+        match Deadline::timeout(&mut ctx, timeout::PEER_ALIVE, buf.read_from(&mut stream)).await {
             Ok(0) => return Ok(()),
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading from socket")),
@@ -214,7 +208,7 @@ async fn retrieve_blob<M>(
     passport.mark(Event::ReadingPeerKey);
     if buf.len() < Key::LENGTH {
         let n = Key::LENGTH - buf.len();
-        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerKey),
             Err(err) => return Err(err.describe("reading key of blob to retrieve")),
         }
@@ -263,7 +257,7 @@ async fn retrieve_blob<M>(
         IoSlice::new(&length),
         IoSlice::new(blob.bytes()),
     ];
-    Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all_vectored(bufs))
+    Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
         .await
         .map(|()| passport.mark(Event::WrittenPeerResponse))
         .map_err(|err| err.describe("writing blob"))
@@ -315,7 +309,7 @@ async fn retrieve_keys<M>(
         }
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes()))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
@@ -336,7 +330,7 @@ async fn retrieve_keys_since<M>(
     // Read the time before which we don't need to send the keys.
     if buf.len() < DATE_TIME_LEN {
         let n = DATE_TIME_LEN - buf.len();
-        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading date since to retrieve keys")),
         }
@@ -383,10 +377,13 @@ async fn retrieve_keys_since<M>(
         if length == 0 {
             // Write the last length, which is zero, to indicate no more keys
             // are coming.
-            let res =
-                Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(&u64::to_be_bytes(length)))
-                    .await
-                    .map_err(|err| err.describe("writing keys"));
+            let res = Deadline::timeout(
+                ctx,
+                timeout::PEER_WRITE,
+                stream.write_all(&u64::to_be_bytes(length)),
+            )
+            .await
+            .map_err(|err| err.describe("writing keys"));
             passport.mark(Event::WrittenPeerResponse);
             return res;
         }
@@ -396,7 +393,7 @@ async fn retrieve_keys_since<M>(
         wbuf.as_mut_bytes()[0..KEY_SET_SIZE_LEN].copy_from_slice(&u64::to_be_bytes(length));
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, IO_TIMEOUT, stream.write_all(wbuf.as_bytes()))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
@@ -416,7 +413,7 @@ async fn store_blob<M>(
     // Read at least the metadata of the blob to store.
     if buf.len() < Key::LENGTH + METADATA_LEN {
         let n = (Key::LENGTH + METADATA_LEN) - buf.len();
-        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerMetadata),
             Err(err) => return Err(err.describe("reading metadata from socket")),
         }
@@ -448,7 +445,7 @@ async fn store_blob<M>(
     passport.mark(Event::ReadingPeerBlob);
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
-        match Deadline::timeout(ctx, IO_TIMEOUT, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerBlob),
             Err(err) => return Err(err.describe("reading blob from socket")),
         }

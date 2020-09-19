@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{self, Poll};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use heph::actor;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
@@ -17,7 +17,7 @@ use crate::passport::{Event, Passport, Uuid};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::storage::{self, BlobEntry, Entries, Keys, UncommittedBlob};
-use crate::Key;
+use crate::{timeout, Key};
 
 mod remove;
 mod store;
@@ -315,11 +315,7 @@ where
     }
 }
 
-/// Timeout for connecting to the database.
-// TODO: base this on something.
-const DB_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Make a RPC to the database (`db_ref`) applying the `DB_TIMEOUT`.
+/// Make a RPC to the database (`db_ref`) applying the `timeout::DB`.
 fn db_rpc<M, K, Req, Res>(
     ctx: &mut actor::Context<M, K>,
     db_ref: &mut ActorRef<db::Message>,
@@ -333,7 +329,7 @@ where
     match db_ref.rpc(ctx, request) {
         Ok(rpc) => Ok(DbRpc {
             rpc,
-            timer: Timer::timeout(ctx, DB_TIMEOUT),
+            timer: Timer::timeout(ctx, timeout::DB),
             request_id,
         }),
         Err(err) => {
@@ -346,7 +342,7 @@ where
     }
 }
 
-/// Wrapper around [`Rpc`] that adds a [`DB_TIMEOUT`], logging if it hits any
+/// Wrapper around [`Rpc`] that adds a [`timeout::DB`], logging if it hits any
 /// errors.
 ///
 /// See [`db_rpc`].
