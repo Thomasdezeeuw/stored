@@ -185,6 +185,17 @@ impl fmt::Display for ConsensusId {
     }
 }
 
+/// Id of a consensus algorithm run.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[repr(transparent)]
+pub struct RequestId(pub usize);
+
+impl fmt::Display for RequestId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Consensus id used to mark a message as meant for participant consensus.
 pub const PARTICIPANT_CONSENSUS_ID: ConsensusId = ConsensusId(usize::max_value());
 
@@ -193,7 +204,7 @@ pub const PARTICIPANT_CONSENSUS_ID: ConsensusId = ConsensusId(usize::max_value()
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Request {
     /// Unique id for this request.
-    pub id: usize,
+    pub id: RequestId,
     /// Id of the consensus run (there may be multiple requests per consensus
     /// run).
     pub consensus_id: ConsensusId,
@@ -232,7 +243,7 @@ pub enum Operation {
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Response {
     /// Response to request with this id.
-    pub request_id: usize,
+    pub request_id: RequestId,
     /// The vote of the peer.
     pub vote: ConsensusVote,
 }

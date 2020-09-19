@@ -34,8 +34,8 @@ pub mod relay {
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
     use crate::peer::{
-        ConsensusId, ConsensusVote, Operation, Peers, Request, Response, EXIT_COORDINATOR,
-        EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
+        ConsensusId, ConsensusVote, Operation, Peers, Request, RequestId, Response,
+        EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
     };
     use crate::util::wait_for_wakeup;
     use crate::{db, Key};
@@ -150,7 +150,7 @@ pub mod relay {
         );
 
         let mut responses = HashMap::with_hasher(FxBuildHasher::default());
-        let mut req_id = 0;
+        let mut req_id = RequestId(0);
         let mut buf = Buffer::new();
 
         let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
@@ -257,7 +257,7 @@ pub mod relay {
 
     impl Message {
         /// Convert this `Message` into a [`Request`] and a [`RpcResponder`].
-        fn convert(self, request_id: usize) -> (Request, Option<RpcResponder>) {
+        fn convert(self, request_id: RequestId) -> (Request, Option<RpcResponder>) {
             let (consensus_id, key, op, response) = match self {
                 Message::AddBlob(RpcMessage { request, response }) => (
                     request.0,
@@ -554,9 +554,9 @@ pub mod relay {
     }
 
     /// Returns id++;
-    fn next_id(id: &mut usize) -> usize {
+    fn next_id(id: &mut RequestId) -> RequestId {
         let i = *id;
-        *id += 1;
+        id.0 += 1;
         i
     }
 
@@ -612,8 +612,8 @@ pub mod relay {
         ctx: &mut actor::Context<Message, ThreadSafe>,
         stream: &mut TcpStream,
         mut wbuf: WriteBuffer<'b>,
-        responses: &mut HashMap<usize, RpcResponder, FxBuildHasher>,
-        id: usize,
+        responses: &mut HashMap<RequestId, RpcResponder, FxBuildHasher>,
+        id: RequestId,
         msg: Message,
     ) -> crate::Result<()> {
         let (request, response) = msg.convert(id);
@@ -640,7 +640,7 @@ pub mod relay {
     /// Return `Ok(true)` if the participant wants to close the connection.
     /// Returns `Ok(false)` if more responses are to be expected.
     fn relay_responses(
-        responses: &mut HashMap<usize, RpcResponder, FxBuildHasher>,
+        responses: &mut HashMap<RequestId, RpcResponder, FxBuildHasher>,
         buf: &mut Buffer,
     ) -> crate::Result<bool> {
         if buf.as_bytes() == EXIT_PARTICIPANT {

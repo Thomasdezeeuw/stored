@@ -3,7 +3,7 @@
 use heph::ActorRef;
 use log::{debug, warn};
 
-use crate::peer::{ConsensusVote, Response};
+use crate::peer::{ConsensusVote, RequestId, Response};
 
 /// Responder for the [`dispatcher`] that relays the message to the
 /// [`coordinator::relay`].
@@ -15,7 +15,7 @@ use crate::peer::{ConsensusVote, Response};
 /// [`respond`]: RpcResponder::respond
 #[derive(Debug)]
 pub struct RpcResponder {
-    id: usize,
+    id: RequestId,
     actor_ref: ActorRef<Response>,
     phase: ConsensusPhase,
 }
@@ -633,16 +633,19 @@ pub mod consensus {
     use heph::{actor, ActorRef};
     use log::{debug, error, info, trace, warn};
 
+    use crate::db::{self, db_error};
     use crate::error::Describe;
-    use crate::op::{abort_query, add_blob, commit_query, prep_remove_blob, Outcome};
+    use crate::op::{
+        abort_query, add_blob, commit_query, contains_blob, prep_remove_blob, Outcome,
+    };
     use crate::passport::{Passport, Uuid};
     use crate::peer::participant::RpcResponder;
     use crate::peer::server::{
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
     };
-    use crate::peer::{ConsensusVote, Operation, Peers, COORDINATOR_MAGIC};
+    use crate::peer::{ConsensusVote, Operation, Peers, RequestId, COORDINATOR_MAGIC};
     use crate::storage::{Query, RemoveBlob, StoreBlob};
-    use crate::{db, Buffer, Key};
+    use crate::{Buffer, Key};
 
     /// Timeout used for I/O between peers.
     const IO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -655,7 +658,7 @@ pub mod consensus {
     pub struct VoteResult {
         /// Id of the request that send the result (so that the dispatcher can
         /// reply to the correct request).
-        pub(super) request_id: usize,
+        pub(super) request_id: RequestId,
         /// The blob to operate on.
         pub(super) key: Key,
         /// Result of the vote.
@@ -720,6 +723,8 @@ pub mod consensus {
             Err(err) => return Err(err.describe("writing connection magic")),
         }
 
+        // TODO: for larger blob stream it directly to storage.
+
         let read_blob = read_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &key);
         let blob_len = match read_blob.await {
             Ok(Some((blob_key, blob))) if key == blob_key => blob.len(),
@@ -767,7 +772,7 @@ pub mod consensus {
                 return Ok(());
             }
         };
-        // We checked the blob's key in `read_blob`.
+        // We checked the blob's key in the match statement after `read_blob`.
         debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
