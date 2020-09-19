@@ -14,8 +14,9 @@ test:
 	@trap "killall -u $$(whoami) -KILL stored" EXIT
 	cargo test -q
 
+.ONESHELL:
 dev:
-	find src/ tests/ | RUST_BACKTRACE=0 entr -d -c $(MAKE) test
+	find src/ tests/ Makefile Cargo.toml | RUST_BACKTRACE=0 entr -d -c $(MAKE) test
 
 lint:
 	cargo clippy --all-targets -- --warn warnings \
