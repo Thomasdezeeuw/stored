@@ -8,15 +8,13 @@ export COMMIT_VERSION            = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
 build:
 	cargo build --release
 
-.ONESHELL:
 test:
-	@# FIXME: currently we leave behind zombie processes, fix that.
-	@trap "killall -u $$(whoami) -KILL stored" EXIT
-	cargo test -q
+	(cargo test \
+		&& killall -u $$(whoami) -KILL stored) || \
+		(killall -u $$(whoami) -KILL stored && exit 1)
 
 # NOTE: when using this command you might want to change the `test` target to
 # only run a subset of the tests you're actively working on.
-.ONESHELL:
 dev:
 	find src/ tests/ Makefile Cargo.toml | RUST_BACKTRACE=0 entr -d -c $(MAKE) test
 
