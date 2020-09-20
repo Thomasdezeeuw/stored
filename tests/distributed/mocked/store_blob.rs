@@ -750,7 +750,7 @@ mod coordinator {
     use stored::peer::server::REQUEST_BLOB;
     use stored::peer::{ConsensusId, RequestId};
     use stored::storage::DateTime;
-    use stored::Key;
+    use stored::{timeout, Key};
 
     use crate::util::http::date_header;
     use crate::util::Proc;
@@ -790,6 +790,9 @@ mod coordinator {
             Mutex::new((Some(peer), peer_stream, process, Vec::new()))
         };
     }
+
+    /// Timeout used to let the peer timeout when reading a response.
+    const NO_RESPONSE_TIMEOUT: Duration = Duration::from_secs(timeout::PEER_READ.as_secs() + 2);
 
     fn next_request_id() -> RequestId {
         static ID: AtomicUsize = AtomicUsize::new(0);
@@ -1280,7 +1283,7 @@ mod coordinator {
 
             // Sleep to cause a timeout in peer participant. Keep this
             // `IO_TIMEOUT` + 1 second.
-            sleep(Duration::from_secs(6));
+            sleep(NO_RESPONSE_TIMEOUT);
 
             peer
         });
@@ -1357,7 +1360,7 @@ mod coordinator {
 
             // Sleep to cause a timeout in peer participant. Keep this
             // `IO_TIMEOUT` + 1 second.
-            sleep(Duration::from_secs(6));
+            sleep(NO_RESPONSE_TIMEOUT);
 
             peer
         });
@@ -1437,7 +1440,7 @@ mod coordinator {
 
             // Sleep to cause a timeout in peer participant. Keep this
             // `IO_TIMEOUT` + 1 second.
-            sleep(Duration::from_secs(6));
+            sleep(NO_RESPONSE_TIMEOUT);
 
             peer
         });
