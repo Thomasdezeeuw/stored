@@ -235,13 +235,10 @@ pub mod dispatcher {
                     return Ok(address);
                 }
                 // Continue to reading below.
+                None => {}
                 Some(Err(ref err)) if err.is_eof() => {}
                 Some(Err(err)) => {
                     return Err(io::Error::from(err).describe("deserializing peer's server address"))
-                }
-                None => {
-                    return Err(io::Error::from(io::ErrorKind::InvalidData)
-                        .describe("deserializing peer's server address"))
                 }
             }
 
@@ -920,10 +917,9 @@ pub mod consensus {
             blob_length
         );
 
-        if timestamp.is_removed()
-            || timestamp.is_invalid()
-            || blob_length == u64::from_be_bytes(NO_BLOB)
-        {
+        // NOTE: We allow invalid timestamps as uncommited blobs will have an
+        // invalid timestamp.
+        if timestamp.is_removed() || blob_length == u64::from_be_bytes(NO_BLOB) {
             return Ok(None);
         }
 
