@@ -347,10 +347,17 @@ pub mod dispatcher {
     ) {
         debug!("received a request: {:?}", request);
         if request.consensus_id == PARTICIPANT_CONSENSUS_ID {
-            let msg = consensus::Message::Peer {
-                key: request.key,
-                op: request.op,
+            let msg = if let Operation::StoreCommitted(timestamp) = request.op {
+                consensus::Message::PeerCommittedStore(request.key, timestamp)
+            } else if let Operation::RemoveCommitted(timestamp) = request.op {
+                consensus::Message::PeerCommittedRemove(request.key, timestamp)
+            } else {
+                // This shouldn't happen, but just in case we might as well log
+                // it.
+                warn!("dropping useless peer request: {:?}", request);
+                return;
             };
+
             peers.send_participant_consensus(msg);
             return;
         }
@@ -614,11 +621,12 @@ pub mod dispatcher {
 pub mod consensus {
     //! Module with consensus actor.
 
+    use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::convert::TryInto;
     use std::io::IoSlice;
     use std::net::SocketAddr;
-    use std::time::SystemTime;
+    use std::time::{Instant, SystemTime};
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -640,7 +648,7 @@ pub mod consensus {
     use crate::peer::server::{
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
     };
-    use crate::peer::{ConsensusVote, Operation, Peers, RequestId, COORDINATOR_MAGIC};
+    use crate::peer::{ConsensusVote, Peers, RequestId, COORDINATOR_MAGIC};
     use crate::storage::{DateTime, Query, RemoveBlob, StoreBlob};
     use crate::{timeout, Buffer, Key};
 
@@ -696,6 +704,9 @@ pub mod consensus {
             Err(()) => return Err(db_error()),
         }
 
+        // TODO: look at the `UncommittedBlob`s in storage before retrieving it
+        // from the peer? This would improve performance in case we have a 2PC
+        // failure.
         // TODO: reuse stream and buffer.
         // TODO: stream large blob to a file directly? Preallocating disk space in
         // the data file?
@@ -730,7 +741,7 @@ pub mod consensus {
                     "coordinator server responded with incorrect blob, voting to abort consensus: request_id=\"{}\", want_key=\"{}\", got_blob_key=\"{}\"",
                     passport.id(), key, blob_key
                 );
-                responder.respond(ConsensusVote::Abort);
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
             Ok(None) => {
@@ -788,7 +799,7 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!(
-                    "failed to get consensus result in time, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get consensus result in time, running participant consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(), query.key()
                 );
                 peers.uncommitted_stored(query);
@@ -837,9 +848,9 @@ pub mod consensus {
                 // If the coordinator didn't send us a message that it (and all
                 // other participants) committed we could be in an invalid
                 // state, where some participants committed and some didn't. We
-                // use peer consensus to get us back into an ok state.
+                // use participant consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running participant consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );
@@ -997,7 +1008,7 @@ pub mod consensus {
             }
             Either::Right(..) => {
                 warn!(
-                    "failed to get consensus result in time, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get consensus result in time, running participant consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     query.key()
                 );
@@ -1044,9 +1055,9 @@ pub mod consensus {
                 // If the coordinator didn't send us a message that it (and all
                 // other participants) committed we could be in an invalid
                 // state, where some participants committed and some didn't. We
-                // use peer consensus to get us back into an ok state.
+                // use participant consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, running peer conensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running participant consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );
@@ -1063,25 +1074,73 @@ pub mod consensus {
     /// [participant consensus actor]: actor()
     #[derive(Debug)]
     pub enum Message {
+        // From local actors:
         /// Store query that is uncommitted, where the coordinator failed.
         UncommittedStore(StoreBlob),
         /// Remove query that is uncommitted, where the coordinator failed.
         UncommittedRemove(RemoveBlob),
-        /// Message from a peer node.
-        Peer { key: Key, op: Operation },
+
+        // From remote peers:
+        /// Peer committed to storing blob with `key`.
+        PeerCommittedStore(Key, SystemTime),
+        /// Peer committed to removing blob with `key`.
+        PeerCommittedRemove(Key, SystemTime),
     }
 
-    /// Result for a 2PC as defined by the peers.
-    struct PeerResult {
-        /// If some at least a single participant committed with the timestamp.
-        committed: Option<SystemTime>,
-        /// Number of results.
-        count: usize,
+    /// State of a participant consensus run.
+    enum ConsensusState {
+        /// Currently no peer indicated that they committed. The `Instant` is
+        /// the time the store was last updated, used as timeout before removing
+        /// it. NOTE: this is **not** the timestamp used to commit to the query.
+        UndecidedStore(StoreBlob, Instant),
+        /// If a peer participant received a commit message, before the local
+        /// consensus actor send us a message, we want to keep track of it in
+        /// case the local consensus actor decides to run the participant
+        /// consensus. We don't want to miss a commit message from a peer after
+        /// all.
+        CommittedStore(SystemTime),
+        /// Same as `UndecidedStore`, but for remove storage query.
+        UndecidedRemove(RemoveBlob, Instant),
+        /// Same as `CommittedStore`, but for remove.
+        CommittedRemove(SystemTime),
     }
 
-    enum StorageQuery {
-        Store(StoreBlob),
-        Remove(RemoveBlob),
+    impl ConsensusState {
+        /// Unwrap `ConsensusState::UndecidedStore`.
+        #[track_caller]
+        fn unwrap_undecided_store(self) -> StoreBlob {
+            match self {
+                ConsensusState::UndecidedStore(query, ..) => query,
+                _ => unreachable!("tried to unwrap ConsensusState::UndecidedStore"),
+            }
+        }
+
+        /// Unwrap `ConsensusState::CommittedStore`.
+        #[track_caller]
+        fn unwrap_committed_store(self) -> SystemTime {
+            match self {
+                ConsensusState::CommittedStore(timestamp) => timestamp,
+                _ => unreachable!("tried to unwrap ConsensusState::CommittedStore"),
+            }
+        }
+
+        /// Unwrap `ConsensusState::UndecidedRemove`.
+        #[track_caller]
+        fn unwrap_undecided_remove(self) -> RemoveBlob {
+            match self {
+                ConsensusState::UndecidedRemove(query, ..) => query,
+                _ => unreachable!("tried to unwrap ConsensusState::UndecidedRemove"),
+            }
+        }
+
+        /// Unwrap `ConsensusState::CommittedRemove`.
+        #[track_caller]
+        fn unwrap_committed_remove(self) -> SystemTime {
+            match self {
+                ConsensusState::CommittedRemove(timestamp) => timestamp,
+                _ => unreachable!("tried to unwrap ConsensusState::CommittedRemove"),
+            }
+        }
     }
 
     /// Actor that handles participant consensus for this node.
@@ -1089,12 +1148,10 @@ pub mod consensus {
         mut ctx: actor::Context<Message, ThreadSafe>,
         mut db_ref: ActorRef<db::Message>,
     ) -> Result<(), !> {
-        // Queries from local consensus actor where the coordinator failed.
-        let mut queries = HashMap::with_hasher(FxBuildHasher::default());
-        // Results from peers for consensus queries where the coordinator
-        // failed.
-        let mut peer_results: HashMap<_, PeerResult, _> =
-            HashMap::with_hasher(FxBuildHasher::default());
+        // States of all ongoing participant consensus runs.
+        let mut states = HashMap::with_hasher(FxBuildHasher::default());
+        // TODO: add a cleanup routine that removes `Undecided*` values from the
+        // `states` map.
 
         // TODO: use and log the passport properly.
         let mut passport = Passport::empty();
@@ -1106,104 +1163,141 @@ pub mod consensus {
 
             match msg {
                 Message::UncommittedStore(query) => {
-                    if let Some(result) = peer_results.get(query.key()) {
-                        if let Some(timestamp) = result.committed {
-                            // Don't care about the result, can't handle it
-                            // here.
-                            let _ = commit_query(
-                                &mut ctx,
-                                &mut db_ref,
-                                &mut passport,
-                                query,
-                                timestamp,
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
-
-                    // TODO: deal with duplicates.
-                    queries.insert(query.key().to_owned(), StorageQuery::Store(query));
+                    let entry = states.entry(query.key().clone());
+                    let state = ConsensusState::UndecidedStore(query, Instant::now());
+                    update_state(&mut ctx, &mut db_ref, &mut passport, entry, state).await
                 }
                 Message::UncommittedRemove(query) => {
-                    if let Some(result) = peer_results.get(query.key()) {
-                        if let Some(timestamp) = result.committed {
-                            // Don't care about the result, can't handle it
-                            // here.
-                            let _ = commit_query(
-                                &mut ctx,
-                                &mut db_ref,
-                                &mut passport,
-                                query,
-                                timestamp,
-                            )
-                            .await;
-                            continue;
-                        }
-                    }
-
-                    // TODO: deal with duplicates.
-                    queries.insert(query.key().to_owned(), StorageQuery::Remove(query));
+                    let entry = states.entry(query.key().clone());
+                    let state = ConsensusState::UndecidedRemove(query, Instant::now());
+                    update_state(&mut ctx, &mut db_ref, &mut passport, entry, state).await
                 }
-                Message::Peer { key, op } => {
-                    use Operation::*;
-                    let res = peer_results
-                        .entry(key.clone())
-                        .and_modify(|res| match op {
-                            CommitStoreBlob(timestamp)
-                            | StoreCommitted(timestamp)
-                            | CommitRemoveBlob(timestamp)
-                            | RemoveCommitted(timestamp) => res.committed = Some(timestamp),
-                            // TODO: declare the query as failed at some point.
-                            _ => res.count += 1,
-                        })
-                        .or_insert_with(|| match op {
-                            CommitStoreBlob(timestamp)
-                            | StoreCommitted(timestamp)
-                            | CommitRemoveBlob(timestamp)
-                            | RemoveCommitted(timestamp) => PeerResult {
-                                committed: Some(timestamp),
-                                count: 0,
-                            },
-                            _ => PeerResult {
-                                committed: None,
-                                count: 1,
-                            },
-                        });
+                Message::PeerCommittedStore(key, timestamp) => {
+                    let entry = states.entry(key);
+                    let state = ConsensusState::CommittedStore(timestamp);
+                    update_state(&mut ctx, &mut db_ref, &mut passport, entry, state).await
+                }
+                Message::PeerCommittedRemove(key, timestamp) => {
+                    let entry = states.entry(key);
+                    let state = ConsensusState::CommittedRemove(timestamp);
+                    update_state(&mut ctx, &mut db_ref, &mut passport, entry, state).await
+                }
+            }
+        }
+    }
 
-                    // If one of the peers has committed we also want to commit
-                    // the query.
-                    if let Some(timestamp) = res.committed {
-                        if let Some(query) = queries.remove(&key) {
-                            match query {
-                                StorageQuery::Store(query) => {
-                                    // Don't care about the result, can't handle
-                                    // it here.
-                                    let _ = commit_query(
-                                        &mut ctx,
-                                        &mut db_ref,
-                                        &mut passport,
-                                        query,
-                                        timestamp,
-                                    )
-                                    .await;
-                                }
-                                StorageQuery::Remove(query) => {
-                                    // Don't care about the result, can't handle
-                                    // it here.
-                                    let _ = commit_query(
-                                        &mut ctx,
-                                        &mut db_ref,
-                                        &mut passport,
-                                        query,
-                                        timestamp,
-                                    )
-                                    .await;
-                                }
-                            }
-                        }
+    /// Update an `entry` with the new `state`. If current state (`entry`) and
+    /// `state` match (e.g. a undecided store blob query and a commit to store
+    /// blob) it will commit to the query.
+    async fn update_state(
+        ctx: &mut actor::Context<Message, ThreadSafe>,
+        db_ref: &mut ActorRef<db::Message>,
+        passport: &mut Passport,
+        entry: Entry<'_, Key, ConsensusState>,
+        state: ConsensusState,
+    ) {
+        use ConsensusState::*;
+        match entry {
+            Entry::Occupied(mut entry) => match (state, entry.get_mut()) {
+                // Adding a store blob query.
+                (UndecidedStore(q, la), UndecidedStore(query, last_update)) => {
+                    // It seems the 2PC was retried before all peers shared
+                    // there results. Best we can do is update the timestamp.
+                    debug_assert_eq!(query.key(), q.key());
+                    *last_update = la;
+                }
+                (UndecidedStore(query, ..), CommittedStore(..)) => {
+                    // Previously received a message from a peer how committed
+                    // to storing the blob, so no so will we.
+                    let (key, state) = entry.remove_entry();
+                    debug_assert_eq!(key, *query.key());
+                    let timestamp = state.unwrap_committed_store();
+                    if let Err(()) = commit_query(ctx, db_ref, passport, query, timestamp).await {
+                        // TODO: add passport id?
+                        // FIXME: still need to add the blob to storage...
+                        warn!("failed to commit to store query: key={}", key);
                     }
                 }
+                (state @ UndecidedStore(..), UndecidedRemove(..))
+                | (state @ UndecidedStore(..), CommittedRemove(..)) => {
+                    #[rustfmt::skip]
+                    warn!("discarding previous remove participant consensus: key={}", entry.key());
+                    entry.insert(state);
+                }
+                // Peer is committed to storing a blob.
+                (CommittedStore(timestamp), UndecidedStore(..)) => {
+                    let (key, state) = entry.remove_entry();
+                    let query = state.unwrap_undecided_store();
+                    debug_assert_eq!(key, *query.key());
+                    if let Err(()) = commit_query(ctx, db_ref, passport, query, timestamp).await {
+                        // TODO: add passport id?
+                        // FIXME: still need to add the blob to storage...
+                        warn!("failed to commit to store query: key={}", key);
+                    }
+                }
+                (CommittedStore(t), CommittedStore(timestamp)) => {
+                    if t != *timestamp {
+                        // FIXME: Oh no, differing timestamps!
+                        error!("Received different timestamps to commit store blob query");
+                    }
+                }
+                (state @ CommittedStore(..), UndecidedRemove(..))
+                | (state @ CommittedStore(..), CommittedRemove(..)) => {
+                    #[rustfmt::skip]
+                    warn!("discarding previous remove participant consensus: key={}", entry.key());
+                    entry.insert(state);
+                }
+
+                // Adding a remove blob query.
+                // NOTE: this follows the same structure as above, see it for
+                // comments etc.
+                (UndecidedRemove(q, la), UndecidedRemove(query, last_update)) => {
+                    debug_assert_eq!(query.key(), q.key());
+                    *last_update = la;
+                }
+                (UndecidedRemove(query, ..), CommittedRemove(..)) => {
+                    let (key, state) = entry.remove_entry();
+                    debug_assert_eq!(key, *query.key());
+                    let timestamp = state.unwrap_committed_remove();
+                    if let Err(()) = commit_query(ctx, db_ref, passport, query, timestamp).await {
+                        // TODO: add passport id?
+                        // FIXME: still need to add the blob to storage...
+                        warn!("failed to commit to remove query: key={}", key);
+                    }
+                }
+                (state @ UndecidedRemove(..), UndecidedStore(..))
+                | (state @ UndecidedRemove(..), CommittedStore(..)) => {
+                    #[rustfmt::skip]
+                    warn!("discarding previous store participant consensus: key={}", entry.key());
+                    entry.insert(state);
+                }
+                // Peer is committed to removing a blob.
+                (CommittedRemove(timestamp), UndecidedRemove(..)) => {
+                    let (key, state) = entry.remove_entry();
+                    let query = state.unwrap_undecided_remove();
+                    debug_assert_eq!(key, *query.key());
+                    if let Err(()) = commit_query(ctx, db_ref, passport, query, timestamp).await {
+                        // TODO: add passport id?
+                        // FIXME: still need to add the blob to storage...
+                        warn!("failed to commit to store query: key={}", key);
+                    }
+                }
+                (CommittedRemove(t), CommittedRemove(timestamp)) => {
+                    if t != *timestamp {
+                        // FIXME: Oh no, differing timestamps!
+                        error!("Received different timestamps to commit remove blob query");
+                    }
+                }
+                (state @ CommittedRemove(..), UndecidedStore(..))
+                | (state @ CommittedRemove(..), CommittedStore(..)) => {
+                    #[rustfmt::skip]
+                    warn!("discarding previous store participant consensus: key={}", entry.key());
+                    entry.insert(state);
+                }
+            },
+            Entry::Vacant(entry) => {
+                // If its the first entry we simply insert it.
+                entry.insert(state);
             }
         }
     }

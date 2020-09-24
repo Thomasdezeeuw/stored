@@ -5,6 +5,7 @@
     exact_size_is_empty,
     hash_set_entry,
     maybe_uninit_slice,
+    move_ref_pattern,
     never_type,
     type_alias_impl_trait
 )]

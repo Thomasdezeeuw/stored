@@ -237,12 +237,8 @@ pub mod relay {
 
         /// Participant has committed to storing blob with [`Key`].
         ShareCommitmentStored(Key, SystemTime),
-        /// Participant has not committed to storing blob with [`Key`].
-        UncommittedStored(Key),
         /// Participant has committed to removing blob with [`Key`].
         ShareCommitmentRemoved(Key, SystemTime),
-        /// Participant has not committed to removing blob with [`Key`].
-        UncommittedRemoved(Key),
     }
 
     impl Message {
@@ -303,18 +299,12 @@ pub mod relay {
                     Operation::StoreCommitted(timestamp),
                     None,
                 ),
-                Message::UncommittedStored(key) => {
-                    (PARTICIPANT_CONSENSUS_ID, key, Operation::AddBlob, None)
-                }
                 Message::ShareCommitmentRemoved(key, timestamp) => (
                     PARTICIPANT_CONSENSUS_ID,
                     key,
                     Operation::RemoveCommitted(timestamp),
                     None,
                 ),
-                Message::UncommittedRemoved(key) => {
-                    (PARTICIPANT_CONSENSUS_ID, key, Operation::RemoveBlob, None)
-                }
             };
             let request = Request {
                 id: request_id,
@@ -419,9 +409,7 @@ pub mod relay {
     msg_types!(CoordinatorCommittedRemove(ConsensusId, Key, SystemTime));
 
     msg_types!(ShareCommitmentStored(Key, SystemTime));
-    msg_types!(UncommittedStored(Key));
     msg_types!(ShareCommitmentRemoved(Key, SystemTime));
-    msg_types!(UncommittedRemoved(Key));
 
     /// Start a participant connection to `remote` address.
     // TODO: move this to a `Future` in heph::net::TcpStream::connect.
