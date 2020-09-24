@@ -9,13 +9,21 @@
 //! [split](ReadBuffer::split_write) again to create a [`WriteBuffer`]. The
 //! `WriteBuffer` can be used to buffer writes to a connection. This way we can
 //! use a single buffer for both reading and writing to and from a connection.
+//!
+//! # Notes
+//!
+//! Most types in this module, such as [`Buffer`], can use the alternative flag
+//! (`{:#?}`) when debug printing. It will try to print the buffer as an UTF-8
+//! string, defaulting to the raw bytes if the bytes are not a valid UTF-8
+//! string.
 
 use std::future::Future;
 use std::io::{self, IoSlice, Write};
 use std::mem::MaybeUninit;
 use std::pin::Pin;
+use std::str::from_utf8;
 use std::task::{self, Poll};
-use std::{ptr, slice};
+use std::{fmt, ptr, slice};
 
 use futures_io::AsyncRead;
 
@@ -34,7 +42,6 @@ const MIN_SIZE_MOVE: usize = 512;
 /// This buffer buffers reads (that is what a buffer does), but also keeps track
 /// of the bytes processed which is useful in combination when parsing a
 /// request.
-#[derive(Debug)]
 pub struct Buffer {
     data: Vec<u8>,
     /// The number of bytes already processed in `data`.
@@ -255,8 +262,18 @@ impl Buffer {
     }
 }
 
+impl fmt::Debug for Buffer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            if let Ok(string) = from_utf8(self.as_bytes()) {
+                return f.write_str(string);
+            }
+        }
+        self.as_bytes().fmt(f)
+    }
+}
+
 /// An immutable view into a [`Buffer`].
-#[derive(Debug)]
 pub struct BufView {
     buf: Buffer,
     length: usize,
@@ -290,6 +307,17 @@ impl BufView {
     pub fn processed(mut self) -> Buffer {
         self.buf.processed(self.length);
         self.buf
+    }
+}
+
+impl fmt::Debug for BufView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            if let Ok(string) = from_utf8(self.as_bytes()) {
+                return f.write_str(string);
+            }
+        }
+        self.as_bytes().fmt(f)
     }
 }
 
@@ -397,7 +425,6 @@ where
 
 /// Split of from `Buffer` to allow the buffer to be used temporarily while
 /// leaving the original bytes in place.
-#[derive(Debug)]
 pub struct ReadBuffer<'b> {
     inner: TempBuffer<'b>,
 }
@@ -465,10 +492,15 @@ impl<'b> ReadBuffer<'b> {
     }
 }
 
+impl<'b> fmt::Debug for ReadBuffer<'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 /// Split of from `Buffer` to allow the buffer to be used temporarily.
 ///
 /// This allows `Buffer` to be used as both a read and write buffer.
-#[derive(Debug)]
 pub struct WriteBuffer<'b> {
     inner: TempBuffer<'b>,
 }
@@ -532,8 +564,13 @@ impl<'b> Write for WriteBuffer<'b> {
     }
 }
 
+impl<'b> fmt::Debug for WriteBuffer<'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
 /// Buffer backing [`ReadBuffer`] and [`WriteBuffer`].
-#[derive(Debug)]
 struct TempBuffer<'b> {
     /// Buffer capacity from `Buffer`, `buf[..self.length]` bytes are valid
     /// (i.e. initialised) and `buf[self.processed..self.length]` are yet to be
@@ -615,5 +652,16 @@ impl<'b> TempBuffer<'b> {
             "marking bytes as processed beyond read range"
         );
         self.processed += n;
+    }
+}
+
+impl<'b> fmt::Debug for TempBuffer<'b> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if f.alternate() {
+            if let Ok(string) = from_utf8(self.as_bytes()) {
+                return f.write_str(string);
+            }
+        }
+        self.as_bytes().fmt(f)
     }
 }
