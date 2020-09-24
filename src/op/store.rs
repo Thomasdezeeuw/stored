@@ -25,7 +25,7 @@ pub async fn store_blob<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     blob: &mut Buffer,
     blob_length: usize,
 ) -> Result<Key, ()> {
@@ -103,7 +103,7 @@ pub async fn store_streaming_blob<M, F, W>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     blob_length: usize,
     write: F,
 ) -> StreamResult<Key>
@@ -212,32 +212,36 @@ async fn store_phase_two<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     query: StoreBlob,
 ) -> Result<Key, ()> {
     let key = query.key().clone();
-    if peers.is_empty() {
-        // Easy mode!
-        debug!(
-            "running in single mode, not running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            key,
-        );
-        // We can directly commit to storing the blob, we're always in agreement
-        // with ourselves.
-        commit_query(ctx, db_ref, passport, query, SystemTime::now())
-            .await
-            .map(|_| key)
-    } else {
-        // Hard mode.
-        debug!(
-            "running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            key,
-        );
-        consensus(ctx, db_ref, passport, peers, query)
-            .await
-            .map(|_| key)
+    match peers {
+        Some(peers) if !peers.is_empty() => {
+            // Hard mode.
+            debug!(
+                "running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+                passport.id(),
+                key,
+            );
+            consensus(ctx, db_ref, passport, peers, query)
+                .await
+                .map(|_| key)
+        }
+        // No peers, or no connected peers.
+        _ => {
+            // Easy mode!
+            debug!(
+                "running in stand-alone mode, not running consensus algorithm to store blob: request_id=\"{}\", key=\"{}\"",
+                passport.id(),
+                key,
+            );
+            // We can directly commit to storing the blob, we're always in agreement
+            // with ourselves.
+            commit_query(ctx, db_ref, passport, query, SystemTime::now())
+                .await
+                .map(|_| key)
+        }
     }
 }
 

@@ -67,9 +67,12 @@ pub fn setup(
     address: SocketAddr,
     db_ref: ActorRef<db::Message>,
     start_group: Arc<RwLock<ActorGroup<Start>>>,
-    peers: Peers,
-    delay_start: bool,
+    peers: Option<Peers>,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
+    // If we have peers we need to sync with them first before starting to serve
+    // traffic as we don't want to respond with outdated information.
+    let delay_start = peers.is_some();
+
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
     let http_listener =
@@ -188,7 +191,7 @@ pub async fn actor(
     stream: TcpStream,
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
-    peers: Peers,
+    peers: Option<Peers>,
 ) -> crate::Result<()> {
     debug!("accepted connection: remote_address=\"{}\"", address);
     let mut conn = Connection::new(stream);
@@ -199,9 +202,8 @@ pub async fn actor(
         let result = Deadline::timeout(&mut ctx, timeout, conn.read_request(&mut request)).await;
         let response = match result {
             // Parsed a request, now route and process it.
-            Ok(true) => {
-                route_request(&mut ctx, &mut db_ref, &peers, &mut conn, &mut request).await?
-            }
+            #[rustfmt::skip]
+            Ok(true) => route_request(&mut ctx, &mut db_ref, peers.as_ref(), &mut conn, &mut request).await?,
             // Read all requests on the stream, so this actor's work is done.
             Ok(false) => break,
             // Try operator returns the I/O errors.
@@ -579,7 +581,7 @@ const BLOB_PATH_PREFIX: &str = "/blob/";
 async fn route_request(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
-    peers: &Peers,
+    peers: Option<&Peers>,
     conn: &mut Connection,
     request: &mut Request,
 ) -> crate::Result<Response> {
@@ -695,7 +697,7 @@ async fn store_blob(
     db_ref: &mut ActorRef<db::Message>,
     conn: &mut Connection,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     body_length: usize,
 ) -> crate::Result<(ResponseKind, bool)> {
     match body_length {
@@ -857,7 +859,7 @@ async fn remove_blob(
     ctx: &mut actor::Context<!>,
     db_ref: &mut ActorRef<db::Message>,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     key: Key,
 ) -> ResponseKind {
     match op::remove_blob(ctx, db_ref, passport, peers, key).await {

@@ -278,11 +278,11 @@ struct PeersInner {
     consensus_id: AtomicUsize,
     /// Count down latch that gets decreased once a (previously unconnected)
     /// peer is connected.
-    peers_connected: Option<Arc<CountDownLatch>>,
+    peers_connected: Arc<CountDownLatch>,
     /// Actor reference to the [participant consensus actor].
     ///
     /// [participant consensus actor]: consensus::actor
-    participant_ref: Option<ActorRef<consensus::Message>>,
+    participant_ref: ActorRef<consensus::Message>,
     /// Actor reference to the database actor.
     db_ref: ActorRef<db::Message>,
 }
@@ -295,19 +295,6 @@ struct Peer {
 }
 
 impl Peers {
-    /// Create an empty collection of peers, can't grow.
-    pub fn empty(db_ref: ActorRef<db::Message>) -> Peers {
-        Peers {
-            inner: Arc::new(PeersInner {
-                peers: RwLock::new(Vec::new()),
-                consensus_id: AtomicUsize::new(0),
-                peers_connected: None,
-                participant_ref: None,
-                db_ref,
-            }),
-        }
-    }
-
     /// Create a new peer collections.
     pub fn new(
         participant_ref: ActorRef<consensus::Message>,
@@ -318,8 +305,8 @@ impl Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
-                peers_connected: Some(peers_connected),
-                participant_ref: Some(participant_ref),
+                peers_connected: peers_connected,
+                participant_ref: participant_ref,
                 db_ref,
             }),
         }
@@ -438,9 +425,11 @@ impl Peers {
     ///
     /// [participant consensus actor]: consensus::actor
     pub(crate) fn send_participant_consensus(&self, msg: consensus::Message) {
-        match self.inner.participant_ref.as_ref() {
-            Some(participant_ref) if participant_ref.send(msg).is_ok() => {}
-            _ => warn!("failed to send message to participant consensus actor"),
+        if let Err(err) = self.inner.participant_ref.send(msg) {
+            warn!(
+                "failed to send message to participant consensus actor: {}",
+                err
+            );
         }
     }
 
@@ -588,10 +577,8 @@ impl Peers {
     fn add(&self, peer: Peer) {
         let mut peers = self.inner.peers.write();
         if !known_peer(&peers, &peer.address) {
-            if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
-                // Wait until this peer is connected.
-                peers_connected.increase();
-            }
+            // Wait until this peer is connected.
+            self.inner.peers_connected.increase();
             peers.push(peer);
         } else {
             // TODO: kill the relay?
@@ -607,10 +594,7 @@ impl Peers {
     fn remove(&self, address: &SocketAddr) {
         let mut peers = self.inner.peers.write();
         if let Some(pos) = peers.iter().position(|peer| peer.address == *address) {
-            if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
-                peers_connected.decrease();
-            }
-
+            self.inner.peers_connected.decrease();
             peers.remove(pos);
         }
     }
@@ -629,10 +613,7 @@ impl Peers {
         if let Some(peer) = peer {
             if !peer.is_connected {
                 peer.is_connected = true;
-
-                if let Some(peers_connected) = self.inner.peers_connected.as_ref() {
-                    peers_connected.decrease();
-                }
+                self.inner.peers_connected.decrease();
             }
         }
     }

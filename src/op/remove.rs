@@ -23,7 +23,7 @@ pub async fn remove_blob<M>(
     ctx: &mut actor::Context<M>,
     db_ref: &mut ActorRef<db::Message>,
     passport: &mut Passport,
-    peers: &Peers,
+    peers: Option<&Peers>,
     key: Key,
 ) -> Result<Option<SystemTime>, ()> {
     debug!(
@@ -39,28 +39,32 @@ pub async fn remove_blob<M>(
         Err(()) => return Err(()),
     };
 
-    if peers.is_empty() {
-        // Easy mode!
-        debug!(
-            "running in single mode, not running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            query.key(),
-        );
-        // We can directly commit to removing the blob, we're always in
-        // agreement with ourselves.
-        commit_query(ctx, db_ref, passport, query, SystemTime::now())
-            .await
-            .map(Some)
-    } else {
-        // Hard mode.
-        debug!(
-            "running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
-            passport.id(),
-            query.key(),
-        );
-        consensus(ctx, db_ref, passport, peers, query)
-            .await
-            .map(Some)
+    match peers {
+        Some(peers) if !peers.is_empty() => {
+            // Hard mode.
+            debug!(
+                "running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
+                passport.id(),
+                query.key(),
+            );
+            consensus(ctx, db_ref, passport, peers, query)
+                .await
+                .map(Some)
+        }
+        // No peers, or no connected peers.
+        _ => {
+            // Easy mode!
+            debug!(
+                "running in stand-alone mode, not running consensus algorithm to remove blob: request_id=\"{}\", key=\"{}\"",
+                passport.id(),
+                query.key(),
+            );
+            // We can directly commit to removing the blob, we're always in
+            // agreement with ourselves.
+            commit_query(ctx, db_ref, passport, query, SystemTime::now())
+                .await
+                .map(Some)
+        }
     }
 }
 

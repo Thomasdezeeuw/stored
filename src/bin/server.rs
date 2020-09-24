@@ -15,9 +15,8 @@ use parking_lot::RwLock;
 
 use stored::config::Config;
 use stored::passport::Uuid;
-use stored::peer::{self, Peers};
 use stored::util::CountDownLatch;
-use stored::{db, http};
+use stored::{db, http, peer};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT_VERSION: Option<&str> = option_env!("COMMIT_VERSION");
@@ -97,7 +96,7 @@ fn try_main() -> Result<(), ExitCode> {
     // Latch used by the synchronisation peer (see `peer::sync::actor`) to wait
     // until all worker threads are started and all peers are connected.
     let start_sync = Arc::new(CountDownLatch::new(runtime.get_threads()));
-    let (peers, delay_start) = if let Some(distributed_config) = config.distributed {
+    let peers = if let Some(distributed_config) = config.distributed {
         info!(
             "listening on {} for peer connections",
             distributed_config.peer_address
@@ -112,12 +111,12 @@ fn try_main() -> Result<(), ExitCode> {
             start_sync.clone(),
         )
         .map_err(map_err!("error setting up peer actors: {}"))?;
-        (peers, true)
+        Some(peers)
     } else {
-        (Peers::empty(db_ref.clone()), false)
+        None
     };
 
-    let start_listener = http::setup(config.http.address, db_ref, start_refs, peers, delay_start)
+    let start_listener = http::setup(config.http.address, db_ref, start_refs, peers)
         .map_err(map_err!("error binding HTTP server: {}"))?;
 
     runtime
