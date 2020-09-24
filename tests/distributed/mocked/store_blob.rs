@@ -724,11 +724,13 @@ fn expect_store_blob_failure(port: u16, blob: &[u8]) {
     );
 }
 
+// TODO: add more tests around peer_consensus being started by the test.
+
 mod coordinator {
     //! Tests mocking the coordinator side of the peer interaction.
 
-    // TODO: test peer consensus after we've committed to storing a blob, but
-    // the coordinator didn't send the last `StoreCommitted` message.
+    // TODO: test participant consensus after we've committed to storing a blob,
+    // but the coordinator didn't send the last `StoreCommitted` message.
 
     // TODO: try to use a new listener per test, creating `unique_addr`, would
     // allow us to remove the lock around accessing the peer and speed up the
@@ -1786,4 +1788,295 @@ mod coordinator {
 
         drop(guard);
     }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_one_no_response() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, _, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[4];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+
+        // Wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS + Duration::from_secs(1));
+
+        // We expect the peer to start participant consensus for the 2PC query,
+        // so we'll send a message saying we're committed.
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+        let last_modified = date_header();
+        stream.write_peer_store_committed(RequestId(0), key, SystemTime::now());
+        drop(stream);
+
+        *p = Some(peer);
+        drop(guard);
+
+        // Give the peer some time to process it.
+        sleep(Duration::from_millis(100));
+        // If the participant consensus succeeded the blob should be stored.
+        retrieve_blob(DB_PORT, BLOB, &last_modified);
+    }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_one_no_response_before_start() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, _, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[5];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+
+        // NOTE: we don't want for the peer to start participant consensus, we
+        // want to send the message before it starts participant consensus.
+
+        // We expect the peer to start participant consensus for the 2PC query,
+        // so we'll send a message saying we're committed.
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+        let last_modified = date_header();
+        stream.write_peer_store_committed(RequestId(0), key, SystemTime::now());
+        drop(stream);
+
+        *p = Some(peer);
+        drop(guard);
+
+        // Now we need to wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS + Duration::from_secs(1));
+        // If the participant consensus succeeded the blob should be stored.
+        retrieve_blob(DB_PORT, BLOB, &last_modified);
+    }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_one_disconnect() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, _, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[6];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+        drop(stream);
+
+        // Wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS + Duration::from_secs(1));
+
+        // We expect the peer to start participant consensus for the 2PC query,
+        // so we'll send a message saying we're committed.
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+        let last_modified = date_header();
+        stream.write_peer_store_committed(RequestId(0), key, SystemTime::now());
+        drop(stream);
+
+        *p = Some(peer);
+        drop(guard);
+
+        // Give the peer some time to process it.
+        sleep(Duration::from_millis(100));
+        // If the participant consensus succeeded the blob should be stored.
+        retrieve_blob(DB_PORT, BLOB, &last_modified);
+    }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_one_disconnect_send_before_start() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, _, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[7];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+        drop(stream);
+
+        // NOTE: we don't want for the peer to start participant consensus, we
+        // want to send the message before it starts participant consensus.
+
+        // We expect the peer to start participant consensus for the 2PC query,
+        // so we'll send a message saying we're committed.
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+        let last_modified = date_header();
+        stream.write_peer_store_committed(RequestId(0), key, SystemTime::now());
+        drop(stream);
+
+        *p = Some(peer);
+        drop(guard);
+
+        // Now we need to wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS + Duration::from_secs(1));
+        // If the participant consensus succeeded the blob should be stored.
+        retrieve_blob(DB_PORT, BLOB, &last_modified);
+    }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_two_no_response() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, peer_stream, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[8];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // 2PC phase two: commit to storing the blob.
+        let request_id = next_request_id();
+        stream.write_commit_store_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+
+        // Wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS);
+
+        peer_stream.expect_share_commitment_stored_request(&key);
+
+        *p = Some(peer);
+        drop(guard);
+    }
+
+    #[test]
+    fn participant_consensus_after_2pc_phase_two_disconnect() {
+        let mut guard = PROC.lock().expect(IGN_FAILURE);
+        let (p, peer_stream, _p, _) = &mut *guard;
+        let mut peer = p.take().expect(IGN_FAILURE);
+
+        const BLOB: &[u8] = BLOBS[9];
+        let key = Key::for_blob(BLOB);
+        let consensus_id = next_consensus_id();
+
+        // Concurrent handling of the server.
+        let handle = thread::spawn(move || {
+            let mut peer_stream = peer.expect_server_conn();
+            peer_stream.expect_request_blob(BLOB);
+            peer
+        });
+
+        let mut stream = TestStream::connect(*PEER_ADDR, *SERVER_ADDR, &[]);
+
+        // 2PC phase one: adding the blob.
+        let request_id = next_request_id();
+        stream.write_add_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        let peer = handle.join().expect("peer server interaction failed");
+
+        // 2PC phase two: commit to storing the blob.
+        let request_id = next_request_id();
+        stream.write_commit_store_blob_request(request_id, consensus_id, key.clone());
+        stream.expect_commit_response(request_id);
+
+        // NOTE: we don't set a final coordinator committed message, so we
+        // expect the participant consensus to run.
+        drop(stream);
+
+        // Wait until the participant consensus times out.
+        sleep(timeout::PEER_CONSENSUS);
+
+        peer_stream.expect_share_commitment_stored_request(&key);
+
+        *p = Some(peer);
+        drop(guard);
+    }
+
+    // TODO: test the following:
+    // * Multiple failed consensus runs for the same blob. Causing duplicate
+    //   `StoreBlob` queries to be inserted into the participant actor.
+    // * While participant consensus is running to remove a blob. Start
+    //   participant consensus to add the same blob.
+    // * Peer commit messages with different timestamps (before committing to
+    //   storing a blob).
+    // * Send a commit to store message while running participant consensus to
+    //   remove the blob.
 }

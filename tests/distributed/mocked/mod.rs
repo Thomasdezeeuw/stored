@@ -12,7 +12,7 @@ use serde_json;
 use stored::peer::server::{REQUEST_BLOB, REQUEST_KEYS, REQUEST_KEYS_SINCE, STORE_BLOB};
 use stored::peer::{
     ConsensusId, ConsensusVote, Operation, Request, RequestId, Response, COORDINATOR_MAGIC,
-    EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_MAGIC,
+    EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
 };
 use stored::storage::DateTime;
 use stored::Key;
@@ -617,6 +617,26 @@ impl TestStream<Dispatcher> {
         );
     }
 
+    /// Expects a `ShareCommitmentStored` request, sending back no response.
+    /// That is a request with `Operation::StoreCommitted` and
+    /// `PARTICIPANT_CONSENSUS_ID`.
+    #[track_caller]
+    fn expect_share_commitment_stored_request(&mut self, key: &Key) {
+        let request = self
+            .read_request()
+            .expect("failed to read ShareCommitmentStored request");
+        assert_eq!(request.key, *key, "unexpected key");
+        assert_eq!(
+            request.consensus_id, PARTICIPANT_CONSENSUS_ID,
+            "unexpected consensus id"
+        );
+        assert!(
+            matches!(request.op, Operation::StoreCommitted(..)),
+            "unexpected operation: {:?}",
+            request.op,
+        );
+    }
+
     fn read_request(&mut self) -> io::Result<Request> {
         let mut buf = [0; 1024];
         let n = self.socket.read(&mut buf)?;
@@ -745,12 +765,17 @@ impl TestStream<Relay> {
         self.write_request(&request);
     }
 
-    /* TODO: add functions for the following:
-        RemoveBlob,
-        CommitRemoveBlob(SystemTime),
-        AbortRemoveBlob,
-        RemoveCommitted(SystemTime),
-    */
+    /// Send a `ShareCommitmentStored` message.
+    #[track_caller]
+    fn write_peer_store_committed(&mut self, id: RequestId, key: Key, timestamp: SystemTime) {
+        let request = Request {
+            id,
+            consensus_id: PARTICIPANT_CONSENSUS_ID,
+            key,
+            op: Operation::StoreCommitted(timestamp),
+        };
+        self.write_request(&request)
+    }
 
     /// Writes `request` to the connection.
     #[track_caller]
