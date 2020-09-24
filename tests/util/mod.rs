@@ -514,6 +514,7 @@ pub mod http {
     }
 
     /// Make a single HTTP request.
+    #[track_caller]
     pub fn request<P>(
         method: &str,
         path: P,
@@ -548,6 +549,7 @@ pub mod http {
     const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
 
     /// Write a HTTP request to `stream`.
+    #[track_caller]
     pub fn write_request<P>(
         stream: &mut TcpStream,
         method: &str,
@@ -592,6 +594,7 @@ pub mod http {
     }
 
     /// Read a number of HTTP response from `stream`.
+    #[track_caller]
     pub fn read_responses(stream: &mut TcpStream, was_head: bool) -> Vec<Response<Vec<u8>>> {
         stream
             .set_read_timeout(IO_TIMEOUT)
@@ -666,6 +669,7 @@ pub mod http {
     ///
     /// Always checks the "Server" and "Date" headers. Panics on more then the
     /// wanted headers.
+    #[track_caller]
     pub fn assert_response(
         response: Response<Vec<u8>>,
         want_status: StatusCode,
