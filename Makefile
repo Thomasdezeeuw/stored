@@ -1,12 +1,15 @@
-export RUSTFLAGS                ?= -C target-cpu=native
-export MACOSX_DEPLOYMENT_TARGET ?= 10.15
+# NOTE: note exporting the following two variables as they interfere with
+# incremental compilation (not setting the flag, e.g. outside of running Make
+# will cause recomplication).
+RUSTFLAGS                ?= -C target-cpu=native
+MACOSX_DEPLOYMENT_TARGET ?= 10.15
 export GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
 # Either " modified" or empty if on a clean branch.
 export GIT_MODIFIED              = $(shell git diff --quiet --ignore-submodules HEAD 2> /dev/null || echo " modified")
 export COMMIT_VERSION            = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
 
 build:
-	cargo build --release
+	RUSTFLAGS="$(RUSTFLAGS)" MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)" cargo build --release
 
 test:
 	(cargo test \
