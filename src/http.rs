@@ -71,7 +71,10 @@ pub fn setup(
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
     // If we have peers we need to sync with them first before starting to serve
     // traffic as we don't want to respond with outdated information.
-    let delay_start = peers.is_some();
+    let delay_start = match &peers {
+        Some(peers) if !peers.is_empty() => true,
+        _ => false,
+    };
 
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
