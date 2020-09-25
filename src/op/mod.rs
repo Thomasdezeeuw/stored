@@ -354,6 +354,13 @@ struct DbRpc<Res> {
     request_id: Uuid,
 }
 
+/* TODO: change Result::Err for `DbRpc` to:
+ * enum DbError {
+ *  TimeOut,
+ *  Unavailable,
+ * }
+ */
+
 impl<Res> Future for DbRpc<Res> {
     /// Returns an error if the database doesn't respond.
     type Output = Result<Res, ()>;
