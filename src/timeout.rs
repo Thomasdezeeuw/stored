@@ -29,4 +29,4 @@ pub const PEER_CONNECT: Duration = Duration::from_millis(500);
 
 /// Timeout used in database interaction, mainly in [`op::db_rpc`].
 // TODO: base this on something.
-pub const DB: Duration = Duration::from_millis(500);
+pub const DB: Duration = Duration::from_secs(2);
