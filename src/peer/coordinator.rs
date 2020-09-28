@@ -88,7 +88,7 @@ pub mod relay {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_addres=\"{}\", server_address=\"{}\"",
+                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_address=\"{}\", server_address=\"{}\"",
                     self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
                 );
                 let last_seen = SystemTime::now();
@@ -155,6 +155,7 @@ pub mod relay {
 
         // Mark ourselves as connected.
         // NOTE: this must happen after reading (and adding) the known peers.
+        debug!("marking peer as connected: remote_address=\"{}\"", remote);
         peers.connected(&remote);
 
         stream
@@ -163,6 +164,10 @@ pub mod relay {
 
         // If we're reconnecting we need to ensure we're in sync.
         if let Some(last_seen) = last_seen {
+            debug!(
+                "starting peer synchronisation: remote_address=\"{}\", last_seen={:?}",
+                remote, last_seen
+            );
             // TODO: limit the number of concurrent syncs per peer to 1.
             let args = (remote, db_ref.clone(), last_seen);
             let supervisor = super::sync::Supervisor::new(remote, db_ref);
@@ -463,6 +468,11 @@ pub mod relay {
             i += 1;
         };
 
+        debug!(
+            "connected to peer: remote_address=\"{}\", stream={:?}",
+            remote, stream
+        );
+
         // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
         let mut wbuf = buf.split_write(45).1;
         // The address of the `coordinator::server`.
@@ -730,7 +740,7 @@ pub mod sync {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "peer synchronisation failed, restarting it ({}/{} restarts left): {}: remote_addres=\"{}\"",
+                    "peer synchronisation failed, restarting it ({}/{} restarts left): {}: remote_address=\"{}\"",
                     self.restarts_left, MAX_RESTARTS, err, self.remote,
                 );
                 let last_seen = SystemTime::now();

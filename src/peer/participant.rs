@@ -219,7 +219,7 @@ pub mod dispatcher {
         stream: &mut TcpStream,
         buf: &mut Buffer,
     ) -> crate::Result<SocketAddr> {
-        trace!("participant dispatch reading peer's server address");
+        trace!("reading peer's server address");
         loop {
             // NOTE: because we didn't create `buf` it could be its already
             // holding a request, so try to deserialise before reading.

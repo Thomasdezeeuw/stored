@@ -305,8 +305,8 @@ impl Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
                 consensus_id: AtomicUsize::new(0),
-                peers_connected: peers_connected,
-                participant_ref: participant_ref,
+                peers_connected,
+                participant_ref,
                 db_ref,
             }),
         }
@@ -788,7 +788,10 @@ pub mod switcher {
         db_ref: ActorRef<db::Message>,
         server: SocketAddr,
     ) -> Result<(), !> {
-        debug!("accepted peer connection: remote_address=\"{}\"", remote);
+        debug!(
+            "accepted peer connection: remote_address=\"{}\", server_addres=\"{}\"",
+            remote, server
+        );
         let mut buf = Buffer::new();
 
         let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
