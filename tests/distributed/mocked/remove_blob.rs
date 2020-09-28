@@ -109,6 +109,7 @@ fn fail_2pc_phase_one_vote_fail() {
 }
 
 #[test]
+#[ignore]
 fn fail_2pc_phase_one_vote_fail_no_response_timeout() {
     let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;
@@ -653,6 +654,7 @@ fn fail_2pc_completely_phase_two_vote_fail() {
 }
 
 #[test]
+#[ignore]
 fn fail_2pc_completely_phase_two_vote_abort() {
     let mut guard = PROC.lock().expect(IGN_FAILURE);
     let (_, peer_stream, _p, _) = &mut *guard;

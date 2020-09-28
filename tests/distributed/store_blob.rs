@@ -69,7 +69,6 @@ macro_rules! tests {
 
 tests! {
     #[test]
-    #[ignore]
     fn store_hello_world() {
         let url = "/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
         let blob = b"Hello world";
@@ -97,7 +96,6 @@ tests! {
     }
 
     #[test]
-    #[ignore]
     fn store_hello_mars_twice_same_node() {
         let url = "/blob/b09bcc84b88e440dad90bb19baf0c0216d8929baebc785fa0e387a17c46fe131f45109b5f06a632781c5ecf1bf1257c205bbea6d3651a9364a7fc6048cdc155c";
         let blob = b"Hello mars";
@@ -145,7 +143,6 @@ tests! {
     }
 
     #[test]
-    #[ignore]
     fn store_hello_moon_multiple_times_different_nodes() {
         let url = "/blob/f9024e47777547c1e80da15d5b8edcf3cbc592ae889bb4d86b059dd5947977eb94bac26024d9d9dcd5a57a758efd30ed0011290b15ea09bfe07ff53bfdbaeac3";
         let blob = b"Hello moon";

@@ -202,7 +202,7 @@ impl TestStream<Server> {
             "unexpected request, expected REQUEST_KEYS"
         );
 
-        let mut buf = [0; size_of::<Key>()];
+        let mut buf = [0; Key::LENGTH];
         let n = self
             .socket
             .read(&mut buf)
@@ -343,7 +343,7 @@ impl TestStream<Server> {
             "unexpected request, expected STORE_BLOB"
         );
 
-        let mut buf = [0; size_of::<Key>()];
+        let mut buf = [0; Key::LENGTH];
         let n = self
             .socket
             .read(&mut buf)

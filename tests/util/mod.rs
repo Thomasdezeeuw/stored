@@ -79,21 +79,6 @@ pub struct Proc<'a> {
     processes: Arc<Box<[ChildCommand]>>,
 }
 
-impl<'a> Drop for Proc<'a> {
-    fn drop(&mut self) {
-        // We `lock` first to create a queue of tests that are done. After we
-        // got the lock we'll check if we're the last test. If we did this
-        // without holding the lock two tests currently ending could both
-        // determine there not the last test and never stop the process.
-        let mut processes = self.lock.lock().unwrap();
-        if Arc::strong_count(&self.processes) == 2 {
-            // Take the (second to) last arc pointer to the process. Which means
-            // that if we get dropped the process is stopped.
-            drop(processes.take());
-        }
-    }
-}
-
 pub type ProcLock = Mutex<Option<Arc<Box<[ChildCommand]>>>>;
 
 /// Build and start the stored server.
@@ -546,7 +531,7 @@ pub mod http {
         responses.pop().unwrap()
     }
 
-    const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(30));
+    const IO_TIMEOUT: Option<Duration> = Some(Duration::from_secs(10));
 
     /// Write a HTTP request to `stream`.
     #[track_caller]
