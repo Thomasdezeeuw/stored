@@ -20,17 +20,17 @@ pub mod relay {
     use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse, SendError};
     use heph::net::TcpStream;
     use heph::rt::options::{ActorOptions, Priority};
-    use heph::timer::{Deadline, Timer};
+    use heph::timer::Deadline;
     use heph::{actor, Actor, NewActor, SupervisorStrategy};
     use log::{debug, trace, warn};
 
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
+    use crate::net::tcp_connect_retry;
     use crate::peer::{
         ConsensusId, ConsensusVote, Operation, Peers, Request, RequestId, Response,
         EXIT_COORDINATOR, EXIT_PARTICIPANT, PARTICIPANT_CONSENSUS_ID, PARTICIPANT_MAGIC,
     };
-    use crate::util::wait_for_wakeup;
     use crate::{db, timeout, Key};
 
     use super::CONNECT_TRIES;
@@ -428,50 +428,19 @@ pub mod relay {
             "coordinator relay connecting to peer participant: remote_address=\"{}\"",
             remote
         );
-        let mut wait = timeout::PEER_CONNECT;
-        let mut i = 1;
-        let mut stream = loop {
-            match TcpStream::connect(ctx, remote) {
-                Ok(mut stream) => {
-                    // Work around https://github.com/Thomasdezeeuw/heph/issues/287.
-                    //
-                    // We've got a connection, but it might not be connected
-                    // yet. So first we'll de-schedule ourselves, waiting for an
-                    // event from the OS.
-                    wait_for_wakeup().await;
-                    // After that we try to write the connection magic to test
-                    // the connection.
-                    match stream.write_all(PARTICIPANT_MAGIC).await {
-                        Ok(()) => break stream,
-                        // Not yet connected, try again.
-                        Err(err) => {
-                            debug!(
-                                "failed to connect to peer, but trying again ({}/{} tries): {}",
-                                i, CONNECT_TRIES, err
-                            );
-                        }
-                    }
-                }
-                Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
-                Err(err) => {
-                    debug!(
-                        "failed to connect to peer, but trying again ({}/{} tries): {}",
-                        i, CONNECT_TRIES, err
-                    );
-                }
-            }
-
-            // Wait a moment before trying to connect again.
-            Timer::timeout(ctx, wait).await;
-            // Wait a little longer next time.
-            wait *= 2;
-            i += 1;
-        };
+        let mut stream = tcp_connect_retry(ctx, remote, timeout::PEER_CONNECT, CONNECT_TRIES)
+            .await
+            .map_err(|err| err.describe("connecting to peer"))?;
 
         debug!(
             "connected to peer: remote_address=\"{}\", stream={:?}",
             remote, stream
         );
+
+        stream
+            .write_all(PARTICIPANT_MAGIC)
+            .await
+            .map_err(|err| err.describe("failed to write participant magic"))?;
 
         // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
         let mut wbuf = buf.split_write(45).1;

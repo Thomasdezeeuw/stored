@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::Poll;
 use std::time::{Duration, SystemTime};
-use std::{fmt, io};
+use std::{fmt, io, slice};
 
 use futures_util::future::poll_fn;
 use futures_util::io::AsyncWriteExt;
@@ -23,6 +23,7 @@ use log::{debug, error, warn};
 
 use crate::buffer::Buffer;
 use crate::db::{self, db_error};
+use crate::net::tcp_connect_retry;
 use crate::op::{db_rpc, retrieve_blob, retrieve_entries, sync_removed_blob, sync_stored_blob};
 use crate::passport::{Passport, Uuid};
 use crate::peer::server::{
@@ -31,7 +32,6 @@ use crate::peer::server::{
 };
 use crate::peer::{Peers, COORDINATOR_MAGIC};
 use crate::storage::{BlobEntry, DateTime, Keys, ModifiedTime};
-use crate::util::wait_for_wakeup;
 use crate::{timeout, Describe, Key};
 
 // FIXME: what happens to the consensus algorithm when we're not synced and a
@@ -419,11 +419,11 @@ async fn peer_sync_actor<K>(
 where
     K: RuntimeAccess,
 {
-    let mut stream = TcpStream::connect(&mut ctx, peer_address)
+    // We use a low retry value because the peer should already be connected
+    // when a peer sync is run, so we know its up and running.
+    let mut stream = tcp_connect_retry(&mut ctx, peer_address, Duration::from_millis(100), 3)
+        .await
         .map_err(|err| err.describe("connecting to peer"))?;
-
-    // Ensure the `TcpStream` is connected.
-    wait_for_wakeup().await;
 
     // Set `TCP_NODELAY` as we send single byte requests and buffer larger
     // writes.
@@ -531,7 +531,7 @@ where
     K: RuntimeAccess,
 {
     stream
-        .write_all(&[REQUEST_KEYS])
+        .write_all(slice::from_ref(&REQUEST_KEYS))
         .await
         .map_err(|err| err.describe("writing known keys request"))?;
 
@@ -584,7 +584,7 @@ where
 {
     let since = DateTime::from(since);
     let bufs = &mut [
-        IoSlice::new(&[REQUEST_KEYS_SINCE]),
+        IoSlice::new(slice::from_ref(&REQUEST_KEYS_SINCE)),
         IoSlice::new(since.as_bytes()),
     ];
     stream
@@ -695,7 +695,7 @@ where
     let timestamp: DateTime = timestamp.into();
     let length: [u8; BLOB_LENGTH_LEN] = (bytes.len() as u64).to_be_bytes();
     let bufs = &mut [
-        IoSlice::new(&[STORE_BLOB]),
+        IoSlice::new(slice::from_ref(&STORE_BLOB)),
         IoSlice::new(key.as_bytes()),
         IoSlice::new(timestamp.as_bytes()),
         IoSlice::new(&length),
@@ -732,7 +732,7 @@ where
             .step_by(2)
             .zip(keys.iter().rev().take(RETRIEVE_MAX_KEYS))
         {
-            bufs[i] = IoSlice::new(&[REQUEST_BLOB]);
+            bufs[i] = IoSlice::new(slice::from_ref(&REQUEST_BLOB));
             bufs[i + 1] = IoSlice::new(key.as_bytes());
         }
 

@@ -24,6 +24,8 @@ pub mod storage;
 pub mod timeout;
 pub mod util;
 
+mod net;
+
 pub use buffer::Buffer;
 pub use error::{Describe, Error, Result};
 pub use key::Key;

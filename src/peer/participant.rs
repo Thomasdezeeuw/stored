@@ -623,7 +623,8 @@ pub mod consensus {
     use std::convert::TryInto;
     use std::io::IoSlice;
     use std::net::SocketAddr;
-    use std::time::{Instant, SystemTime};
+    use std::slice;
+    use std::time::{Duration, Instant, SystemTime};
 
     use futures_util::future::{select, Either};
     use futures_util::io::AsyncWriteExt;
@@ -637,6 +638,7 @@ pub mod consensus {
 
     use crate::db::{self, db_error};
     use crate::error::Describe;
+    use crate::net::tcp_connect_retry;
     use crate::op::{
         abort_query, add_blob, commit_query, contains_blob, prep_remove_blob, Outcome,
     };
@@ -712,8 +714,11 @@ pub mod consensus {
             passport.id(),
             remote
         );
-        let mut stream = TcpStream::connect(&mut ctx, remote)
-            .map_err(|err| err.describe("creating connect to peer server"))?;
+        // We use a low retry value and number of retries because we should
+        // already be connected to the peer, so we known it up and running.
+        let mut stream = tcp_connect_retry(&mut ctx, remote, Duration::from_millis(100), 3)
+            .await
+            .map_err(|err| err.describe("connecting to peer server"))?;
         let mut buf = Buffer::new();
 
         trace!("writing connection magic: request_id=\"{}\"", passport.id());
@@ -879,7 +884,7 @@ pub mod consensus {
 
         // Write the request for the key.
         let bufs = &mut [
-            IoSlice::new(&[REQUEST_BLOB]),
+            IoSlice::new(slice::from_ref(&REQUEST_BLOB)),
             IoSlice::new(request_key.as_bytes()),
         ];
         match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs)).await {
