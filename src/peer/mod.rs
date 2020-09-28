@@ -122,7 +122,7 @@ fn start_relays(
     peer_addresses.dedup();
 
     for peer_address in peer_addresses {
-        if peer_address == server {
+        if same_addr(&peer_address, &server) {
             // Don't want to add ourselves.
             continue;
         }
@@ -167,6 +167,43 @@ fn start_sync_actor(
         .with_priority(Priority::HIGH)
         .mark_ready();
     runtime.spawn(NoSupervisor, actor, args, options);
+}
+
+/// Returns `true` if `addr1` and `addr2` are the same address, or if the have
+/// the same port and are both loopback addresses.
+///
+/// # Notes
+///
+/// This ignores if the addresses are different versions.
+fn same_addr(addr1: &SocketAddr, addr2: &SocketAddr) -> bool {
+    addr1 == addr2
+        || (addr1.port() == addr2.port()
+            && (addr1.ip().is_loopback() || addr1.ip().is_unspecified())
+            && (addr2.ip().is_loopback() || addr2.ip().is_unspecified()))
+}
+
+#[test]
+fn test_same_addr() {
+    let tests = &[
+        ("127.0.0.1:123", "127.0.0.1:123", true),
+        ("127.0.0.1:123", "[::1]:123", true),
+        ("127.0.0.1:123", "[::]:123", true),
+        ("127.0.0.1:123", "0.0.0.0:123", true),
+        ("127.0.0.1:123", "0.0.0.0:1234", false),
+        ("80.0.0.1:123", "0.0.0.0:1234", false),
+    ];
+
+    for (addr1, addr2, expected) in tests {
+        let addr1 = addr1.parse().unwrap();
+        let addr2 = addr2.parse().unwrap();
+        assert_eq!(
+            same_addr(&addr1, &addr2),
+            *expected,
+            "address1=\"{}\", addres2=\"{}\"",
+            addr1,
+            addr2
+        );
+    }
 }
 
 /// Exit message send by coordinator for a clean shutdown.
@@ -517,7 +554,7 @@ impl Peers {
         // If we get the known peers addresses from a peer it could be that we
         // (this node) it a known peer, but we don't want to add ourselves to
         // this list.
-        if peer_address == server {
+        if same_addr(&peer_address, &server) {
             return;
         }
 
