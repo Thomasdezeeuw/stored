@@ -144,7 +144,7 @@ pub mod dispatcher {
         server: SocketAddr,
         remote: SocketAddr,
     ) {
-        if let Err(err) = actor(ctx, stream, buf, peers, db_ref, server).await {
+        if let Err(err) = actor(ctx, stream, remote, buf, peers, db_ref, server).await {
             warn!(
                 "participant dispatcher failed: {}: remote_address=\"{}\", server_address=\"{}\"",
                 err, remote, server
@@ -161,6 +161,7 @@ pub mod dispatcher {
     pub async fn actor(
         mut ctx: actor::Context<Response, ThreadSafe>,
         mut stream: TcpStream,
+        stream_address: SocketAddr,
         mut buf: Buffer,
         peers: Peers,
         db_ref: ActorRef<db::Message>,
@@ -172,9 +173,17 @@ pub mod dispatcher {
         );
 
         // Read the address at which the peer is listening for peer connections.
-        let remote = read_server_address(&mut ctx, &mut stream, &mut buf).await?;
+        // TODO: maybe only send the port? We can use the address from
+        // `stream_address`.
+        let mut remote_server = read_server_address(&mut ctx, &mut stream, &mut buf).await?;
+        if remote_server.ip().is_unspecified() {
+            // If the peer listener is bound to an unspecified address (e.g.
+            // "0.0.0.0") we'll use the address the peer connected to us with.
+            remote_server.set_ip(stream_address.ip())
+        }
+
         // Add it to the list of known peers.
-        peers.spawn(&mut ctx, remote, server);
+        peers.spawn(&mut ctx, remote_server, server);
 
         write_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
         let mut running = HashMap::with_hasher(FxBuildHasher::default());
@@ -193,8 +202,8 @@ pub mod dispatcher {
                 }
                 Either::Right((Ok(_), _)) => {
                     // Read one or more requests from the stream.
-                    let close =
-                        read_requests(&mut ctx, &remote, &mut buf, &db_ref, &peers, &mut running)?;
+                    #[rustfmt::skip]
+                    let close = read_requests(&mut ctx, &remote_server, &mut buf, &db_ref, &peers, &mut running)?;
                     if close {
                         debug!("coordinator relay closing connection");
                         while let Some(msg) = ctx.try_receive_next() {
