@@ -202,26 +202,53 @@ pub async fn actor(
 
     let mut timeout = timeout::CLIENT_READ;
     loop {
+        // Any error we hit while processing the request. We always want to
+        // respond to the user, even if in case of an error, but also return the
+        // error we hit to the supervisor.
+        let mut err = None;
+
         let result = Deadline::timeout(&mut ctx, timeout, conn.read_request(&mut request)).await;
         let response = match result {
             // Parsed a request, now route and process it.
             #[rustfmt::skip]
-            Ok(true) => route_request(&mut ctx, &mut db_ref, peers.as_ref(), &mut conn, &mut request).await?,
+            Ok(true) => match route_request(&mut ctx, &mut db_ref, peers.as_ref(), &mut conn, &mut request).await {
+                Ok(response) => response,
+                Err(error) => {
+                    err = Some(error);
+                    Response {
+                        is_head: request.method.is_head(),
+                        should_close: true,
+                        kind: ResponseKind::ServerError,
+                    }
+                },
+            },
             // Read all requests on the stream, so this actor's work is done.
             Ok(false) => break,
-            // Try operator returns the I/O errors.
-            Err(err) => Response::for_error(err).map_err(|err| err.describe("reading request"))?,
+            // I/O error or invalid HTTP request.
+            Err(error) => match Response::for_error(error, &request) {
+                // Invalid HTTP request.
+                Ok(response) => response,
+                // I/O error.
+                Err(error) => {
+                    err = Some(error.describe("reading request"));
+                    Response {
+                        is_head: request.method.is_head(),
+                        should_close: true,
+                        kind: ResponseKind::ServerError,
+                    }
+                }
+            },
         };
 
-        let result = Deadline::timeout(
+        let res = Deadline::timeout(
             &mut ctx,
             timeout::CLIENT_WRITE,
             conn.write_response(&response, &mut request.passport),
         )
         .await;
-        match result {
-            Ok(()) => {}
-            Err(err) => return Err(err.describe("writing HTTP response")),
+        if let Err(error) = res {
+            // Don't overwrite a previous error.
+            err.get_or_insert_with(|| error.describe("writing HTTP response"));
         }
 
         // TODO: don't log invalid/partial requests.
@@ -240,6 +267,11 @@ pub async fn actor(
             response.len(),
         );
         debug!("request passport: {}", request.passport);
+
+        // If we hit an error somewhere we want to return it to our supervisor.
+        if let Some(err) = err {
+            return Err(err);
+        }
 
         // In cases were we don't/can't read the (entire) body we need to close
         // the connection.
@@ -978,7 +1010,7 @@ impl Response {
     /// Returns the correct `Response` for a `RequestError`, returns an
     /// [`io::Error`] if the request error kind is I/O
     /// ([`RequestError::Io`])
-    pub fn for_error(err: RequestError) -> io::Result<Response> {
+    pub fn for_error(err: RequestError, partial_request: &Request) -> io::Result<Response> {
         use RequestError::*;
         let kind = match err {
             Io(err) => return Err(err),
@@ -1001,8 +1033,7 @@ impl Response {
             TooLarge => ResponseKind::BadRequest("Request too large"),
         };
         Ok(Response {
-            // TODO: we can know this for some of the errors.
-            is_head: false, // Don't know.
+            is_head: partial_request.method.is_head(),
             should_close: true,
             kind,
         })
