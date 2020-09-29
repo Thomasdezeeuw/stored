@@ -5,7 +5,7 @@ use std::time::Duration;
 use heph::actor;
 use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
-use log::debug;
+use log::warn;
 
 use crate::util::wait_for_wakeup;
 
@@ -89,7 +89,7 @@ where
             Ok(stream) => return Ok(stream),
             Err(err) if i >= max_tries => return Err(err),
             Err(err) => {
-                debug!(
+                warn!(
                     "failed to connect to peer, but trying again ({}/{} tries): {}",
                     i, max_tries, err
                 );

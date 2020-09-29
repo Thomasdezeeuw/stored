@@ -22,7 +22,7 @@ pub mod relay {
     use heph::rt::options::{ActorOptions, Priority};
     use heph::timer::Deadline;
     use heph::{actor, Actor, NewActor, SupervisorStrategy};
-    use log::{debug, trace, warn};
+    use log::{debug, info, trace, warn};
 
     use crate::buffer::{Buffer, WriteBuffer};
     use crate::error::Describe;
@@ -155,8 +155,11 @@ pub mod relay {
 
         // Mark ourselves as connected.
         // NOTE: this must happen after reading (and adding) the known peers.
-        debug!("marking peer as connected: remote_address=\"{}\"", remote);
         peers.connected(&remote);
+        info!(
+            "connected to peer: remote_address=\"{}\", server_address=\"{}\"",
+            remote, server
+        );
 
         stream
             .set_keepalive(true)
@@ -164,7 +167,7 @@ pub mod relay {
 
         // If we're reconnecting we need to ensure we're in sync.
         if let Some(last_seen) = last_seen {
-            debug!(
+            info!(
                 "starting peer synchronisation: remote_address=\"{}\", last_seen={:?}",
                 remote, last_seen
             );
