@@ -156,10 +156,7 @@ pub mod relay {
         // Mark ourselves as connected.
         // NOTE: this must happen after reading (and adding) the known peers.
         peers.connected(&remote);
-        info!(
-            "connected to peer: remote_address=\"{}\", server_address=\"{}\"",
-            remote, server
-        );
+        info!("connected to peer: remote_address=\"{}\"", remote);
 
         stream
             .set_keepalive(true)

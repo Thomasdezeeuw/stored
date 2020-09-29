@@ -27,10 +27,11 @@ use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use std::{fmt, ptr, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
+use futures_util::future::{select, Either};
 use futures_util::io::AsyncWriteExt;
 use heph::actor::context::ThreadLocal;
 use heph::actor::messages::Start;
@@ -39,7 +40,7 @@ use heph::log::request;
 use heph::net::tcp::{self, ServerMessage, TcpStream};
 use heph::rt::options::{ActorOptions, Priority};
 use heph::supervisor::NoSupervisor;
-use heph::timer::{Deadline, DeadlinePassed};
+use heph::timer::{Deadline, DeadlinePassed, Timer};
 use heph::{actor, Actor, ActorRef, NewActor, RuntimeRef, Supervisor, SupervisorStrategy};
 use httparse::EMPTY_HEADER;
 use log::{debug, error, info, trace, warn};
@@ -52,7 +53,7 @@ use crate::passport::{Event, Passport, Uuid};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, StreamBlob};
 use crate::util::wait_for_wakeup;
-use crate::{db, timeout, Key};
+use crate::{config, db, timeout, Key};
 
 // TODO: get this from a configuration.
 /// Maximum blob size acceptable.
@@ -69,36 +70,30 @@ pub fn setup(
     start_group: Arc<RwLock<ActorGroup<Start>>>,
     peers: Option<Peers>,
 ) -> io::Result<impl FnOnce(&mut RuntimeRef) -> io::Result<()> + Send + Clone + 'static> {
-    // If we have peers we need to sync with them first before starting to serve
-    // traffic as we don't want to respond with outdated information.
-    let delay_start = match &peers {
-        Some(peers) if !peers.is_empty() => true,
-        _ => false,
-    };
-
+    let p = peers.clone(); // Moved into `http_actor`.
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
-        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), peers.clone()));
+        .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), p.clone()));
     let http_listener =
         tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
     // The returned closure is copied for each worker thread started, but we
     // only want to log that we start the HTTP listener once.
     let log_once = Arc::new(Once::new());
     Ok(move |runtime: &mut RuntimeRef| {
-        if delay_start {
-            // Delay the start of the HTTP listener, running the peer
-            // synchronisation first, once  complete we'll start the HTTP
-            // listener (see `crate::peer::sync`).
-            let actor = delayed_start as fn(_, _) -> _;
-            let start_listener = move |runtime: &mut RuntimeRef| {
-                spawn_listener(runtime, &log_once, http_listener, address)
-            };
-            let start_http_ref =
-                runtime.spawn_local(NoSupervisor, actor, start_listener, ActorOptions::default());
-
-            start_group.write().deref_mut().add(start_http_ref);
-            Ok(())
-        } else {
-            spawn_listener(runtime, &log_once, http_listener, address)
+        // If we have peers we need to sync with them first before starting to
+        // serve traffic as we don't want to respond with outdated information.
+        match peers {
+            Some(peers) if !peers.is_empty() => {
+                let actor = delayed_start as fn(_, _, _) -> _;
+                let start_listener = move |runtime: &mut RuntimeRef| {
+                    spawn_listener(runtime, &log_once, http_listener, address)
+                };
+                let args = (start_listener, peers);
+                let start_http_ref =
+                    runtime.spawn_local(NoSupervisor, actor, args, ActorOptions::default());
+                start_group.write().deref_mut().add(start_http_ref);
+                Ok(())
+            }
+            _ => spawn_listener(runtime, &log_once, http_listener, address),
         }
     })
 }
@@ -127,12 +122,32 @@ where
 
 /// Actor that starts the HTTP listener once we're fully synced by calling the
 /// `start_http` function.
-pub async fn delayed_start<F>(mut ctx: actor::Context<Start>, start_http: F) -> Result<(), !>
+pub async fn delayed_start<F>(
+    mut ctx: actor::Context<Start>,
+    start_http: F,
+    peers: Peers,
+) -> Result<(), !>
 where
     F: FnOnce(&mut RuntimeRef) -> io::Result<()>,
 {
-    // Wait until we get the start signal.
-    let _start = ctx.receive_next().await;
+    loop {
+        // Wait until we get the start signal.
+        let timer = Timer::timeout(&mut ctx, Duration::from_secs(5));
+        match select(ctx.receive_next(), timer).await {
+            Either::Left((_start, ..)) => break,
+            Either::Right(..) => {
+                // After a while the user might wonder why we aren't done
+                // setting up yet, so let the user know to which peers we're not
+                // connected yet.
+                let unconnected_peers = config::Peers(peers.unconnected());
+                info!(
+                    "waiting for peer connections to be setup: unconnected_peers={}",
+                    unconnected_peers
+                );
+                debug_assert!(!unconnected_peers.0.is_empty());
+            }
+        }
+    }
 
     // Start the HTTP listener.
     if let Err(err) = start_http(ctx.runtime()) {

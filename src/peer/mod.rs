@@ -544,6 +544,16 @@ impl Peers {
             .collect()
     }
 
+    /// Get a private copy of all currently unconnected peers.
+    pub fn unconnected(&self) -> Vec<SocketAddr> {
+        self.inner
+            .peers
+            .read()
+            .iter()
+            .filter_map(|peer| peer.is_connected.then(|| peer.address))
+            .collect()
+    }
+
     /// Attempts to spawn a [`coordinator::relay`] actor for `peer_address`..
     fn spawn<M>(
         &self,
