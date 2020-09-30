@@ -624,8 +624,10 @@ impl Peers {
     fn add(&self, peer: Peer) {
         let mut peers = self.inner.peers.write();
         if !known_peer(&peers, &peer.address) {
-            // Wait until this peer is connected.
-            self.inner.peers_connected.increase();
+            if !peer.is_connected {
+                // Wait until this peer is connected.
+                self.inner.peers_connected.increase();
+            }
             peers.push(peer);
         } else {
             // TODO: kill the relay?
@@ -641,8 +643,10 @@ impl Peers {
     fn remove(&self, address: &SocketAddr) {
         let mut peers = self.inner.peers.write();
         if let Some(pos) = peers.iter().position(|peer| peer.address == *address) {
-            self.inner.peers_connected.decrease();
-            peers.remove(pos);
+            let peer = peers.remove(pos);
+            if !peer.is_connected {
+                self.inner.peers_connected.decrease();
+            }
         }
     }
 

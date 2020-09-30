@@ -24,6 +24,9 @@ pub const PEER_CONSENSUS: Duration = Duration::from_secs(10);
 /// Time to wait between connection tries when connecting to a peer, should be
 /// doubled after each try.
 pub const PEER_CONNECT: Duration = Duration::from_millis(500);
+/// Time the [`peer::sync`] actor wait before logging we're still waiting for
+/// peer to be connected.
+pub const BEFORE_FULL_SYNC: Duration = Duration::from_secs(5);
 
 // Timeouts for database interaction.
 

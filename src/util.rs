@@ -114,14 +114,14 @@ impl<'l> Future for WaitOnLatch<'l> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        if self.latch.count.load(Ordering::Relaxed) == 0 {
+        if self.latch.get_count() == 0 {
             Poll::Ready(())
         } else {
             let waker = ctx.waker().clone();
             *self.latch.waker.lock() = Some(waker);
 
             // Check again to not miss any wake-ups.
-            if self.latch.count.load(Ordering::Relaxed) == 0 {
+            if self.latch.get_count() == 0 {
                 Poll::Ready(())
             } else {
                 Poll::Pending
