@@ -21,7 +21,7 @@ use stored::{db, http, peer};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const COMMIT_VERSION: Option<&str> = option_env!("COMMIT_VERSION");
 
-const USAGE: &str = concat!(
+const HELP: &str = concat!(
     "Stored v",
     env!("CARGO_PKG_VERSION"),
     "
@@ -47,6 +47,12 @@ Environment Variables
       'info', 'debug' or 'trace'. Note that 'debug' and 'trace' might not be
       available in release builds."
 );
+
+// NOTE: keep in sync with above `HELP` section.
+const USAGE: &str = "Usage:
+    stored <path_to_config>
+    stored -v or --version
+    stored -h or --help";
 
 fn main() -> ExitCode {
     heph::log::init();
@@ -153,7 +159,7 @@ fn parse_args() -> Result<String, ExitCode> {
             Err(ExitCode::SUCCESS)
         }
         Some(arg) if arg == "-h" || arg == "--help" => {
-            println!("{}", USAGE);
+            println!("{}", HELP);
             Err(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => {
