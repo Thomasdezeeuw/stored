@@ -659,17 +659,15 @@ pub mod sync {
 
     use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
-    use heph::net::TcpStream;
-    use heph::timer::Timer;
     use heph::{actor, Actor, ActorRef, NewActor, SupervisorStrategy};
-    use log::{debug, trace, warn};
+    use log::{debug, error, warn};
 
     use crate::buffer::Buffer;
     use crate::error::Describe;
+    use crate::net::tcp_connect_retry;
     use crate::op::peer_sync;
     use crate::passport::Passport;
     use crate::peer::COORDINATOR_MAGIC;
-    use crate::util::wait_for_wakeup;
     use crate::{db, timeout};
 
     use super::CONNECT_TRIES;
@@ -744,7 +742,23 @@ pub mod sync {
             remote
         );
 
-        let mut stream = connect_to_server(&mut ctx, remote).await?;
+        let mut stream = tcp_connect_retry(&mut ctx, remote, timeout::PEER_CONNECT, CONNECT_TRIES)
+            .await
+            .map_err(|err| err.describe("connecting to peer"))?;
+
+        // Set `TCP_NODELAY` as we buffer writes.
+        if let Err(err) = stream.set_nodelay(true) {
+            error!(
+                "error setting `TCP_NODELAY`, continuing: {}: remote_address=\"{}\"",
+                err, remote
+            );
+        }
+
+        stream
+            .write_all(COORDINATOR_MAGIC)
+            .await
+            .map_err(|err| err.describe("writing magic bytes"))?;
+
         let mut buf = Buffer::new();
         let mut passport = Passport::new();
 
@@ -759,56 +773,5 @@ pub mod sync {
             last_seen,
         )
         .await
-    }
-
-    /// Start a connection to `remote` address.
-    // TODO: move this to a `Future` in heph::net::TcpStream::connect.
-    async fn connect_to_server(
-        ctx: &mut actor::Context<!, ThreadSafe>,
-        remote: SocketAddr,
-    ) -> crate::Result<TcpStream> {
-        trace!(
-            "coordinator sync connecting to peer server: remote_address=\"{}\"",
-            remote
-        );
-        let mut wait = timeout::PEER_CONNECT;
-        let mut i = 1;
-        loop {
-            match TcpStream::connect(ctx, remote) {
-                Ok(mut stream) => {
-                    // Work around https://github.com/Thomasdezeeuw/heph/issues/287.
-                    //
-                    // We've got a connection, but it might not be connected
-                    // yet. So first we'll de-schedule ourselves, waiting for an
-                    // event from the OS.
-                    wait_for_wakeup().await;
-                    // After that we try to write the connection magic to test
-                    // the connection.
-                    match stream.write_all(COORDINATOR_MAGIC).await {
-                        Ok(()) => break Ok(stream),
-                        // Not yet connected, try again.
-                        Err(err) => {
-                            debug!(
-                                "failed to connect to peer, but trying again ({}/{} tries): {}",
-                                i, CONNECT_TRIES, err
-                            );
-                        }
-                    }
-                }
-                Err(err) if i >= CONNECT_TRIES => return Err(err.describe("connecting to peer")),
-                Err(err) => {
-                    debug!(
-                        "failed to connect to peer, but trying again ({}/{} tries): {}",
-                        i, CONNECT_TRIES, err
-                    );
-                }
-            }
-
-            // Wait a moment before trying to connect again.
-            Timer::timeout(ctx, wait).await;
-            // Wait a little longer next time.
-            wait *= 2;
-            i += 1;
-        }
     }
 }
