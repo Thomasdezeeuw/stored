@@ -81,7 +81,7 @@ pub fn start(
     Ok(peers)
 }
 
-restart_supervisor!(ListenerSupervisor, "peer listener", (), 2);
+restart_supervisor!(pub ListenerSupervisor, "peer listener", (), 2);
 
 /// Start the peer listener, listening for incoming TCP connections from its
 /// peers starting a new [switcher actor] for each connection.

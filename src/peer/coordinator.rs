@@ -170,7 +170,7 @@ pub mod relay {
             );
             // TODO: limit the number of concurrent syncs per peer to 1.
             let args = (remote, db_ref.clone(), last_seen);
-            let supervisor = super::sync::Supervisor::new(remote, db_ref);
+            let supervisor = super::sync::Supervisor::new(args.clone());
             let sync_actor = super::sync::actor as fn(_, _, _, _) -> _;
             let options = ActorOptions::default()
                 .with_priority(Priority::HIGH)
@@ -655,12 +655,12 @@ pub mod sync {
     //! [coordinator relay actor]: super::relay::actor()
 
     use std::net::SocketAddr;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
-    use heph::{actor, Actor, ActorRef, NewActor, SupervisorStrategy};
-    use log::{debug, error, warn};
+    use heph::{actor, restart_supervisor, ActorRef};
+    use log::{debug, error};
 
     use crate::buffer::Buffer;
     use crate::error::Describe;
@@ -672,62 +672,11 @@ pub mod sync {
 
     use super::CONNECT_TRIES;
 
-    // TODO: replace with `heph::restart_supervisor` once it can log extra
-    // arguments.
-    pub struct Supervisor {
-        remote: SocketAddr,
-        db_ref: ActorRef<db::Message>,
-        restarts_left: usize,
-    }
-
-    /// Maximum number of times the [`actor`] will be restarted.
-    const MAX_RESTARTS: usize = 5;
-
-    impl Supervisor {
-        /// Create a new `Supervisor`.
-        pub fn new(remote: SocketAddr, db_ref: ActorRef<db::Message>) -> Supervisor {
-            Supervisor {
-                remote,
-                db_ref,
-                restarts_left: MAX_RESTARTS,
-            }
-        }
-    }
-
-    impl<NA, A> heph::Supervisor<NA> for Supervisor
-    where
-        NA: NewActor<
-            Argument = (SocketAddr, ActorRef<db::Message>, SystemTime),
-            Error = !,
-            Actor = A,
-        >,
-        A: Actor<Error = crate::Error>,
-    {
-        fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<NA::Argument> {
-            if self.restarts_left >= 1 {
-                self.restarts_left -= 1;
-                warn!(
-                    "peer synchronisation failed, restarting it ({}/{} restarts left): {}: remote_address=\"{}\"",
-                    self.restarts_left, MAX_RESTARTS, err, self.remote,
-                );
-                let last_seen = SystemTime::now();
-                SupervisorStrategy::Restart((self.remote, self.db_ref.clone(), last_seen))
-            } else {
-                warn!(
-                    "peer synchronisation failed, stopping it: {}: remote_address=\"{}\"",
-                    err, self.remote,
-                );
-                SupervisorStrategy::Stop
-            }
-        }
-
-        fn decide_on_restart_error(&mut self, err: NA::Error) -> SupervisorStrategy<NA::Argument> {
-            err
-        }
-
-        fn second_restart_error(&mut self, err: NA::Error) {
-            err
-        }
+    restart_supervisor! {
+        pub Supervisor, "peer synchronisation",
+        (SocketAddr, ActorRef<db::Message>, SystemTime),
+        5, Duration::from_secs(30),
+        ": remote_address=\"{}\"", args.0,
     }
 
     /// Runs a [`peer_sync`] operation with peer at `remote` address.

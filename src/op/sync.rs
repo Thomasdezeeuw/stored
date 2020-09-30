@@ -403,7 +403,7 @@ enum State {
 }
 
 restart_supervisor!(
-    Supervisor,
+    pub Supervisor,
     "peer synchronisation actor",
     (ActorRef<db::Message>, SocketAddr),
     5,
