@@ -16,7 +16,7 @@ use std::time::SystemTime;
 use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
-use heph::{rt, Runtime};
+use heph::{from_message, rt, Runtime};
 use log::{debug, error, info, trace, warn};
 
 use crate::buffer::BufView;
@@ -375,43 +375,22 @@ pub struct HealthCheck;
 #[derive(Debug)]
 pub struct HealthOk(());
 
-/// Macro to implement [`From`]`<`[`RpcMessage`]`>` for an enum message type.
-// TODO: maybe add something like this to Heph?
-macro_rules! from_rpc_message {
-    // Single field.
-    ($name: ident :: $variant: ident ( $ty: ty ) -> $return_ty: ty) => {
-        impl From<RpcMessage<$ty, $return_ty>> for $name {
-            fn from(msg: RpcMessage<$ty, $return_ty>) -> $name {
-                $name::$variant(msg)
-            }
-        }
-    };
-    // For multiple fields use the tuple format.
-    ($name: ident :: $variant: ident ( $( $ty: ty ),+ ) -> $return_ty: ty) => {
-        impl From<RpcMessage<( $( $ty ),+ ), $return_ty>> for $name {
-            fn from(msg: RpcMessage<( $( $ty ),+ ), $return_ty>) -> $name {
-                $name::$variant(msg)
-            }
-        }
-    };
-}
-
-from_rpc_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
-from_rpc_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
-from_rpc_message!(Message::AbortStoreBlob(StoreBlob) -> ());
-from_rpc_message!(Message::StreamBlob(usize) -> Box<StreamBlob>);
-from_rpc_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
-from_rpc_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
-from_rpc_message!(Message::ContainsBlob(Key) -> bool);
-from_rpc_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
-from_rpc_message!(Message::GetKeys(()) -> Keys);
-from_rpc_message!(Message::GetEntries(()) -> Entries);
-from_rpc_message!(Message::SyncStoredBlob(BufView, SystemTime) -> BufView);
-from_rpc_message!(Message::SyncRemovedBlob(Key, SystemTime) -> ());
-from_rpc_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
-from_rpc_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
-from_rpc_message!(Message::AbortRemoveBlob(RemoveBlob) -> ());
-from_rpc_message!(Message::HealthCheck(HealthCheck) -> HealthOk);
+from_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
+from_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
+from_message!(Message::AbortStoreBlob(StoreBlob) -> ());
+from_message!(Message::StreamBlob(usize) -> Box<StreamBlob>);
+from_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
+from_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
+from_message!(Message::ContainsBlob(Key) -> bool);
+from_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
+from_message!(Message::GetKeys(()) -> Keys);
+from_message!(Message::GetEntries(()) -> Entries);
+from_message!(Message::SyncStoredBlob(BufView, SystemTime) -> BufView);
+from_message!(Message::SyncRemovedBlob(Key, SystemTime) -> ());
+from_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
+from_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
+from_message!(Message::AbortRemoveBlob(RemoveBlob) -> ());
+from_message!(Message::HealthCheck(HealthCheck) -> HealthOk);
 
 /// Response to [`Message::AddBlob`].
 #[derive(Debug)]
