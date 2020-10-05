@@ -669,7 +669,7 @@ impl Peers {
         }
     }
 
-    /// Returns `true` if all peers connected.
+    /// Returns `true` if all peers are connected.
     pub(crate) fn all_connected(&self) -> bool {
         self.inner.peers.read().iter().all(|peer| peer.is_connected)
     }

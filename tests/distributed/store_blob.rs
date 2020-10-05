@@ -1,6 +1,7 @@
 use http::header::{CONNECTION, CONTENT_LENGTH, LAST_MODIFIED, LOCATION};
 use http::status::StatusCode;
 use log::LevelFilter;
+use stored::Key;
 
 use crate::util::http::{body, date_header, header};
 
@@ -187,6 +188,34 @@ tests! {
                     CONNECTION => header::KEEP_ALIVE,
                 );
             }
+        }
+    }
+
+    #[test]
+    fn store_large_blob() {
+        let blob = &[123; 104857600]; // 100 MB.
+        let key = Key::for_blob(blob);
+        let url = format!("/blob/{}", key);
+        let blob_len = "104857600";
+        request!(
+            POST DB_PORTS[0], "/blob", blob,
+            CONTENT_LENGTH => blob_len;
+            expected: StatusCode::CREATED, body::EMPTY,
+            CONTENT_LENGTH => body::EMPTY_LEN,
+            LOCATION => &*url,
+            CONNECTION => header::KEEP_ALIVE,
+        );
+        let last_modified = date_header();
+
+        // Now it should be available on all peers.
+        for port in DB_PORTS.iter().copied() {
+            request!(
+                GET port, url.clone(), body::EMPTY,
+                expected: StatusCode::OK, blob,
+                CONTENT_LENGTH => blob_len,
+                LAST_MODIFIED => &last_modified,
+                CONNECTION => header::KEEP_ALIVE,
+            );
         }
     }
 }
