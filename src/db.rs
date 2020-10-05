@@ -15,6 +15,7 @@ use std::time::SystemTime;
 
 use heph::actor::sync::{SyncActor, SyncContext};
 use heph::actor_ref::{ActorRef, RpcMessage};
+use heph::rt::SyncActorOptions;
 use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
 use heph::{from_message, rt, Runtime};
 use log::{debug, error, info, trace, warn};
@@ -35,8 +36,9 @@ pub fn start(
     let storage =
         Storage::open(&*path).map_err(|err| rt::Error::from(err).describe("opening database"))?;
     let supervisor = Supervisor::new(path);
+    let options = SyncActorOptions::default().with_name("Storage".to_owned());
     runtime
-        .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage)
+        .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage, options)
         .map_err(|err| err.map_type().describe("spawning database actor"))
 }
 
