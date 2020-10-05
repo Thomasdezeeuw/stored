@@ -655,7 +655,7 @@ where
     for key in keys {
         match retrieve_blob(ctx, db_ref, passport, key.clone()).await {
             Ok(Some(BlobEntry::Stored(blob))) => {
-                write_blob(
+                write_store_blob_request(
                     ctx,
                     stream,
                     &key,
@@ -665,7 +665,8 @@ where
                 .await?;
             }
             Ok(Some(BlobEntry::Removed(timestamp))) => {
-                write_blob(ctx, stream, &key, ModifiedTime::Removed(timestamp), &[]).await?
+                write_store_blob_request(ctx, stream, &key, ModifiedTime::Removed(timestamp), &[])
+                    .await?
             }
             // SAFETY: this can never happen.
             Ok(None) => unreachable!(
@@ -680,7 +681,7 @@ where
 }
 
 /// Writes a blob, with `key`, `timestamp` and the `bytes`, to `stream`.
-async fn write_blob<M, K>(
+async fn write_store_blob_request<M, K>(
     ctx: &mut actor::Context<M, K>,
     stream: &mut TcpStream,
     key: &Key,
@@ -703,7 +704,7 @@ where
     ];
     Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
         .await
-        .map_err(|err| err.describe("writing blob"))
+        .map_err(|err| err.describe("writing store blob request"))
 }
 
 /// Maximum number of keys [`retrieve_blobs`] will request per iteration.
@@ -740,7 +741,7 @@ where
         let bufs = &mut bufs[0..length * 2];
         Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
             .await
-            .map_err(|err| err.describe("writing blob"))?;
+            .map_err(|err| err.describe("writing blob request"))?;
 
         let mut left = length;
         let mut want_read = METADATA_LEN;
