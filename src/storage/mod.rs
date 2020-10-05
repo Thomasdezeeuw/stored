@@ -544,6 +544,7 @@ impl Storage {
         Ok(created_at)
     }
 
+    /// Create a new entry for a removed blob. Used to synchronise blobs.
     pub fn store_removed_blob(
         &mut self,
         key: Key,
@@ -820,10 +821,10 @@ impl Query for StoreBlob {
         debug_assert_eq!(
             storage
                 .data
-                .slice(uncommitted_blob.offset, uncommitted_blob.mmap_slice.length)
+                .slice(uncommitted_blob.offset, uncommitted_blob.len())
                 .unwrap()
                 .as_slice(),
-            uncommitted_blob.mmap_slice.as_slice()
+            uncommitted_blob.bytes()
         );
 
         use hash_map::Entry::*;
@@ -1020,11 +1021,14 @@ impl Data {
     ///
     /// [`sync`]: MmapSlice::sync
     fn add_blob(&mut self, blob: &[u8]) -> io::Result<(MmapSlice<u8>, u64)> {
-        let offset = self.used_bytes;
         let (mut slice, _) = self.reserve(blob.len())?;
         slice.copy_from_slice(0, blob);
         // Let the OS we want to sync it to disk at a later stage.
         slice.start_sync()?;
+        // NOTE: we must get the `offset` from `self.used_bytes` **after**
+        // reserving space for the blob because the call to `reserve` might
+        // update `self.used_bytes`.
+        let offset = self.used_bytes - blob.len() as u64;
         // Safety: `new_area` allocate `mmap` areas with `PROT_READ`.
         unsafe { Ok((slice.assume_init().immutable(), offset)) }
     }
@@ -1044,6 +1048,7 @@ impl Data {
         let in_area_offset = self.used_bytes - area.file_offset();
         let offset = self.used_bytes;
         self.used_bytes += length as u64;
+        debug_assert!(length + in_area_offset as usize <= area.len());
         let slice = unsafe { area.slice_mut_unchecked(in_area_offset as usize, length) };
         Ok((slice, offset))
     }
@@ -1233,7 +1238,7 @@ impl Index {
         let mut length = metadata.len();
         if length == 0 {
             // New file so we need to add our magic.
-            trace!("new index file, writing magic");
+            trace!("new index file, writing magic: file={:?}", file);
             file.write_all(&INDEX_MAGIC)?;
             length += INDEX_MAGIC.len() as u64;
         } else {

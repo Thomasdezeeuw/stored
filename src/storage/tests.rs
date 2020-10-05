@@ -892,7 +892,7 @@ mod storage {
 
     use crate::storage::{
         AddResult, Blob, BlobEntry, Entry, EntryIndex, ModifiedTime, Query, RemoveResult, Storage,
-        DATA_MAGIC, INDEX_MAGIC,
+        DATA_MAGIC, DATA_PRE_ALLOC_BYTES, INDEX_MAGIC,
     };
     use crate::Key;
 
@@ -1404,6 +1404,51 @@ mod storage {
         assert_eq!(stream_blob.bytes_left(), 100);
 
         let _query = stream_blob.finish(&mut storage).unwrap();
+    }
+
+    #[test]
+    fn store_large_blob() {
+        let path = temp_dir("store_large_blob.db");
+        let mut storage = Storage::open(&path).unwrap();
+
+        assert_eq!(storage.len(), 0);
+        assert_eq!(storage.data_size(), DATA_MAGIC.len() as u64);
+        assert_eq!(storage.index_size(), INDEX_MAGIC.len() as u64);
+        assert_eq!(
+            storage.total_size(),
+            (DATA_MAGIC.len() + INDEX_MAGIC.len()) as u64
+        );
+
+        let blob = &[123; 104857600]; // 100 MB.
+
+        let query = storage.add_blob(blob).unwrap();
+        let key = query.key().clone();
+        let now = SystemTime::now();
+        let got = storage.commit(query, now).unwrap();
+        assert_eq!(now, got);
+
+        let got = storage.lookup(&key).unwrap().unwrap();
+        assert_eq!(got.bytes(), blob);
+
+        assert_eq!(storage.len(), 1);
+        let mut want_data_size = (DATA_MAGIC.len() + blob.len()) as u64;
+        if want_data_size != storage.data_size() {
+            // If we can't allocate a new `mmap` after the initially created one
+            // for the blob we're leaving `DATA_PRE_ALLOC_BYTES` bytes empty
+            // (well to be used by the data magic).
+            want_data_size = (DATA_PRE_ALLOC_BYTES + blob.len()) as u64;
+        }
+
+        assert_eq!(storage.data_size(), want_data_size);
+        let want_index_size = (INDEX_MAGIC.len() + size_of::<Entry>()) as u64;
+        assert_eq!(storage.index_size(), want_index_size);
+        assert_eq!(storage.total_size(), want_index_size + want_data_size);
+
+        drop(storage);
+        let data_metadata = fs::metadata(path.join("data")).unwrap();
+        assert_eq!(data_metadata.len(), want_data_size);
+        let index_metadata = fs::metadata(path.join("index")).unwrap();
+        assert_eq!(index_metadata.len(), want_index_size);
     }
 
     #[test]
