@@ -88,8 +88,8 @@ pub mod relay {
             if self.restarts_left >= 1 {
                 self.restarts_left -= 1;
                 warn!(
-                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_address=\"{}\", server_address=\"{}\"",
-                    self.restarts_left, MAX_RESTARTS, err, self.remote, self.server
+                    "peer coordinator relay failed, restarting it ({}/{} restarts left): {}: remote_address=\"{}\"",
+                    self.restarts_left, MAX_RESTARTS, err, self.remote
                 );
                 let last_seen = SystemTime::now();
                 SupervisorStrategy::Restart((
@@ -101,8 +101,8 @@ pub mod relay {
                 ))
             } else {
                 warn!(
-                    "peer coordinator relay failed, stopping it: {}: remote_address=\"{}\", server_address=\"{}\"",
-                    err, self.remote, self.server,
+                    "peer coordinator relay failed, stopping it: {}: remote_address=\"{}\"",
+                    err, self.remote
                 );
                 self.peers.remove(&self.remote);
                 SupervisorStrategy::Stop
@@ -134,10 +134,7 @@ pub mod relay {
         server: SocketAddr,
         last_seen: Option<SystemTime>,
     ) -> crate::Result<()> {
-        debug!(
-            "starting coordinator relay: remote_address=\"{}\", server_address=\"{}\"",
-            remote, server
-        );
+        debug!("starting coordinator relay: remote_address=\"{}\"", remote);
 
         let mut responses = HashMap::with_hasher(FxBuildHasher::default());
         let mut req_id = RequestId(0);
@@ -454,9 +451,8 @@ pub mod relay {
         }
 
         trace!(
-            "coordinator relay writing setup to peer participant: remote_address=\"{}\", server_address=\"{}\"",
+            "coordinator relay writing setup to peer participant: remote_address=\"{}\"",
             remote,
-            server,
         );
         match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
             Ok(()) => {

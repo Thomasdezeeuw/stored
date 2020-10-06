@@ -66,14 +66,10 @@ pub(crate) async fn run_actor<M>(
     stream: TcpStream,
     buf: Buffer,
     db_ref: ActorRef<db::Message>,
-    server: SocketAddr,
     remote: SocketAddr,
 ) {
     if let Err(err) = actor(ctx, stream, buf, db_ref).await {
-        warn!(
-            "peer server failed: {}: remote_address=\"{}\", server_address=\"{}\"",
-            err, remote, server
-        );
+        warn!("peer server failed: {}: remote_address=\"{}\"", err, remote);
     }
 }
 

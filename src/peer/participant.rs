@@ -146,8 +146,8 @@ pub mod dispatcher {
     ) {
         if let Err(err) = actor(ctx, stream, remote, buf, peers, db_ref, server).await {
             warn!(
-                "participant dispatcher failed: {}: remote_address=\"{}\", server_address=\"{}\"",
-                err, remote, server
+                "participant dispatcher failed: {}: remote_address=\"{}\"",
+                err, remote
             );
         }
     }
@@ -167,10 +167,7 @@ pub mod dispatcher {
         db_ref: ActorRef<db::Message>,
         server: SocketAddr,
     ) -> crate::Result<()> {
-        debug!(
-            "starting participant dispatcher: server_address=\"{}\"",
-            server
-        );
+        debug!("starting participant dispatcher");
 
         // Read the address at which the peer is listening for peer connections.
         // TODO: maybe only send the port? We can use the address from
