@@ -14,11 +14,6 @@ use super::{Buffer, INITIAL_BUF_SIZE, MIN_SIZE_MOVE};
 /// Note: no longer used in the implementation, but still in the tests below.
 const MIN_BUF_SIZE: usize = 2 * 1024;
 
-// TODO: more tests:
-// Buffer -> ReadBuffer
-// Buffer -> ReadBuffer -> WriteBuffer
-// Buffer -> ReadBuffer -> ReadBuffer -> WriteBuffer.
-
 const EMPTY: &[u8] = &[];
 
 /// [`AsyncRead`] implementation that returns a single slice in `bytes` in each

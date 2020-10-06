@@ -1,14 +1,10 @@
 //! I/O buffer and related types.
 //!
 //! The main type is [`Buffer`], which is to be used as buffer for reading.
-//! After reading a request into the `Buffer` it can be
-//! [split](Buffer::split_read), into  the already read bytes and a
-//! [`ReadBuffer`]. This allows the head of the request (e.g. HTTP headers) to
-//! be parsed and the remainder of the buffer to be used to read the body into.
-//! After the entire request is read, both head and body, to `ReadBuffer` can be
-//! [split](ReadBuffer::split_write) again to create a [`WriteBuffer`]. The
-//! `WriteBuffer` can be used to buffer writes to a connection. This way we can
-//! use a single buffer for both reading and writing to and from a connection.
+//! After the entire request is read the buffer can be split, using
+//! [`Buffer::split_write`], to create a [`WriteBuffer`]. The `WriteBuffer` can
+//! be used to buffer writes to a connection. This way we can use a single
+//! buffer for both reading and writing to and from a connection.
 //!
 //! # Notes
 //!
@@ -277,9 +273,6 @@ impl BufView {
     }
 
     /// Marks the bytes in this view as processed, returning the `Buffer`.
-    ///
-    /// Essentially this is [`BufView::into_inner`] followed by
-    /// [`Buffer::processed`] with the length of the view as `n`.
     pub fn processed(mut self) -> Buffer {
         self.buf.processed(self.length);
         self.buf
@@ -297,7 +290,7 @@ impl fmt::Debug for BufView {
     }
 }
 
-/// [`Future`] that reads from reader `R` into a [`Buffer`] or [`ReadBuffer`].
+/// [`Future`] that reads from reader `R` into a [`Buffer`].
 ///
 /// # Notes
 ///

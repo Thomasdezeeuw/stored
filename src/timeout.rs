@@ -37,6 +37,8 @@ pub const PEER_CONSENSUS: Duration = Duration::from_secs(10);
 pub const PEER_CONNECT: Duration = Duration::from_millis(500);
 /// Time the [`peer::sync`] actor wait before logging we're still waiting for
 /// peer to be connected.
+///
+/// [`peer::sync`]: crate::peer::sync::actor
 pub const BEFORE_FULL_SYNC: Duration = Duration::from_secs(5);
 
 // Put a limit on the functions below: currently for a 1 GB blob the timeout
@@ -58,7 +60,9 @@ pub const fn peer_write(size: u64) -> Duration {
 
 // Timeouts for database interaction.
 
-/// Timeout used in database interaction, mainly in [`op::db_rpc`].
+/// Timeout used in database interaction, mainly in [`db_rpc`].
+///
+/// [`db_rpc`]: crate::op::db_rpc
 // TODO: base this on something.
 pub const DB: Duration = Duration::from_secs(2);
 
