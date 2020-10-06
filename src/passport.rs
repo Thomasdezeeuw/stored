@@ -3,7 +3,6 @@
 //! A request passport is used to track the request progress and timing.
 
 use std::error::Error;
-use std::iter::FusedIterator;
 use std::mem::size_of;
 use std::ops::Range;
 use std::str::FromStr;
@@ -53,13 +52,6 @@ impl Passport {
         &self.id
     }
 
-    /// Returns the start of this passport.
-    ///
-    /// That is the time this was created, or last reset.
-    pub fn start(&self) -> Instant {
-        self.start
-    }
-
     /// Returns the time elapsed between the start and the last mark.
     ///
     /// If no marks have been made it will return a duration of zero.
@@ -78,14 +70,6 @@ impl Passport {
             event,
         };
         self.marks.push(mark);
-    }
-
-    /// Returns an iterator over all [`Mark`]s.
-    pub fn marks<'p>(
-        &'p self,
-    ) -> impl Iterator<Item = Mark> + DoubleEndedIterator + ExactSizeIterator + FusedIterator + 'p
-    {
-        self.marks.iter().copied()
     }
 
     /// Reuse the passport for another request.
