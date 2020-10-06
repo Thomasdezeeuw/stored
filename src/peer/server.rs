@@ -253,7 +253,8 @@ async fn retrieve_blob<M>(
         IoSlice::new(&length),
         IoSlice::new(blob.bytes()),
     ];
-    Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
+    let timeout = timeout::peer_write(blob.len() as u64);
+    Deadline::timeout(ctx, timeout, stream.write_all_vectored(bufs))
         .await
         .map(|()| passport.mark(Event::WrittenPeerResponse))
         .map_err(|err| err.describe("writing blob"))
@@ -441,7 +442,8 @@ async fn store_blob<M>(
     passport.mark(Event::ReadingPeerBlob);
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
-        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
+        let timeout = timeout::peer_read(n as u64);
+        match Deadline::timeout(ctx, timeout, buf.read_n_from(&mut *stream, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerBlob),
             Err(err) => return Err(err.describe("reading blob from socket")),
         }

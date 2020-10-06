@@ -503,7 +503,7 @@ impl Peers {
                 }
             })
             .collect();
-        let timer = Timer::timeout(ctx, timeout::PEER_READ);
+        let timer = Timer::timeout(ctx, timeout::PEER_RPC);
         PeerRpc { rpcs, timer }
     }
 

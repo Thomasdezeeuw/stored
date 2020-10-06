@@ -235,7 +235,10 @@ pub async fn actor(
 
         let res = Deadline::timeout(
             &mut ctx,
-            timeout::CLIENT_WRITE,
+            // NOTE: this must be `response.body().len()` **not**
+            // `response.len()`! For HEAD request `body().len()` will be 0,
+            // `len()` will be the Content-Length.
+            timeout::client_write(response.body().len() as u64),
             conn.write_response(&response, &mut request.passport),
         )
         .await;

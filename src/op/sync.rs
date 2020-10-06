@@ -680,13 +680,13 @@ where
     Ok(())
 }
 
-/// Writes a blob, with `key`, `timestamp` and the `bytes`, to `stream`.
+/// Writes a blob, with `key`, `timestamp` and the `blob` bytes, to `stream`.
 async fn write_store_blob_request<M, K>(
     ctx: &mut actor::Context<M, K>,
     stream: &mut TcpStream,
     key: &Key,
     timestamp: ModifiedTime,
-    bytes: &[u8],
+    blob: &[u8],
 ) -> crate::Result<()>
 where
     K: RuntimeAccess,
@@ -694,15 +694,16 @@ where
     // TODO: buffer smaller blobs, current minimum is 84 bytes (which we
     // directly send as we use `TCP_NODELAY`).
     let timestamp: DateTime = timestamp.into();
-    let length: [u8; BLOB_LENGTH_LEN] = (bytes.len() as u64).to_be_bytes();
+    let length: [u8; BLOB_LENGTH_LEN] = (blob.len() as u64).to_be_bytes();
     let bufs = &mut [
         IoSlice::new(slice::from_ref(&STORE_BLOB)),
         IoSlice::new(key.as_bytes()),
         IoSlice::new(timestamp.as_bytes()),
         IoSlice::new(&length),
-        IoSlice::new(bytes),
+        IoSlice::new(blob),
     ];
-    Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
+    let timeout = timeout::peer_write(blob.len() as u64);
+    Deadline::timeout(ctx, timeout, stream.write_all_vectored(bufs))
         .await
         .map_err(|err| err.describe("writing store blob request"))
 }
@@ -748,9 +749,8 @@ where
         while left > 0 {
             if buf.len() < want_read {
                 let n = want_read - buf.len();
-                match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n))
-                    .await
-                {
+                let timeout = timeout::peer_read(n as u64);
+                match Deadline::timeout(ctx, timeout, buf.read_n_from(&mut *stream, n)).await {
                     Ok(..) => {}
                     Err(err) => return Err(err.describe("reading blob")),
                 }

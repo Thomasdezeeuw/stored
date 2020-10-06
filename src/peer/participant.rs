@@ -946,7 +946,7 @@ pub mod consensus {
             // Haven't read entire blob yet.
             let want_n = blob_length - buf.len() as u64;
             let read_n = buf.read_n_from(&mut calc, want_n as usize);
-            match Deadline::timeout(ctx, timeout::PEER_READ, read_n).await {
+            match Deadline::timeout(ctx, timeout::peer_read(want_n), read_n).await {
                 Ok(()) => {}
                 Err(err) => return Err(err.describe("reading blob")),
             }
