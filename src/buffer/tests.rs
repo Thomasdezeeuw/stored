@@ -106,10 +106,9 @@ fn buf_view() {
     let view = buf.view(0);
 
     assert_eq!(view.len(), 0);
-    assert!(view.is_empty());
     assert_eq!(view.as_bytes(), EMPTY);
 
-    let mut buf = view.into_inner();
+    let mut buf = view.processed();
     let mut reader = Cursor::new([1, 2, 3, 4, 5]);
     let bytes_read = poll_wait(Pin::new(&mut buf.read_from(&mut reader))).unwrap();
     assert_eq!(bytes_read, 5);
@@ -117,19 +116,18 @@ fn buf_view() {
 
     let view = buf.view(2);
     assert_eq!(view.len(), 2);
-    assert!(!view.is_empty());
     assert_eq!(view.as_bytes(), &[2, 3]);
 
-    let buf = view.into_inner();
-    assert_eq!(buf.len(), 4);
-    assert!(!buf.is_empty());
-    assert_eq!(buf.as_bytes(), &[2, 3, 4, 5]);
-
-    let view = buf.view(2);
     let buf = view.processed();
     assert_eq!(buf.len(), 2);
     assert!(!buf.is_empty());
     assert_eq!(buf.as_bytes(), &[4, 5]);
+
+    let view = buf.view(2);
+    let buf = view.processed();
+    assert_eq!(buf.len(), 0);
+    assert!(buf.is_empty());
+    assert_eq!(buf.as_bytes(), EMPTY);
 }
 
 #[test]
@@ -294,17 +292,14 @@ fn write_buffer_drops_writen_bytes() {
     let mut buf = Buffer::new();
     let bytes = &[1, 2, 3];
     add_bytes(&mut buf, bytes);
-    assert_eq!(buf.len(), 3);
     assert_eq!(buf.as_bytes(), bytes);
 
     let (buf_bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(buf_bytes, bytes);
-    assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), 3);
     assert_eq!(wbuf.as_bytes(), wbytes);
 
     drop(wbuf);
@@ -318,12 +313,10 @@ fn write_buffer_drops_writen_bytes_original_empty() {
 
     let (bytes, mut wbuf) = buf.split_write(10);
     assert_eq!(bytes, EMPTY);
-    assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
 
     let wbytes = &[4, 5, 6];
     wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), 3);
     assert_eq!(wbuf.as_bytes(), wbytes);
 
     drop(wbuf);
@@ -342,11 +335,9 @@ fn write_buffer_length() {
 
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, bytes);
-    assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
@@ -354,11 +345,9 @@ fn write_buffer_length() {
     buf.processed(100);
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, &bytes[100..]);
-    assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
@@ -366,104 +355,14 @@ fn write_buffer_length() {
     buf.processed(100);
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, EMPTY);
-    assert_eq!(wbuf.len(), 0);
     assert_eq!(wbuf.as_bytes(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), wbytes.len());
     assert_eq!(wbuf.as_bytes(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
 
     assert_eq!(buf.len(), 0);
-}
-
-#[test]
-fn write_buffer_processed() {
-    let mut buf = Buffer::new();
-    let bytes = &[1, 2, 3];
-    add_bytes(&mut buf, bytes);
-    assert_eq!(buf.len(), 3);
-    assert_eq!(buf.as_bytes(), bytes);
-
-    let (original_bytes, mut wbuf) = buf.split_write(3);
-    assert_eq!(original_bytes, bytes);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), EMPTY);
-    assert_eq!(wbuf.as_mut_bytes(), EMPTY);
-
-    let wbytes = &[4, 5, 6];
-    wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), 3);
-    assert_eq!(wbuf.as_bytes(), wbytes);
-    assert_eq!(wbuf.as_mut_bytes(), wbytes);
-
-    wbuf.processed(1);
-    assert_eq!(wbuf.len(), 2);
-    assert_eq!(wbuf.as_bytes(), &wbytes[1..]);
-    assert_eq!(wbuf.as_mut_bytes(), &wbytes[1..]);
-
-    wbuf.processed(1);
-    assert_eq!(wbuf.len(), 1);
-    assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
-    assert_eq!(wbuf.as_mut_bytes(), &wbytes[2..]);
-
-    assert_eq!(original_bytes, bytes);
-    drop(wbuf);
-    assert_eq!(buf.len(), 3);
-    assert_eq!(buf.as_bytes(), bytes);
-}
-
-#[test]
-fn write_buffer_processed_original_empty() {
-    let mut buf = Buffer::new();
-
-    let (original_bytes, mut wbuf) = buf.split_write(3);
-    assert_eq!(original_bytes, EMPTY);
-    assert_eq!(wbuf.len(), 0);
-    assert_eq!(wbuf.as_bytes(), EMPTY);
-
-    let wbytes = &[4, 5, 6];
-    wbuf.write_all(wbytes).unwrap();
-    assert_eq!(wbuf.len(), 3);
-    assert_eq!(wbuf.as_bytes(), wbytes);
-
-    wbuf.processed(1);
-    assert_eq!(wbuf.len(), 2);
-    assert_eq!(wbuf.as_bytes(), &wbytes[1..]);
-
-    wbuf.processed(1);
-    assert_eq!(wbuf.len(), 1);
-    assert_eq!(wbuf.as_bytes(), &wbytes[2..]);
-
-    assert_eq!(original_bytes, EMPTY);
-    drop(wbuf);
-    assert_eq!(buf.len(), 0);
-    assert_eq!(buf.as_bytes(), EMPTY);
-}
-
-#[test]
-#[should_panic(expected = "marking bytes as processed beyond read range")]
-fn marking_processed_write_buffer_beyond_read_range() {
-    let mut buf = Buffer::new();
-    let (original_bytes, mut wbuf) = buf.split_write(20);
-    assert_eq!(original_bytes, EMPTY);
-    wbuf.processed(1);
-}
-
-#[test]
-#[should_panic(expected = "marking bytes as processed beyond read range")]
-fn marking_processed_write_buffer_beyond_read_range_after_reset() {
-    let mut buf = Buffer::new();
-    let bytes = &[1, 2, 3];
-    add_bytes(&mut buf, bytes);
-
-    let (original_bytes, mut wbuf) = buf.split_write(10);
-    assert_eq!(original_bytes, bytes);
-    wbuf.write_all(&[4, 5, 6]).unwrap();
-    wbuf.processed(2); // Ok.
-
-    wbuf.processed(2); // Should panic.
 }
 
 fn poll_wait<Fut>(mut future: Pin<&mut Fut>) -> Fut::Output
