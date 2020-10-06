@@ -1,6 +1,6 @@
 # NOTE: note exporting the following two variables as they interfere with
 # incremental compilation (not setting the flag, e.g. outside of running Make
-# will cause recomplication).
+# will cause recompilation).
 RUSTFLAGS                ?= -C target-cpu=native
 MACOSX_DEPLOYMENT_TARGET ?= 10.15
 export GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
