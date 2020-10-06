@@ -395,19 +395,23 @@ pub mod dispatcher {
                     request, responder
                 );
                 let consensus = consensus::store_blob_actor as fn(_, _, _, _, _, _) -> _;
+                let remote = *remote;
+                let key = request.key.clone();
+                let args = (
+                    db_ref.clone(),
+                    peers.clone(),
+                    remote,
+                    request.key,
+                    responder,
+                );
                 let actor_ref = ctx.spawn(
-                    |err| {
-                        warn!("store blob consensus actor failed: {}", err);
+                    move |err| {
+                        warn!("store blob consensus actor failed: {}: remote_address=\"{}\", key=\"{}\"",
+                            err, remote, key);
                         SupervisorStrategy::Stop
                     },
                     consensus,
-                    (
-                        db_ref.clone(),
-                        peers.clone(),
-                        *remote,
-                        request.key,
-                        responder,
-                    ),
+                    args,
                     ActorOptions::default().mark_ready(),
                 );
                 // Checked above that we don't have duplicates.
@@ -520,19 +524,23 @@ pub mod dispatcher {
                     request, responder
                 );
                 let consensus = consensus::remove_blob_actor as fn(_, _, _, _, _, _) -> _;
+                let remote = *remote;
+                let key = request.key.clone();
+                let args = (
+                    db_ref.clone(),
+                    peers.clone(),
+                    remote,
+                    request.key,
+                    responder,
+                );
                 let actor_ref = ctx.spawn(
-                    |err| {
-                        warn!("remove blob consensus actor failed: {}", err);
+                    move |err| {
+                        warn!("remove blob consensus actor failed: {}: remote_address=\"{}\", key=\"{}\"",
+                            err, remote, key);
                         SupervisorStrategy::Stop
                     },
                     consensus,
-                    (
-                        db_ref.clone(),
-                        peers.clone(),
-                        *remote,
-                        request.key,
-                        responder,
-                    ),
+                    args,
                     ActorOptions::default().mark_ready(),
                 );
                 // Checked above that we don't have duplicates.
