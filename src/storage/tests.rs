@@ -631,7 +631,7 @@ mod data {
 
         assert_eq!(data.areas.len(), 1);
         let area = data.areas[0].area();
-        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(area.len(), DATA_PRE_ALLOC_BYTES);
         assert_eq!(area.mmap_offset, 0);
         assert_eq!(area.ref_count.load(Ordering::Relaxed), 1);
     }
@@ -646,7 +646,7 @@ mod data {
 
         assert_eq!(data.areas.len(), 1);
         let area = data.areas[0].area();
-        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(area.len(), DATA_PRE_ALLOC_BYTES);
         assert_eq!(area.mmap_offset, 0);
         assert_eq!(area.ref_count.load(Ordering::Relaxed), 1);
     }
@@ -664,7 +664,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let area = data.areas[0].area();
         assert_eq!(area.mmap_offset, 0);
-        assert_eq!(area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(area.len(), DATA_PRE_ALLOC_BYTES);
 
         for (i, entry) in test_entries().iter().enumerate() {
             let blob = data.slice(entry.offset(), entry.length() as usize).unwrap();
@@ -688,7 +688,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas[0].area();
         assert_eq!(mmap_area.mmap_offset, 0);
-        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area.len(), DATA_PRE_ALLOC_BYTES);
 
         // Adding a second blob should fit in the existing area.
         let (blob2, offset) = data.add_blob(DATA[1]).unwrap();
@@ -707,7 +707,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas[0].area();
         assert_eq!(mmap_area.mmap_offset, 0);
-        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area.len(), DATA_PRE_ALLOC_BYTES);
 
         drop(data);
         // Blobs must still be valid.
@@ -732,7 +732,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas[0].area();
         assert_eq!(mmap_area.mmap_offset, 0);
-        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area.len(), DATA_PRE_ALLOC_BYTES);
 
         // Force the are to grow.
         const LARGE_BLOB: &[u8] = &[5; DATA_PRE_ALLOC_BYTES];
@@ -752,7 +752,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas[0].area();
         assert_eq!(mmap_area.mmap_offset, 0);
-        assert_eq!(mmap_area.mmap_length, 3 * DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area.len(), 3 * DATA_PRE_ALLOC_BYTES);
 
         drop(data);
         // Blobs must still be valid.
@@ -765,7 +765,7 @@ mod data {
 
     fn create_dummy_area_after(areas: &[MmapAreaControl]) -> NonNull<libc::c_void> {
         let area = areas.last().unwrap().area();
-        let end_address = area.mmap_address.as_ptr() as usize + area.mmap_length;
+        let end_address = area.mmap_address.as_ptr() as usize + area.len();
         let want_dummy_address = if is_page_aligned(end_address) {
             end_address as *mut libc::c_void
         } else {
@@ -813,7 +813,7 @@ mod data {
         assert_eq!(data.areas.len(), 1);
         let mmap_area = data.areas[0].area();
         assert_eq!(mmap_area.mmap_offset, 0);
-        assert_eq!(mmap_area.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area.len(), DATA_PRE_ALLOC_BYTES);
 
         let dummy_address = create_dummy_area_after(&data.areas);
 
@@ -835,10 +835,10 @@ mod data {
         assert_eq!(data.areas.len(), 2);
         let mmap_area1 = data.areas[0].area();
         assert_eq!(mmap_area1.mmap_offset, 0);
-        assert_eq!(mmap_area1.mmap_length, DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area1.len(), DATA_PRE_ALLOC_BYTES);
         let mmap_area2 = data.areas[1].area();
         assert_eq!(mmap_area2.mmap_offset, DATA_PRE_ALLOC_BYTES as libc::off_t);
-        assert_eq!(mmap_area2.mmap_length, 2 * DATA_PRE_ALLOC_BYTES);
+        assert_eq!(mmap_area2.len(), 2 * DATA_PRE_ALLOC_BYTES);
 
         drop(data);
         // Blobs must still be valid.

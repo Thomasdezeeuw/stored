@@ -19,7 +19,6 @@
 // - For writing.
 // - For rpc with storage actor.
 
-use std::cmp::min;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, IoSlice, Write};
@@ -28,7 +27,7 @@ use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::SystemTime;
-use std::{fmt, ptr, str};
+use std::{fmt, str};
 
 use chrono::{DateTime, Datelike, Timelike, Utc};
 use futures_util::io::AsyncWriteExt;
@@ -379,12 +378,8 @@ impl Connection {
 
     /// Directly reads from the underlying socket, skipping the buffer and any
     /// async goodness.
-    fn raw_read(&mut self, bytes: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
-        use std::io::Read;
-        // Safety: this is UB, but the Heph and Mio implementations don't look
-        // at the bytes (source: Author of both).
-        self.stream
-            .read(unsafe { &mut *(bytes as *mut _ as *mut _) })
+    fn try_recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
+        self.stream.try_recv(buf)
     }
 }
 
@@ -752,38 +747,17 @@ async fn store_blob(
                 async move {
                     // First copy over all the contents of the blob in the
                     // buffer to the data file.
-                    // Safety:
-                    // `write_bytes`: we're ensuring that we return the correct
-                    //   number of bytes written.
-                    // `copy_nonoverlapping`: both the src and dst pointers are
-                    //   good. And we've ensured that the length is correct, not
-                    //   overwriting data we don't own or reading data we don't
-                    //   own.
-                    // `unwrap`: we've returned `Ok` ourselves.
-                    let mut written = unsafe {
-                        stream_blob
-                            .write_bytes(|bytes| {
-                                let len = min(conn.buf.len(), bytes.len());
-                                ptr::copy_nonoverlapping(
-                                    conn.buf.as_bytes().as_ptr(),
-                                    bytes.as_mut_ptr() as *mut _,
-                                    len,
-                                );
-                                conn.buf.processed(len);
-                                Ok(len)
-                            })
-                            .unwrap()
-                    };
+                    // Safety: we're ensuring that we return the correct number
+                    // of bytes written.
+                    let mut written =
+                        unsafe { stream_blob.write_bytes(|bytes| Ok(conn.buf.copy_to(bytes)))? };
 
                     // If the buffer didn't contain the entire blob we need to
                     // read more from the connection.
                     while written < blob_length {
-                        // TODO: put a max on the number of bytes we read at a
-                        // time? Not sure if OSes will complain, or just return
-                        // less bytes.
-                        // Safety: the call to read ensure that we've
+                        // Safety: the call to `try_recv` ensures that we've
                         // initialised to number of bytes we return.
-                        let res = unsafe { stream_blob.write_bytes(|bytes| conn.raw_read(bytes)) };
+                        let res = unsafe { stream_blob.write_bytes(|bytes| conn.try_recv(bytes)) };
                         match res {
                             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                             Ok(n) => written += n,
@@ -802,9 +776,8 @@ async fn store_blob(
                     Ok(stream_blob)
                 }
             };
-            let res = unsafe {
-                op::store_streaming_blob(ctx, db_ref, passport, peers, blob_length, write).await
-            };
+            let res =
+                op::store_streaming_blob(ctx, db_ref, passport, peers, blob_length, write).await;
             match res {
                 StreamResult::Ok(key) => Ok((ResponseKind::Stored(key), false)),
                 StreamResult::IoErr(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {

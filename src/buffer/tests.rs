@@ -1,6 +1,7 @@
 use std::future::Future;
 use std::io;
 use std::io::Write;
+use std::mem::MaybeUninit;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
@@ -8,7 +9,7 @@ use futures_io::AsyncRead;
 use futures_util::io::Cursor;
 use futures_util::task::noop_waker;
 
-use super::{Buffer, INITIAL_BUF_SIZE, MIN_SIZE_MOVE};
+use super::{Buffer, Read, INITIAL_BUF_SIZE, MIN_SIZE_MOVE};
 
 /// Minimum size of a buffer passed to calls to read.
 /// Note: no longer used in the implementation, but still in the tests below.
@@ -37,6 +38,61 @@ impl<'a> AsyncRead for Bytes<'a> {
             self.bytes = &self.bytes[1..];
             Poll::Ready(Ok(len))
         }
+    }
+}
+
+// TODO: replace with `AsyncRead` implementation above.
+impl<'a, 'b> Future for Read<'b, &mut Bytes<'a>, Buffer> {
+    type Output = io::Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
+        Pin::new(reader)
+            .poll_read(ctx, unsafe {
+                let bytes = buffer.available_bytes();
+                MaybeUninit::slice_as_mut_ptr(bytes).write_bytes(0, bytes.len());
+                // Safety: we just zeroed the bytes.
+                MaybeUninit::slice_assume_init_mut(bytes)
+            })
+            .map_ok(|bytes_read| {
+                // Safety: we just read into the buffer.
+                unsafe {
+                    buffer.read_bytes(bytes_read);
+                }
+                bytes_read
+            })
+    }
+}
+
+// TODO: replace with `AsyncRead` implementation above.
+impl<'b, T> Future for Read<'b, &mut Cursor<T>, Buffer>
+where
+    T: AsRef<[u8]> + Unpin,
+{
+    type Output = io::Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
+        Pin::new(reader)
+            .poll_read(ctx, unsafe {
+                let bytes = buffer.available_bytes();
+                MaybeUninit::slice_as_mut_ptr(bytes).write_bytes(0, bytes.len());
+                // Safety: we just zeroed the bytes.
+                MaybeUninit::slice_assume_init_mut(bytes)
+            })
+            .map_ok(|bytes_read| {
+                // Safety: we just read into the buffer.
+                unsafe {
+                    buffer.read_bytes(bytes_read);
+                }
+                bytes_read
+            })
     }
 }
 
@@ -93,6 +149,33 @@ fn buffer_read_n_from() {
     poll_wait(Pin::new(&mut buf.read_n_from(&mut reader, 5))).unwrap();
     assert_eq!(buf.as_bytes(), &[5, 6, 7, 8, 9, 10]);
     assert_eq!(buf.next_byte(), Some(5));
+}
+
+#[test]
+fn buffer_copy_to() {
+    let mut buf = Buffer::new();
+    let bytes = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    buf.data.extend(bytes);
+    assert_eq!(buf.as_bytes(), bytes);
+
+    // dst < buf.
+    let mut dst = [MaybeUninit::uninit(); 2];
+    assert_eq!(buf.copy_to(&mut dst), 2);
+    assert_eq!(
+        unsafe { MaybeUninit::slice_assume_init_ref(&dst) },
+        &bytes[..2]
+    );
+    // Empty dst.
+    let mut dst = [];
+    assert_eq!(buf.copy_to(&mut dst), 0);
+
+    // dst > buf.
+    let mut dst = [MaybeUninit::uninit(); 10];
+    assert_eq!(buf.copy_to(&mut dst), 8);
+    assert_eq!(
+        unsafe { MaybeUninit::slice_assume_init_ref(&dst[..8]) },
+        &bytes[2..]
+    );
 }
 
 #[test]

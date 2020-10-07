@@ -13,6 +13,7 @@
 //! string, defaulting to the raw bytes if the bytes are not a valid UTF-8
 //! string.
 
+use std::cmp::min;
 use std::future::Future;
 use std::io::{self, IoSlice, Write};
 use std::mem::MaybeUninit;
@@ -22,6 +23,9 @@ use std::task::{self, Poll};
 use std::{fmt, ptr, slice};
 
 use futures_io::AsyncRead;
+use heph::net::TcpStream;
+
+use crate::key::KeyCalculator;
 
 #[cfg(test)]
 mod tests;
@@ -91,22 +95,30 @@ impl Buffer {
         &self.data[self.processed..]
     }
 
-    /// Bytes available to read into.
-    fn available_bytes(&mut self) -> &mut [u8] {
-        // TODO: this should just return `&mut [MaybeUninit<u8>]`, once we can
-        // read into that.
-
-        // NOTE: also see `split`.
-        // Safety: `Vec` ensure the bytes are available, but there not
-        // intialised so returning `MaybeUninit<u8>` is valid.
-        let bytes: &mut [MaybeUninit<u8>] = unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
-            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
-        };
-
+    /// Copies all bytes currently in the buffer (up to `dst.len()` bytes) into
+    /// `dst`, and marks the bytes as processed. Returns the number of bytes
+    /// copied.
+    pub fn copy_to(&mut self, dst: &mut [MaybeUninit<u8>]) -> usize {
+        let len = min(self.len(), dst.len());
+        // Safety: both the src and dst pointers are good. And we've ensured
+        // that the length is correct, not overwriting data we don't own or
+        // reading data we don't own.
         unsafe {
-            MaybeUninit::slice_as_mut_ptr(bytes).write_bytes(0, bytes.len());
-            MaybeUninit::slice_assume_init_mut(bytes)
+            ptr::copy_nonoverlapping(self.as_bytes().as_ptr(), dst.as_mut_ptr().cast(), len);
+        }
+        self.processed(len);
+        len
+    }
+
+    /// Bytes available to read into.
+    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        // Safety: `Vec` ensures the pointer is correct for us. The pointer is
+        // at least valid for start + `Vec::capacity` bytes, a range we stay
+        // within.
+        unsafe {
+            // NOTE: keep this in check with `unused_bytes` in `split`.
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
+            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         }
     }
 
@@ -119,7 +131,8 @@ impl Buffer {
         // Safety: since the two slices don't overlap this is safe, also see
         // `slice::split_at_mut`.
         let unused_bytes = unsafe {
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()) as *mut _;
+            // NOTE: keep this in check with `available_bytes`.
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
             slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         };
         let used_bytes = &self.data[self.processed..];
@@ -303,6 +316,8 @@ pub struct Read<'b, R, B = Buffer> {
     reader: R,
 }
 
+/* TODO: add this back once `AsyncRead` gets a method for reading into
+ * uninitialised byte slices.
 impl<'b, R> Future for Read<'b, R, Buffer>
 where
     R: AsyncRead + Unpin,
@@ -323,6 +338,61 @@ where
                 }
                 bytes_read
             })
+    }
+}
+*/
+
+// TODO: replace with `AsyncRead` implementation above.
+impl<'b> Future for Read<'b, &mut TcpStream, Buffer> {
+    type Output = io::Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context) -> Poll<Self::Output> {
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
+        loop {
+            match reader.try_recv(buffer.available_bytes()) {
+                Ok(bytes_read) => {
+                    // Safety: we just read into the buffer.
+                    unsafe {
+                        buffer.read_bytes(bytes_read);
+                    }
+                    return Poll::Ready(Ok(bytes_read));
+                }
+                // Heph will schedule us once more bytes are available.
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Poll::Ready(Err(err)),
+            }
+        }
+    }
+}
+
+// TODO: replace with `AsyncRead` implementation above.
+impl<'b> Future for Read<'b, &mut KeyCalculator<&mut TcpStream>, Buffer> {
+    type Output = io::Result<usize>;
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context) -> Poll<Self::Output> {
+        let Read {
+            buffer,
+            ref mut reader,
+        } = &mut *self;
+        loop {
+            match reader.try_recv(buffer.available_bytes()) {
+                Ok(bytes_read) => {
+                    // Safety: we just read into the buffer.
+                    unsafe {
+                        buffer.read_bytes(bytes_read);
+                    }
+                    return Poll::Ready(Ok(bytes_read));
+                }
+                // Heph will schedule us once more bytes are available.
+                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
+                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(err) => return Poll::Ready(Err(err)),
+            }
+        }
     }
 }
 
@@ -411,7 +481,17 @@ impl<'b> Write for WriteBuffer<'b> {
     }
 
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.write(buf).map(|_| ())
+        self.write(buf).map(|n| {
+            debug_assert_eq!(buf.len(), n);
+            ()
+        })
+    }
+
+    fn write_all_vectored(&mut self, bufs: &mut [IoSlice<'_>]) -> io::Result<()> {
+        self.write_vectored(bufs).map(|n| {
+            debug_assert_eq!(bufs.iter().map(|b| b.len()).sum::<usize>(), n);
+            ()
+        })
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -432,6 +512,7 @@ struct TempBuffer<'b> {
     /// written.
     buf: &'b mut [MaybeUninit<u8>],
     /// Number of bytes written into `buf`.
+    /// Must always be larger then `self.processed`.
     length: usize,
     /// The number of bytes *we* already processed in `buf`.
     /// Must always be less then `self.length`.
@@ -454,8 +535,7 @@ impl<'b> TempBuffer<'b> {
     }
 
     fn as_mut_bytes(&mut self) -> &mut [u8] {
-        // Safety: `self.buf[..self.length]` bytes are initialised as per
-        // the comment on the field.
+        // Safety: See `TempBuffer::as_bytes`.
         unsafe { MaybeUninit::slice_assume_init_mut(&mut self.buf[self.processed..self.length]) }
     }
 
