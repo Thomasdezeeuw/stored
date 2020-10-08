@@ -16,7 +16,9 @@ use crate::db::{self, HealthCheck, HealthOk};
 use crate::passport::{Event, Passport, Uuid};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
-use crate::storage::{self, BlobEntry, Entries, Keys, UncommittedBlob};
+use crate::storage::{
+    self, BlobAlreadyStored, BlobEntry, Entries, Keys, StoreBlob, UncommittedBlob,
+};
 use crate::{timeout, Key};
 
 mod remove;
@@ -33,6 +35,8 @@ pub(crate) use store::add_blob;
 pub use store::{store_blob, store_streaming_blob, StreamResult};
 #[doc(inline)]
 pub use sync::{full_sync, peer_sync};
+
+pub(crate) use store::stream_add_blob;
 
 /// Maximum number of tries we will attempt to run the consensus algorithm.
 const MAX_CONSENSUS_TRIES: usize = 3;
@@ -146,6 +150,41 @@ where
         },
         Err(()) => {
             passport.mark(Event::FailedToRetrieveUncommittedBlob);
+            Err(())
+        }
+    }
+}
+
+/// Retrieve a uncommitted store blob query.
+///
+/// Returns an error if the database actor can't be accessed.
+pub(crate) async fn retrieve_store_blob_query<M, K>(
+    ctx: &mut actor::Context<M, K>,
+    db_ref: &mut ActorRef<db::Message>,
+    passport: &mut Passport,
+    key: Key,
+) -> Result<Result<Option<StoreBlob>, BlobAlreadyStored>, ()>
+where
+    K: RuntimeAccess,
+{
+    debug!(
+        "running retrieve uncommitted store query operation: request_id=\"{}\", key=\"{}\"",
+        passport.id(),
+        key
+    );
+    match db_rpc(ctx, db_ref, *passport.id(), key) {
+        Ok(rpc) => match rpc.await {
+            Ok(result) => {
+                passport.mark(Event::RetrievedStoreBlobQuery);
+                Ok(result)
+            }
+            Err(()) => {
+                passport.mark(Event::FailedToRetrieveStoreBlobQuery);
+                Err(())
+            }
+        },
+        Err(()) => {
+            passport.mark(Event::FailedToRetrieveStoreBlobQuery);
             Err(())
         }
     }

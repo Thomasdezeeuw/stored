@@ -762,6 +762,9 @@ async fn store_blob(
                             Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
                             Ok(n) => written += n,
                             Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                                // FIXME: put a timeout here, don't want to wait
+                                // for ever.
+
                                 // Heph will schedule us once there is more data
                                 // to read.
                                 wait_for_wakeup().await;

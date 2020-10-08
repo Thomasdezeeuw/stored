@@ -635,7 +635,7 @@ pub mod consensus {
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::convert::TryInto;
-    use std::io::IoSlice;
+    use std::io::{self, IoSlice};
     use std::net::SocketAddr;
     use std::slice;
     use std::time::{Duration, Instant, SystemTime};
@@ -654,7 +654,8 @@ pub mod consensus {
     use crate::error::Describe;
     use crate::net::tcp_connect_retry;
     use crate::op::{
-        abort_query, add_blob, commit_query, contains_blob, prep_remove_blob, Outcome,
+        abort_query, add_blob, commit_query, prep_remove_blob, retrieve_store_blob_query,
+        stream_add_blob, Outcome, StreamResult,
     };
     use crate::passport::{Passport, Uuid};
     use crate::peer::participant::RpcResponder;
@@ -662,8 +663,12 @@ pub mod consensus {
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
     };
     use crate::peer::{ConsensusVote, Peers, RequestId, COORDINATOR_MAGIC};
-    use crate::storage::{DateTime, Query, RemoveBlob, StoreBlob};
+    use crate::storage::{BlobAlreadyStored, DateTime, Query, RemoveBlob, StoreBlob, StreamBlob};
+    use crate::util::wait_for_wakeup;
     use crate::{timeout, Buffer, Key};
+
+    /// Minimum blob size to stream the blob.
+    const MIN_STREAM_BLOB_SIZE: u64 = 4 * 1024; // 4kB.
 
     /// Result of the consensus vote.
     #[derive(Debug)]
@@ -700,10 +705,13 @@ pub mod consensus {
             passport.id(), key, remote
         );
 
-        // Before we attempt to retrieve the blob we check if its already
-        // stored.
-        match contains_blob(&mut ctx, &mut db_ref, &mut passport, key.clone()).await {
-            Ok(true) => {
+        let prepare = prepare_store_blob(&mut ctx, &mut db_ref, &mut passport, key.clone(), remote);
+        let query = match prepare.await? {
+            Ok(query) => {
+                responder.respond(ConsensusVote::Commit(SystemTime::now()));
+                query
+            }
+            Err(PrepareError::BlobAlreadyStored) => {
                 info!(
                     "blob already stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
@@ -712,55 +720,7 @@ pub mod consensus {
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
             }
-            // Blob not stored so we can continue.
-            Ok(false) => {}
-            Err(()) => return Err(db_error()),
-        }
-
-        // TODO: look at the `UncommittedBlob`s in storage before retrieving it
-        // from the peer? This would improve performance in case we have a 2PC
-        // failure.
-        // TODO: reuse stream and buffer.
-        // TODO: stream large blob to a file directly? Preallocating disk space in
-        // the data file?
-        debug!(
-            "connecting to coordinator server: request_id=\"{}\", remote_address=\"{}\"",
-            passport.id(),
-            remote
-        );
-        // We use a low retry value and number of retries because we should
-        // already be connected to the peer, so we known it up and running.
-        let mut stream = tcp_connect_retry(&mut ctx, remote, Duration::from_millis(100), 3)
-            .await
-            .map_err(|err| err.describe("connecting to peer server"))?;
-        let mut buf = Buffer::new();
-
-        trace!("writing connection magic: request_id=\"{}\"", passport.id());
-        match Deadline::timeout(
-            &mut ctx,
-            timeout::PEER_WRITE,
-            stream.write_all(COORDINATOR_MAGIC),
-        )
-        .await
-        {
-            Ok(()) => {}
-            Err(err) => return Err(err.describe("writing connection magic")),
-        }
-
-        // TODO: for larger blob stream it directly to storage.
-
-        let read_blob = read_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &key);
-        let blob_len = match read_blob.await {
-            Ok(Some((blob_key, blob))) if key == blob_key => blob.len(),
-            Ok(Some((blob_key, ..))) => {
-                error!(
-                    "coordinator server responded with incorrect blob, voting to abort consensus: request_id=\"{}\", want_key=\"{}\", got_blob_key=\"{}\"",
-                    passport.id(), key, blob_key
-                );
-                responder.respond(ConsensusVote::Fail);
-                return Ok(());
-            }
-            Ok(None) => {
+            Err(PrepareError::FailedToRetrieveBlob) => {
                 error!(
                     "couldn't get blob from coordinator server, failing consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(), key
@@ -770,38 +730,17 @@ pub mod consensus {
                 responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
-            Err(err) => return Err(err),
-        };
-        // Don't need it anymore so we can drop it to cleanup resources.
-        drop(stream);
-
-        // Phase one: storing the blob, readying it to be added to the database.
-        let query = match add_blob(&mut ctx, &mut db_ref, &mut passport, &mut buf, blob_len).await {
-            Ok(Outcome::Continue(query)) => {
-                responder.respond(ConsensusVote::Commit(SystemTime::now()));
-                query
-            }
-            Ok(Outcome::Done(..)) => {
-                info!(
-                    "blob already stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
-                    passport.id(),
-                    key
+            Err(PrepareError::IncorrectKey) => {
+                error!(
+                    "coordinator server responded with incorrect blob, failing consensus: request_id=\"{}\", key=\"{}\"",
+                    passport.id(), key
                 );
-                responder.respond(ConsensusVote::Abort);
-                return Ok(());
-            }
-            Err(()) => {
-                warn!(
-                    "failed to add blob to storage, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
-                    passport.id(),
-                    key
-                );
-                responder.respond(ConsensusVote::Abort);
+                // As this shouldn't happen we don't vote to abort, but to fail
+                // it.
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
         };
-        // We checked the blob's key in the match statement after `read_blob`.
-        debug_assert_eq!(key, *query.key());
 
         // Phase two: commit or abort the query.
         let timer = Timer::timeout(&mut ctx, timeout::PEER_CONSENSUS);
@@ -878,44 +817,179 @@ pub mod consensus {
         }
     }
 
-    /// Read a blob (as returned by the [`coordinator::server`]) from `stream`.
-    async fn read_blob<'b, M, K>(
+    /// Error returned by [`prepare_store_blob`].
+    enum PrepareError {
+        BlobAlreadyStored,
+        FailedToRetrieveBlob,
+        IncorrectKey,
+    }
+
+    async fn prepare_store_blob<'b, M, K>(
+        ctx: &mut actor::Context<M, K>,
+        db_ref: &mut ActorRef<db::Message>,
+        passport: &mut Passport,
+        key: Key,
+        remote: SocketAddr,
+    ) -> crate::Result<Result<StoreBlob, PrepareError>>
+    where
+        K: RuntimeAccess,
+    {
+        match retrieve_store_blob_query(ctx, db_ref, passport, key.clone()).await {
+            // Already a query in progress, reuse that.
+            Ok(Ok(Some(query))) => return Ok(Ok(query)),
+            // No query in progress, so we can proceed.
+            Ok(Ok(None)) => {}
+            // Blob is already stored.
+            Ok(Err(BlobAlreadyStored)) => return Ok(Err(PrepareError::BlobAlreadyStored)),
+            // Database error.
+            Err(()) => return Err(db_error()),
+        }
+
+        // TODO: reuse stream and buffer.
+
+        let mut stream = peer_connect(ctx, passport, remote).await?;
+        let mut buf = Buffer::new();
+
+        let blob_length = match request_blob(ctx, &mut stream, passport, &mut buf, &key).await? {
+            Some(blob_length) => blob_length,
+            None => return Ok(Err(PrepareError::FailedToRetrieveBlob)),
+        };
+
+        match blob_length {
+            blob_length if blob_length <= MIN_STREAM_BLOB_SIZE => {
+                read_blob(ctx, &mut stream, passport, &mut buf, blob_length).await?;
+
+                // NOTE: `store_blob` will advance the buffer for use.
+                match add_blob(ctx, db_ref, passport, &mut buf, blob_length as usize).await {
+                    Ok(Outcome::Continue(query)) if *query.key() == key => Ok(Ok(query)),
+                    // Key of the blob we retrieve doesn't match.
+                    Ok(Outcome::Continue(_)) => Ok(Err(PrepareError::IncorrectKey)),
+                    // Blob is already stored.
+                    Ok(Outcome::Done(blob_key)) if blob_key == key => {
+                        Ok(Err(PrepareError::BlobAlreadyStored))
+                    }
+                    Ok(Outcome::Done(_)) => Ok(Err(PrepareError::IncorrectKey)),
+                    Err(()) => Err(db_error()),
+                }
+            }
+            blob_length => {
+                let write = move |mut stream_blob: Box<StreamBlob>| {
+                    async move {
+                        // First copy over all the contents of the blob in the
+                        // buffer to the data file.
+                        // Safety: we're ensuring that we return the correct number
+                        // of bytes written.
+                        let mut written =
+                            unsafe { stream_blob.write_bytes(|bytes| Ok(buf.copy_to(bytes)))? };
+
+                        // If the buffer didn't contain the entire blob we need to
+                        // read more from the connection.
+                        while (written as u64) < blob_length {
+                            // Safety: the call to `try_recv` ensures that we've
+                            // initialised to number of bytes we return.
+                            let res =
+                                unsafe { stream_blob.write_bytes(|bytes| stream.try_recv(bytes)) };
+                            match res {
+                                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+                                Ok(n) => written += n,
+                                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
+                                    // FIXME: put a timeout here, don't want to wait
+                                    // for ever.
+
+                                    // Heph will schedule us once there is more data
+                                    // to read.
+                                    wait_for_wakeup().await;
+                                    continue;
+                                }
+                                Err(err) => return Err(err),
+                            }
+                        }
+
+                        // If we reach this point we've written the entire blob so
+                        // we're done.
+                        Ok(stream_blob)
+                    }
+                };
+
+                match stream_add_blob(ctx, db_ref, passport, blob_length as usize, write).await {
+                    StreamResult::Ok(Outcome::Continue(query)) if *query.key() == key => {
+                        Ok(Ok(query))
+                    }
+                    // Key of the blob we retrieve doesn't match.
+                    StreamResult::Ok(Outcome::Continue(_)) => Ok(Err(PrepareError::IncorrectKey)),
+                    // Blob is already stored.
+                    StreamResult::Ok(Outcome::Done(blob_key)) if blob_key == key => {
+                        Ok(Err(PrepareError::BlobAlreadyStored))
+                    }
+                    StreamResult::Ok(Outcome::Done(_)) => Ok(Err(PrepareError::IncorrectKey)),
+                    StreamResult::IoErr(err) => Err(err.describe("streaming blob")),
+                    StreamResult::DbError => Err(db_error()),
+                }
+            }
+        }
+    }
+
+    /// Connect to peer at `remote` address.
+    async fn peer_connect<M, K>(
+        ctx: &mut actor::Context<M, K>,
+        passport: &mut Passport,
+        remote: SocketAddr,
+    ) -> crate::Result<TcpStream>
+    where
+        K: RuntimeAccess,
+    {
+        debug!(
+            "connecting to coordinator server: request_id=\"{}\", remote_address=\"{}\"",
+            passport.id(),
+            remote
+        );
+        // We use a low retry value and number of retries because we should
+        // already be connected to the peer, so we known it up and running.
+        let mut stream = tcp_connect_retry(ctx, remote, Duration::from_millis(100), 3)
+            .await
+            .map_err(|err| err.describe("connecting to peer server"))?;
+
+        trace!("writing connection magic: request_id=\"{}\"", passport.id());
+        let write = stream.write_all(COORDINATOR_MAGIC);
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, write).await {
+            Ok(()) => Ok(stream),
+            Err(err) => Err(err.describe("writing connection magic")),
+        }
+    }
+
+    /// Request blob from `stream`.
+    ///
+    /// Returns the length of the blob, or `None` if the blob is not found. If
+    /// the blob is found `buf` might contain part of it.
+    async fn request_blob<'b, M, K>(
         ctx: &mut actor::Context<M, K>,
         stream: &mut TcpStream,
         passport: &mut Passport,
-        buf: &'b mut Buffer,
-        request_key: &Key,
-    ) -> crate::Result<Option<(Key, &'b [u8])>>
+        buf: &mut Buffer,
+        key: &Key,
+    ) -> crate::Result<Option<u64>>
     where
         K: RuntimeAccess,
     {
         trace!(
             "requesting key from coordinator server: request_id=\"{}\", key=\"{}\"",
             passport.id(),
-            request_key
+            key
         );
-        debug_assert!(buf.is_empty());
 
         // Write the request for the key.
         let bufs = &mut [
             IoSlice::new(slice::from_ref(&REQUEST_BLOB)),
-            IoSlice::new(request_key.as_bytes()),
+            IoSlice::new(key.as_bytes()),
         ];
         match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs)).await {
             Ok(()) => {}
-            Err(err) => return Err(err.describe("writing request")),
+            Err(err) => return Err(err.describe("writing blob request")),
         }
 
-        // Don't want to include the length of the blob in the key calculation.
-        let mut calc = Key::calculator_skip(stream, METADATA_LEN);
-
         // Read at least the metadata of the blob.
-        let f = Deadline::timeout(
-            ctx,
-            timeout::PEER_READ,
-            buf.read_n_from(&mut calc, METADATA_LEN),
-        );
-        match f.await {
+        let write = buf.read_n_from(stream, METADATA_LEN);
+        match Deadline::timeout(ctx, timeout::PEER_READ, write).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("reading blob length")),
         }
@@ -929,7 +1003,7 @@ pub mod consensus {
             .try_into()
             .unwrap();
         let blob_length = u64::from_be_bytes(blob_length_bytes);
-        buf.processed(DATE_TIME_LEN + BLOB_LENGTH_LEN);
+        buf.processed(METADATA_LEN);
         trace!(
             "read blob length from coordinator server: request_id=\"{}\", blob_length={}",
             passport.id(),
@@ -939,28 +1013,39 @@ pub mod consensus {
         // NOTE: We allow invalid timestamps as uncommited blobs will have an
         // invalid timestamp.
         if timestamp.is_removed() || blob_length == u64::from_be_bytes(NO_BLOB) {
-            return Ok(None);
+            Ok(None)
+        } else {
+            Ok(Some(blob_length))
         }
+    }
 
+    /// Reads a blob from `stream` into `buf`.
+    async fn read_blob<M, K>(
+        ctx: &mut actor::Context<M, K>,
+        stream: &mut TcpStream,
+        passport: &mut Passport,
+        buf: &mut Buffer,
+        blob_length: u64,
+    ) -> crate::Result<()>
+    where
+        K: RuntimeAccess,
+    {
         if (buf.len() as u64) < blob_length {
             // Haven't read entire blob yet.
             let want_n = blob_length - buf.len() as u64;
-            let read_n = buf.read_n_from(&mut calc, want_n as usize);
+            let read_n = buf.read_n_from(stream, want_n as usize);
             match Deadline::timeout(ctx, timeout::peer_read(want_n), read_n).await {
                 Ok(()) => {}
                 Err(err) => return Err(err.describe("reading blob")),
             }
         }
 
-        let key = calc.finish();
         trace!(
-            "read blob from coordinator server: request_id=\"{}\", key=\"{}\", blob_length={}",
+            "read blob from coordinator server: request_id=\"{}\", blob_length={}",
             passport.id(),
-            key,
             blob_length
         );
-        // Safety: just read `blob_length` bytes, so this won't panic.
-        Ok(Some((key, &buf.as_bytes()[..blob_length as usize])))
+        Ok(())
     }
 
     /// Actor that runs the consensus algorithm for removing a blob.

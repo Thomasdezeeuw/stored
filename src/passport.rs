@@ -358,7 +358,10 @@ events!(
     FailedToAbortRemovingBlob => "failed to abort remove blob query",
     // Retrieve uncommitted blob.
     RetrievedUncommittedBlob => "retrieved uncommitted blob",
-    FailedToRetrieveUncommittedBlob => "retrieved uncommitted blob",
+    FailedToRetrieveUncommittedBlob => "failed to retrieve uncommitted blob",
+    // Retrieve uncommitted blob.
+    RetrievedStoreBlobQuery => "retrieved store blob query",
+    FailedToRetrieveStoreBlobQuery => "failed to retrieve store blob query",
     // Retrieve keys.
     RetrievedKeys => "retrieved keys",
     FailedToRetrieveKeys => "failed to retrieve keys",

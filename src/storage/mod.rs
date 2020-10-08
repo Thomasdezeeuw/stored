@@ -495,6 +495,30 @@ impl Storage {
         }
     }
 
+    /// Attempt to retrieve an uncommitted [`StoreBlob`] query for the blob with
+    /// `key`.
+    ///
+    /// Returns `Err(())` if the blob is already stored (*not removed*),
+    /// `Ok(Some(query))` if a uncommitted query is found and `Ok(None)` if no
+    /// query is found.
+    pub fn get_store_blob_query(
+        &mut self,
+        key: Key,
+    ) -> Result<Option<StoreBlob>, BlobAlreadyStored> {
+        match self.blobs.get(&key) {
+            // Blob is already stored.
+            Some((_, BlobEntry::Stored(..))) => Err(BlobAlreadyStored),
+            // Blob is removed or never stored.
+            Some((_, BlobEntry::Removed(..))) | None => {
+                Ok(self.uncommitted.get_mut(&key).map(|(count, _)| {
+                    // We can reuse the same query.
+                    *count += 1;
+                    StoreBlob { key }
+                }))
+            }
+        }
+    }
+
     /// Commit to `query`.
     pub fn commit<Q>(&mut self, query: Q, timestamp: SystemTime) -> io::Result<SystemTime>
     where
@@ -934,6 +958,11 @@ impl Query for RemoveBlob {
         Ok(())
     }
 }
+
+/// Error returned by [`Storage::get_store_blob_query`] if the blob is already
+/// stored.
+#[derive(Copy, Clone, Debug)]
+pub struct BlobAlreadyStored;
 
 /// Handle for a data file.
 #[derive(Debug)]

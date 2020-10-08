@@ -23,8 +23,8 @@ use log::{debug, error, info, trace, warn};
 use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
-    AddResult, BlobEntry, Entries, Keys, RemoveBlob, RemoveResult, Storage, StoreBlob, StreamBlob,
-    UncommittedBlob,
+    AddResult, BlobAlreadyStored, BlobEntry, Entries, Keys, RemoveBlob, RemoveResult, Storage,
+    StoreBlob, StreamBlob, UncommittedBlob,
 };
 use crate::Key;
 
@@ -178,6 +178,14 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
                     warn!("db actor failed to send response to actor: {}", err);
                 }
             }
+            Message::GetStoreBlobQuery(RpcMessage { request, response }) => {
+                let key = request;
+                debug!("retrieving uncommitted store blob query: key=\"{}\"", key);
+                let result = storage.get_store_blob_query(key);
+                if let Err(err) = response.respond(result) {
+                    warn!("db actor failed to send response to actor: {}", err);
+                }
+            }
             Message::GetKeys(RpcMessage { response, .. }) => {
                 debug!("retrieving storage keys");
                 let result = storage
@@ -314,6 +322,14 @@ pub enum Message {
     ///
     /// [`GetBlob`]: Message::GetBlob
     GetUncommittedBlob(RpcMessage<Key, Result<UncommittedBlob, Option<BlobEntry>>>),
+    /// Get an uncommitted [`StoreBlob`] query from storage.
+    ///
+    /// Request is the key of the blob for the query,
+    ///
+    /// Responds with `Err(())` if the blob is already stored (*not removed*),
+    /// `Ok(Some(query))` if a uncommitted query is found and `Ok(None)` if no
+    /// query is found.
+    GetStoreBlobQuery(RpcMessage<Key, Result<Option<StoreBlob>, BlobAlreadyStored>>),
 
     /// Get the keys currently stored in the database. Used by the
     /// synchronisation process.
@@ -385,6 +401,7 @@ from_message!(Message::AddStreamedBlob(Box<StreamBlob>) -> AddBlobResponse);
 from_message!(Message::GetBlob(Key) -> Option<BlobEntry>);
 from_message!(Message::ContainsBlob(Key) -> bool);
 from_message!(Message::GetUncommittedBlob(Key) -> Result<UncommittedBlob, Option<BlobEntry>>);
+from_message!(Message::GetStoreBlobQuery(Key) -> Result<Option<StoreBlob>, BlobAlreadyStored>);
 from_message!(Message::GetKeys(()) -> Keys);
 from_message!(Message::GetEntries(()) -> Entries);
 from_message!(Message::SyncStoredBlob(BufView, SystemTime) -> BufView);
