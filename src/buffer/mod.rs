@@ -494,8 +494,32 @@ impl<'b> Write for WriteBuffer<'b> {
         })
     }
 
+    fn is_write_vectored(&self) -> bool {
+        true
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> io::Result<()> {
+        // NOTE: writing never returns an error (it can only panic), so the
+        // error return is irrelevant.
+        fmt::Write::write_fmt(self, args).map_err(|_: fmt::Error| io::ErrorKind::Other.into())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl<'b> fmt::Write for WriteBuffer<'b> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.write_all(s.as_bytes()).map_err(|_| fmt::Error)
+    }
+
+    fn write_fmt(&mut self, args: fmt::Arguments<'_>) -> fmt::Result {
+        if let Some(s) = args.as_str() {
+            self.write_str(s)
+        } else {
+            fmt::write(self, args)
+        }
     }
 }
 
