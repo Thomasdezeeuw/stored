@@ -414,7 +414,6 @@ pub mod relay {
     msg_types!(ShareCommitmentRemoved(Key, SystemTime));
 
     /// Start a participant connection to `remote` address.
-    // TODO: move this to a `Future` in heph::net::TcpStream::connect.
     async fn connect_to_participant(
         ctx: &mut actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,

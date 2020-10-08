@@ -96,12 +96,13 @@ fn start_listener(
 ) -> crate::Result<()> {
     debug!("starting peer listener: address=\"{}\"", address);
 
+    // Peer interaction blocks other peers so give them a high priority.
+    let options = ActorOptions::default().with_priority(Priority::HIGH);
     let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
-    let server_actor = tcp::Server::setup(address, NoSupervisor, switcher, ActorOptions::default())
+    let server_actor = tcp::Server::setup(address, NoSupervisor, switcher, options.clone())
         .map_err(|err| err.describe("creating peer listener"))?;
     let supervisor = ListenerSupervisor::new(());
-    let options = ActorOptions::default().with_priority(Priority::HIGH);
     let server_ref = runtime
         .try_spawn(supervisor, server_actor, (), options)
         .map_err(|err| err.describe("spawning peer server"))?;

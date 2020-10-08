@@ -952,9 +952,21 @@ pub mod consensus {
         trace!("writing connection magic: request_id=\"{}\"", passport.id());
         let write = stream.write_all(COORDINATOR_MAGIC);
         match Deadline::timeout(ctx, timeout::PEER_WRITE, write).await {
-            Ok(()) => Ok(stream),
-            Err(err) => Err(err.describe("writing connection magic")),
+            Ok(()) => {}
+            Err(err) => return Err(err.describe("writing connection magic")),
         }
+
+        // We only send small requests.
+        if let Err(err) = stream.set_nodelay(true) {
+            warn!(
+                "failed to set no delay, continuing: {}: request_id=\"{}\", remote_address=\"{}\"",
+                err,
+                passport.id(),
+                remote
+            );
+        }
+
+        Ok(stream)
     }
 
     /// Request blob from `stream`.
