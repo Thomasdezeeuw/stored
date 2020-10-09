@@ -371,13 +371,13 @@ pub mod dispatcher {
                 let consensus_id = request.consensus_id;
                 if let Some(actor_ref) = running.remove(&consensus_id) {
                     warn!(
-                        "received conflicting consensus ids, stopping both: consensus_id={}",
+                        "received conflicting consensus ids, failing both: consensus_id={}",
                         consensus_id
                     );
                     let msg = VoteResult {
                         request_id: request.id,
                         key: request.key, // NOTE: this is the wrong key.
-                        result: ConsensusVote::Abort,
+                        result: ConsensusVote::Fail,
                     };
                     // If we fail to send the actor already stopped, so that's
                     // fine.
@@ -500,13 +500,13 @@ pub mod dispatcher {
                 let consensus_id = request.consensus_id;
                 if let Some(actor_ref) = running.get(&consensus_id) {
                     warn!(
-                        "received conflicting consensus ids, stopping both: consensus_id={}",
+                        "received conflicting consensus ids, failing both: consensus_id={}",
                         consensus_id
                     );
                     let msg = VoteResult {
                         request_id: request.id,
                         key: request.key, // NOTE: this is the wrong key.
-                        result: ConsensusVote::Abort,
+                        result: ConsensusVote::Fail,
                     };
                     // If we fail to send the actor already stopped, so that's
                     // fine.
@@ -789,7 +789,7 @@ pub mod consensus {
                 }
             }
             Err(()) => {
-                responder.respond(ConsensusVote::Abort);
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
         };
@@ -1098,11 +1098,11 @@ pub mod consensus {
             }
             Err(()) => {
                 warn!(
-                    "failed to prepare storage to remove blob, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to prepare storage to remove blob, failing consensus: request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );
-                responder.respond(ConsensusVote::Abort);
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
         };
@@ -1153,7 +1153,7 @@ pub mod consensus {
                 }
             }
             Err(()) => {
-                responder.respond(ConsensusVote::Abort);
+                responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
         };
