@@ -14,7 +14,7 @@ use heph::actor::context::{ThreadLocal, ThreadSafe};
 use heph::actor::messages::Start;
 use heph::actor::{self, NewActor};
 use heph::actor_ref::{ActorGroup, ActorRef, NoResponse, Rpc, RpcMessage, SendError};
-use heph::net::tcp;
+use heph::net::TcpServer;
 use heph::rt::options::{ActorOptions, Priority};
 use heph::supervisor::NoSupervisor;
 use heph::timer::Timer;
@@ -100,7 +100,7 @@ fn start_listener(
     let options = ActorOptions::default().with_priority(Priority::HIGH);
     let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
         .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
-    let server_actor = tcp::Server::setup(address, NoSupervisor, switcher, options.clone())
+    let server_actor = TcpServer::setup(address, NoSupervisor, switcher, options.clone())
         .map_err(|err| err.describe("creating peer listener"))?;
     let supervisor = ListenerSupervisor::new(());
     let server_ref = runtime
@@ -756,6 +756,7 @@ impl<Res> Future for PeerRpc<Res> {
         if has_pending && !self.timer.has_passed() {
             return Poll::Pending;
         } else if has_pending {
+            // FIXME: add more context.
             warn!("peer RPC timed out: failed_peers={}", self.timeout_peers());
         }
 

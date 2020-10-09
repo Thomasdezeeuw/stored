@@ -35,7 +35,8 @@ use heph::actor::context::ThreadLocal;
 use heph::actor::messages::Start;
 use heph::actor_ref::ActorGroup;
 use heph::log::request;
-use heph::net::tcp::{self, ServerMessage, TcpStream};
+use heph::net::tcp::server;
+use heph::net::{TcpServer, TcpStream};
 use heph::rt::options::{ActorOptions, Priority};
 use heph::supervisor::NoSupervisor;
 use heph::timer::{Deadline, DeadlinePassed};
@@ -71,8 +72,7 @@ pub fn setup(
     let p = peers.clone(); // Moved into `http_actor`.
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), p.clone()));
-    let http_listener =
-        tcp::Server::setup(address, supervisor, http_actor, ActorOptions::default())?;
+    let http_listener = TcpServer::setup(address, supervisor, http_actor, ActorOptions::default())?;
     // The returned closure is copied for each worker thread started, but we
     // only want to log that we start the HTTP listener once.
     let log_once = Arc::new(Once::new());
@@ -99,7 +99,7 @@ pub fn setup(
 fn spawn_listener<S, NA>(
     runtime: &mut RuntimeRef,
     log_once: &Once,
-    http_listener: tcp::ServerSetup<S, NA>,
+    http_listener: server::Setup<S, NA>,
     address: SocketAddr,
 ) -> io::Result<()>
 where
@@ -144,11 +144,11 @@ pub struct ServerSupervisor;
 
 impl<L, A> Supervisor<L> for ServerSupervisor
 where
-    L: NewActor<Message = ServerMessage, Argument = (), Actor = A, Error = io::Error>,
-    A: Actor<Error = tcp::ServerError<!>>,
+    L: NewActor<Message = server::Message, Argument = (), Actor = A, Error = io::Error>,
+    A: Actor<Error = server::Error<!>>,
 {
-    fn decide(&mut self, err: tcp::ServerError<!>) -> SupervisorStrategy<()> {
-        use tcp::ServerError::*;
+    fn decide(&mut self, err: server::Error<!>) -> SupervisorStrategy<()> {
+        use server::Error::*;
         match err {
             Accept(err) => {
                 error!("error accepting new connection: {}", err);
