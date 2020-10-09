@@ -702,7 +702,7 @@ impl StreamBlob {
     ///
     /// [`bytes_left`]: StreamBlob::bytes_left
     pub fn finish(self, storage: &mut Storage) -> AddResult {
-        assert!(self.bytes_left() == 0);
+        assert!(self.bytes_left() == 0, "failed to stream entire blob");
         let StreamBlob {
             slice,
             file_offset,
@@ -715,25 +715,34 @@ impl StreamBlob {
         if storage.contains(&key) {
             AddResult::AlreadyStored(key)
         } else {
-            match slice.start_sync() {
-                Ok(()) => {
-                    let entry = storage.uncommitted.entry(key.clone());
-                    entry.or_insert_with(|| {
-                        let uncommitted_blob = UncommittedBlob {
-                            // Safety: we've (well the user) written the bytes
-                            // previously, as checked by the assertion at the
-                            // top of this function. And the `mmap` slice is
-                            // created using `PROT_READ`.
-                            mmap_slice: unsafe { slice.assume_init().immutable() },
-                            offset: file_offset,
-                        };
-                        (1, uncommitted_blob)
-                    });
+            match storage.uncommitted.entry(key.clone()) {
+                hash_map::Entry::Occupied(mut entry) => {
+                    // We can reuse the same query.
+                    let (count, _) = entry.get_mut();
+                    *count += 1;
 
-                    AddResult::Ok(StoreBlob { key })
+                    // TODO: clean now unused bytes we just streamed to disk.
                 }
-                Err(err) => AddResult::Err(err),
+                hash_map::Entry::Vacant(entry) => {
+                    // Asynchronously start syncing the blob to disk now we know
+                    // we're using it.
+                    if let Err(err) = slice.start_sync() {
+                        return AddResult::Err(err);
+                    }
+
+                    let uncommitted_blob = UncommittedBlob {
+                        // Safety: we've (well the user) written the bytes
+                        // previously, as checked by the assertion at the
+                        // top of this function. And the `mmap` slice is
+                        // created using `PROT_READ`.
+                        mmap_slice: unsafe { slice.assume_init().immutable() },
+                        offset: file_offset,
+                    };
+                    entry.insert((1, uncommitted_blob));
+                }
             }
+
+            AddResult::Ok(StoreBlob { key })
         }
     }
 }
