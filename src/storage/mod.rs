@@ -963,7 +963,10 @@ impl Query for RemoveBlob {
                     })
             }
         } else {
-            unreachable!("trying to commit to removing a blob that was never stored");
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "trying to commit to removing a blob that was never stored",
+            ));
         };
         storage.length -= 1;
         res
