@@ -848,7 +848,15 @@ impl Query for StoreBlob {
             Some((_, uncommitted_blob)) => uncommitted_blob,
             None => match storage.lookup(&self.key) {
                 Some(BlobEntry::Stored(blob)) => return Ok(blob.created_at()),
-                _ => unreachable!("committing StoreBlob without preparing it"),
+                _ => {
+                    // This used to be an `unreachable!` statement, however then
+                    // this was hit in production (caused by a bug), since than
+                    // this shouldn't panic anymore.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "committing `StoreBlob` query without preparing it",
+                    ));
+                }
             },
         };
 
