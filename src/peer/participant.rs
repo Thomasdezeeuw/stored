@@ -233,7 +233,7 @@ pub mod dispatcher {
             // TODO: put `Deserializer` outside the loop.
             // We use the `StreamDeserializer` here because we need the
             // `byte_offset` below.
-            let mut iter = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter();
+            let mut iter = serde_json::Deserializer::from_slice(buf.as_slice()).into_iter();
             match iter.next() {
                 Some(Ok(address)) => {
                     let bytes_processed = iter.byte_offset();
@@ -274,7 +274,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(addresses.len() * (45 + 2 + 1) + 2).1;
         serde_json::to_writer(&mut wbuf, &addresses)
             .map_err(|err| io::Error::from(err).describe("serializing peers addresses"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing known peers")),
         }
@@ -291,7 +291,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(MAX_RES_SIZE).1;
         serde_json::to_writer(&mut wbuf, &response)
             .map_err(|err| io::Error::from(err).describe("serializing response"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing response")),
         }
@@ -310,14 +310,14 @@ pub mod dispatcher {
         peers: &Peers,
         running: &mut HashMap<ConsensusId, ActorRef<VoteResult>, FxBuildHasher>,
     ) -> crate::Result<bool> {
-        if buf.as_bytes() == EXIT_COORDINATOR {
+        if buf.as_slice() == EXIT_COORDINATOR {
             // Participant wants to close the connection.
             buf.processed(EXIT_COORDINATOR.len());
             return Ok(true);
         }
 
         // TODO: reuse the `Deserializer`, it allocates scratch memory.
-        let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Request>();
+        let mut de = serde_json::Deserializer::from_slice(buf.as_slice()).into_iter::<Request>();
 
         while let Some(result) = de.next() {
             match result {
@@ -992,9 +992,9 @@ pub mod consensus {
         // Safety: we just read enough bytes, so the marking processed and
         // indexing won't panic.
         let timestamp =
-            DateTime::from_bytes(&buf.as_bytes()[..DATE_TIME_LEN]).unwrap_or(DateTime::INVALID);
+            DateTime::from_bytes(&buf.as_slice()[..DATE_TIME_LEN]).unwrap_or(DateTime::INVALID);
 
-        let blob_length_bytes = buf.as_bytes()[DATE_TIME_LEN..DATE_TIME_LEN + BLOB_LENGTH_LEN]
+        let blob_length_bytes = buf.as_slice()[DATE_TIME_LEN..DATE_TIME_LEN + BLOB_LENGTH_LEN]
             .try_into()
             .unwrap();
         let blob_length = u64::from_be_bytes(blob_length_bytes);

@@ -543,7 +543,7 @@ where
         }
     }
 
-    let bytes = buf.as_bytes();
+    let bytes = buf.as_slice();
     let size_bytes = bytes[0..KEY_SET_SIZE_LEN].try_into().unwrap();
     let size = u64::from_be_bytes(size_bytes) as usize;
     buf.processed(KEY_SET_SIZE_LEN);
@@ -562,7 +562,7 @@ where
         }
 
         // Safety: we've checked the length above, so this slicing won't panic.
-        let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
+        let key = Key::from_bytes(&buf.as_slice()[..Key::LENGTH]);
         known_keys.get_or_insert_owned(key);
         buf.processed(Key::LENGTH);
     }
@@ -603,7 +603,7 @@ where
                 Err(err) => return Err(err.describe("reading number of keys")),
             }
         }
-        let bytes = buf.as_bytes();
+        let bytes = buf.as_slice();
         // Safety: checked the length above, so this won't panic.
         let size_bytes = bytes[0..KEY_SET_SIZE_LEN].try_into().unwrap();
         let size = u64::from_be_bytes(size_bytes) as usize;
@@ -627,7 +627,7 @@ where
             }
 
             // Safety: we've checked the length above, so this slicing won't panic.
-            let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]);
+            let key = Key::from_bytes(&buf.as_slice()[..Key::LENGTH]);
             known_keys.get_or_insert_owned(key);
             buf.processed(Key::LENGTH);
         }
@@ -755,7 +755,7 @@ where
 
             // Safety: checked above if we read enough bytes so indexing won't
             // panic.
-            let bytes = buf.as_bytes();
+            let bytes = buf.as_slice();
             let timestamp =
                 DateTime::from_bytes(&bytes[0..DATE_TIME_LEN]).unwrap_or(DateTime::INVALID);
             let blob_length_bytes = bytes[DATE_TIME_LEN..DATE_TIME_LEN + BLOB_LENGTH_LEN]

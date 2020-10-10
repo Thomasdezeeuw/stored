@@ -104,7 +104,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
             Message::AddBlob(RpcMessage { request, response }) => {
                 let view = request;
                 use AddResult::*;
-                let result = match storage.add_blob(view.as_bytes()) {
+                let result = match storage.add_blob(view.as_slice()) {
                     Ok(query) => (AddBlobResponse::Query(query), view),
                     AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), view),
                     Err(err) => return Result::Err(err.describe("adding a blob")),
@@ -207,7 +207,7 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
             Message::SyncStoredBlob(RpcMessage { request, response }) => {
                 let (view, created_at) = request;
                 storage
-                    .store_blob(view.as_bytes(), created_at)
+                    .store_blob(view.as_slice(), created_at)
                     .map_err(|err| err.describe("syncing stored blob"))?;
                 if let Err(err) = response.respond(view) {
                     warn!("db actor failed to send response to actor: {}", err);

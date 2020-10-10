@@ -211,7 +211,7 @@ async fn retrieve_blob<M>(
     }
 
     // SAFETY: checked length above, so indexing is safe.
-    let key = Key::from_bytes(&buf.as_bytes()[..Key::LENGTH]).to_owned();
+    let key = Key::from_bytes(&buf.as_slice()[..Key::LENGTH]).to_owned();
     buf.processed(Key::LENGTH);
     debug!(
         "retrieving blob for peer: request_id=\"{}\", key=\"{}\"",
@@ -306,7 +306,7 @@ async fn retrieve_keys<M>(
         }
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes()))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
@@ -332,7 +332,7 @@ async fn retrieve_keys_since<M>(
             Err(err) => return Err(err.describe("reading date since to retrieve keys")),
         }
     }
-    let since = DateTime::from_bytes(buf.as_bytes()).unwrap_or(DateTime::INVALID);
+    let since = DateTime::from_bytes(buf.as_slice()).unwrap_or(DateTime::INVALID);
     buf.processed(DATE_TIME_LEN);
     if since.is_invalid() {
         return Err(io::Error::from(io::ErrorKind::InvalidInput)
@@ -390,7 +390,7 @@ async fn retrieve_keys_since<M>(
         wbuf.as_mut_bytes()[0..KEY_SET_SIZE_LEN].copy_from_slice(&u64::to_be_bytes(length));
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes()))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
@@ -419,7 +419,7 @@ async fn store_blob<M>(
     // Read the key, timestamp and blob length from the buffer.
     // Safety: ensured above that we read enough bytes so indexing and
     // `split_at` won't panic.
-    let bytes = buf.as_bytes();
+    let bytes = buf.as_slice();
     // Key.
     let (key_bytes, bytes) = bytes.split_at(Key::LENGTH);
     let key = Key::from_bytes(key_bytes).to_owned();

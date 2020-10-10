@@ -320,7 +320,7 @@ impl Connection {
                     request.reset();
                 }
 
-                match request.parse(self.buf.as_bytes()) {
+                match request.parse(self.buf.as_slice()) {
                     Ok(httparse::Status::Complete(bytes_read)) => {
                         self.buf.processed(bytes_read);
                         request.passport.mark(Event::ParsedHttpRequest);
@@ -362,7 +362,7 @@ impl Connection {
         response.write_headers(&mut write_buf, passport.id());
 
         let bufs = &mut [
-            IoSlice::new(write_buf.as_bytes()),
+            IoSlice::new(write_buf.as_slice()),
             IoSlice::new(response.body()),
         ];
         // TODO: add a timeout to this.

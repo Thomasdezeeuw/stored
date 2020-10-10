@@ -453,7 +453,7 @@ pub mod relay {
             "coordinator relay writing setup to peer participant: remote_address=\"{}\"",
             remote,
         );
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_bytes())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
             Ok(()) => {
                 buf.reset();
                 Ok(stream)
@@ -485,7 +485,7 @@ pub mod relay {
             // TODO: reuse `Deserializer` in relay actor, would require us to
             // have access to the `R`eader in the type.
             let mut iter =
-                serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Vec<SocketAddr>>();
+                serde_json::Deserializer::from_slice(buf.as_slice()).into_iter::<Vec<SocketAddr>>();
             // This is a bit weird, using an iterator for a single item. But the
             // `StreamDeserializer` keeps track of the number of bytes processed,
             // which we need to advance the buffer.
@@ -575,7 +575,7 @@ pub mod relay {
         );
         serde_json::to_writer(&mut wbuf, &request)
             .map_err(|err| io::Error::from(err).describe("serializing request"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&wbuf.as_bytes())).await
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&wbuf.as_slice())).await
         {
             Ok(()) => {
                 if let Some(response) = response {
@@ -596,13 +596,13 @@ pub mod relay {
         responses: &mut HashMap<RequestId, RpcResponder, FxBuildHasher>,
         buf: &mut Buffer,
     ) -> crate::Result<bool> {
-        if buf.as_bytes() == EXIT_PARTICIPANT {
+        if buf.as_slice() == EXIT_PARTICIPANT {
             // Participant wants to close the connection.
             buf.processed(EXIT_PARTICIPANT.len());
             return Ok(true);
         }
 
-        let mut de = serde_json::Deserializer::from_slice(buf.as_bytes()).into_iter::<Response>();
+        let mut de = serde_json::Deserializer::from_slice(buf.as_slice()).into_iter::<Response>();
 
         loop {
             match de.next() {

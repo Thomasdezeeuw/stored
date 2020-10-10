@@ -874,7 +874,7 @@ pub mod switcher {
             }
         }
 
-        match &buf.as_bytes()[..MAGIC_LENGTH] {
+        match &buf.as_slice()[..MAGIC_LENGTH] {
             COORDINATOR_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
                 server::run_actor(ctx, stream, buf, db_ref, remote).await;

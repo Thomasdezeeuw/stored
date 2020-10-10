@@ -84,9 +84,7 @@ impl Buffer {
     }
 
     /// Returns the unprocessed, read bytes.
-    // FIXME: this name overlaps with Bytes::as_bytes. Replace with
-    // `AsRef::as_ref`.
-    pub fn as_bytes(&self) -> &[u8] {
+    pub fn as_slice(&self) -> &[u8] {
         // NOTE: also see `split`.
         &self.data[self.processed..]
     }
@@ -103,7 +101,7 @@ impl Buffer {
         // Safety: both the src and dst pointers are good. And we've ensured
         // that the length is correct, not overwriting data we don't own or
         // reading data we don't own.
-        unsafe { ptr::copy_nonoverlapping(self.as_ref().as_ptr(), dst.as_mut_ptr().cast(), len) }
+        unsafe { ptr::copy_nonoverlapping(self.as_slice().as_ptr(), dst.as_mut_ptr().cast(), len) }
         self.processed(len);
         // Safety: just copied the bytes above.
         unsafe { buf.update_length(len) }
@@ -229,13 +227,6 @@ impl Buffer {
     }
 }
 
-impl AsRef<[u8]> for Buffer {
-    fn as_ref(&self) -> &[u8] {
-        // NOTE: also see `split`.
-        &self.data[self.processed..]
-    }
-}
-
 impl Bytes for Buffer {
     fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
         self.available_bytes()
@@ -249,12 +240,13 @@ impl Bytes for Buffer {
 
 impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.as_slice();
         if f.alternate() {
-            if let Ok(string) = from_utf8(self.as_bytes()) {
+            if let Ok(string) = from_utf8(bytes) {
                 return f.write_str(string);
             }
         }
-        self.as_bytes().fmt(f)
+        bytes.fmt(f)
     }
 }
 
@@ -271,8 +263,8 @@ impl BufView {
     }
 
     /// Returns the bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        &self.buf.as_bytes()[..self.length]
+    pub fn as_slice(&self) -> &[u8] {
+        &self.buf.as_slice()[..self.length]
     }
 
     /// Marks the bytes in this view as processed, returning the `Buffer`.
@@ -284,12 +276,13 @@ impl BufView {
 
 impl fmt::Debug for BufView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.as_slice();
         if f.alternate() {
-            if let Ok(string) = from_utf8(self.as_bytes()) {
+            if let Ok(string) = from_utf8(bytes) {
                 return f.write_str(string);
             }
         }
-        self.as_bytes().fmt(f)
+        bytes.fmt(f)
     }
 }
 
@@ -307,8 +300,8 @@ impl<'b> WriteBuffer<'b> {
     }
 
     /// Returns the unprocessed, written bytes.
-    pub fn as_bytes(&self) -> &[u8] {
-        self.inner.as_bytes()
+    pub fn as_slice(&self) -> &[u8] {
+        self.inner.as_slice()
     }
 
     /// Returns the unprocessed, written bytes.
@@ -412,14 +405,14 @@ impl<'b> TempBuffer<'b> {
         self.processed == self.length
     }
 
-    fn as_bytes(&self) -> &[u8] {
+    fn as_slice(&self) -> &[u8] {
         // Safety: `self.buf[..self.length]` bytes are initialised as per
         // the comment on the field.
         unsafe { MaybeUninit::slice_assume_init_ref(&self.buf[self.processed..self.length]) }
     }
 
     fn as_mut_bytes(&mut self) -> &mut [u8] {
-        // Safety: See `TempBuffer::as_bytes`.
+        // Safety: See `TempBuffer::as_slice`.
         unsafe { MaybeUninit::slice_assume_init_mut(&mut self.buf[self.processed..self.length]) }
     }
 
@@ -430,11 +423,12 @@ impl<'b> TempBuffer<'b> {
 
 impl<'b> fmt::Debug for TempBuffer<'b> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let bytes = self.as_slice();
         if f.alternate() {
-            if let Ok(string) = from_utf8(self.as_bytes()) {
+            if let Ok(string) = from_utf8(bytes) {
                 return f.write_str(string);
             }
         }
-        self.as_bytes().fmt(f)
+        bytes.fmt(f)
     }
 }
