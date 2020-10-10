@@ -1,10 +1,13 @@
 use std::env;
 use std::fs::{create_dir_all, remove_dir_all, remove_file};
+use std::io;
+use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::SystemTime;
 
+use heph::net::Bytes;
 use lazy_static::lazy_static;
 
 // TODO: add more test with interaction with the Storage after it returned an
@@ -12,8 +15,8 @@ use lazy_static::lazy_static;
 // types still work?
 
 use crate::storage::{
-    AddResult, Blob, BlobEntry, DateTime, Entry, RemoveBlob, RemoveResult, StoreBlob, DATA_MAGIC,
-    INDEX_MAGIC,
+    AddResult, Blob, BlobEntry, DateTime, Entry, RemoveBlob, RemoveResult, StoreBlob, StreamBlob,
+    DATA_MAGIC, INDEX_MAGIC,
 };
 use crate::Key;
 
@@ -56,6 +59,47 @@ impl RemoveResult {
             RemoveResult::Ok(query) => query,
             RemoveResult::NotStored(_) => panic!("blob not stored"),
         }
+    }
+}
+
+impl StreamBlob {
+    /// Write bytes directly from the source into the data file.
+    ///
+    /// This methods allows zero-copy I/O: reading bytes directly from the
+    /// socket and writing them into the (`mmap(2)`-ed) data file.
+    ///
+    /// # Safety
+    ///
+    /// The `write` function must return the number of bytes written into the
+    /// provided buffer. The bytes up to the returned amount in the provided
+    /// slice to the `write` function must be initialised (written to). In other
+    /// words following must be safe.
+    ///
+    /// ```no_run
+    /// # #![feature(maybe_uninit_slice)]
+    /// # use std::mem::MaybeUninit;
+    /// # fn io() -> std::io::Result<()> {
+    /// # let mut bytes: [MaybeUninit<u8>; 0] = [];
+    /// # let write = |_bytes| { std::io::Result::Ok(0) };
+    /// let n = write(&mut bytes)?;
+    /// // If `n` is larger then the actually initialised bytes the following
+    /// // line would be undefined behaviour.
+    /// let read_bytes = unsafe { MaybeUninit::slice_assume_init_ref(&bytes[..n]) };
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The returned amount of bytes written may also not exceed the length of
+    /// the bytes provided.
+    pub unsafe fn write_bytes<F>(&mut self, write: F) -> io::Result<usize>
+    where
+        F: FnOnce(&mut [MaybeUninit<u8>]) -> io::Result<usize>,
+    {
+        write(self.as_bytes()).map(|n| {
+            // Safety: caller is responsible for return the correct number of
+            // bytes (`n`).
+            self.update_length(n);
+            n
+        })
     }
 }
 

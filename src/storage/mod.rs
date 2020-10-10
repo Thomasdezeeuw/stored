@@ -648,45 +648,6 @@ impl StreamBlob {
         self.len() - self.offset
     }
 
-    /// Write bytes directly from the source into the data file.
-    ///
-    /// This methods allows zero-copy I/O: reading bytes directly from the
-    /// socket and writing them into the (`mmap(2)`-ed) data file.
-    ///
-    /// # Safety
-    ///
-    /// The `write` function must return the number of bytes written into the
-    /// provided buffer. The bytes up to the returned amount in the provided
-    /// slice to the `write` function must be initialised (written to). In other
-    /// words following must be safe.
-    ///
-    /// ```no_run
-    /// # #![feature(maybe_uninit_slice)]
-    /// # use std::mem::MaybeUninit;
-    /// # fn io() -> std::io::Result<()> {
-    /// # let mut bytes: [MaybeUninit<u8>; 0] = [];
-    /// # let write = |_bytes| { std::io::Result::Ok(0) };
-    /// let n = write(&mut bytes)?;
-    /// // If `n` is larger then the actually initialised bytes the following
-    /// // line would be undefined behaviour.
-    /// let read_bytes = unsafe { MaybeUninit::slice_assume_init_ref(&bytes[..n]) };
-    /// # Ok(()) }
-    /// ```
-    ///
-    /// The returned amount of bytes written may also not exceed the length of
-    /// the bytes provided.
-    pub unsafe fn write_bytes<F>(&mut self, write: F) -> io::Result<usize>
-    where
-        F: FnOnce(&mut [MaybeUninit<u8>]) -> io::Result<usize>,
-    {
-        write(self.as_bytes()).map(|n| {
-            // Safety: caller is responsible for return the correct number of
-            // bytes (`n`).
-            self.update_length(n);
-            n
-        })
-    }
-
     /// Add the streamed blob to the database file. Returns a [`StoreBlob`]
     /// query to commit to storing the blob.
     ///
