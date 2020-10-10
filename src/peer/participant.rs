@@ -188,7 +188,7 @@ pub mod dispatcher {
         // TODO: close connection cleanly, sending `EXIT_PARTICIPANT`.
 
         loop {
-            match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
+            match select(ctx.receive_next(), stream.recv(&mut buf)).await {
                 Either::Left((msg, _)) => {
                     debug!("participant dispatcher received a message: {:?}", msg);
                     write_response(&mut ctx, &mut stream, &mut buf, msg).await?;
@@ -248,7 +248,7 @@ pub mod dispatcher {
                 }
             }
 
-            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_from(&mut *stream)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv(&mut *buf)).await {
                 Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading peer's server address"));
@@ -1000,7 +1000,7 @@ pub mod consensus {
         }
 
         // Read at least the metadata of the blob.
-        let write = buf.read_n_from(stream, METADATA_LEN);
+        let write = stream.recv_n(&mut *buf, METADATA_LEN);
         match Deadline::timeout(ctx, timeout::PEER_READ, write).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("reading blob length")),
@@ -1045,7 +1045,7 @@ pub mod consensus {
         if (buf.len() as u64) < blob_length {
             // Haven't read entire blob yet.
             let want_n = blob_length - buf.len() as u64;
-            let read_n = buf.read_n_from(stream, want_n as usize);
+            let read_n = stream.recv_n(buf, want_n as usize);
             match Deadline::timeout(ctx, timeout::peer_read(want_n), read_n).await {
                 Ok(()) => {}
                 Err(err) => return Err(err.describe("reading blob")),

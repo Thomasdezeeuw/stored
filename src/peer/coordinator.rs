@@ -180,7 +180,7 @@ pub mod relay {
         // FIXME: rather then restarting this actor on connection errors, try to
         // reconnect ourselves this way we can keep `responses` `HashMap` alive.
         loop {
-            match select(ctx.receive_next(), buf.read_from(&mut stream)).await {
+            match select(ctx.receive_next(), stream.recv(&mut buf)).await {
                 Either::Left((msg, _)) => {
                     debug!("coordinator relay received a message: {:?}", msg);
                     let req_id = next_id(&mut req_id);
@@ -473,7 +473,7 @@ pub mod relay {
     ) -> crate::Result<()> {
         trace!("coordinator relay reading known peers from connection");
         loop {
-            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_from(&mut *stream)).await {
+            match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv(&mut *buf)).await {
                 Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
                         .describe("reading known peers"))

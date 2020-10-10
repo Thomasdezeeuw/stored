@@ -14,18 +14,12 @@
 //! string.
 
 use std::cmp::min;
-use std::future::Future;
 use std::io::{self, IoSlice, Write};
 use std::mem::MaybeUninit;
-use std::pin::Pin;
 use std::str::from_utf8;
-use std::task::{self, Poll};
 use std::{fmt, ptr, slice};
 
-use futures_io::AsyncRead;
-use heph::net::TcpStream;
-
-use crate::key::KeyCalculator;
+use heph::net::Bytes;
 
 #[cfg(test)]
 mod tests;
@@ -177,34 +171,6 @@ impl Buffer {
         (used_bytes, wbuf)
     }
 
-    /// Read from `reader` into this buffer.
-    pub fn read_from<R>(&mut self, reader: R) -> Read<R, Self>
-    where
-        R: AsyncRead,
-    {
-        self.move_to_start(false);
-        Read {
-            buffer: self,
-            reader,
-        }
-    }
-
-    /// Read at least `n` bytes from `reader` into this buffer.
-    pub fn read_n_from<R>(&mut self, reader: R, n: usize) -> ReadN<R, Self>
-    where
-        R: AsyncRead,
-    {
-        debug_assert!(n != 0, "want to read 0 bytes");
-        self.reserve_atleast(n);
-        ReadN {
-            read: Read {
-                buffer: self,
-                reader,
-            },
-            left: n,
-        }
-    }
-
     /// Mark `n` bytes as processed.
     pub fn processed(&mut self, n: usize) {
         assert!(
@@ -257,6 +223,17 @@ impl Buffer {
     }
 }
 
+impl Bytes for Buffer {
+    fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.available_bytes()
+    }
+
+    unsafe fn update_length(&mut self, n: usize) {
+        // Safety: caller must ensure the bytes are initialised.
+        self.read_bytes(n);
+    }
+}
+
 impl fmt::Debug for Buffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
@@ -300,136 +277,6 @@ impl fmt::Debug for BufView {
             }
         }
         self.as_bytes().fmt(f)
-    }
-}
-
-/// [`Future`] that reads from reader `R` into a [`Buffer`].
-///
-/// # Notes
-///
-/// This future doesn't implement any waking mechanism, it up to the reader `R`
-/// to handle wakeups.
-#[derive(Debug)]
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct Read<'b, R, B = Buffer> {
-    buffer: &'b mut B,
-    reader: R,
-}
-
-/* TODO: add this back once `AsyncRead` gets a method for reading into
- * uninitialised byte slices.
-impl<'b, R> Future for Read<'b, R, Buffer>
-where
-    R: AsyncRead + Unpin,
-{
-    type Output = io::Result<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        let Read {
-            buffer,
-            ref mut reader,
-        } = &mut *self;
-        Pin::new(reader)
-            .poll_read(ctx, buffer.available_bytes())
-            .map_ok(|bytes_read| {
-                // Safety: we just read into the buffer.
-                unsafe {
-                    buffer.read_bytes(bytes_read);
-                }
-                bytes_read
-            })
-    }
-}
-*/
-
-// TODO: replace with `AsyncRead` implementation above.
-impl<'b> Future for Read<'b, &mut TcpStream, Buffer> {
-    type Output = io::Result<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context) -> Poll<Self::Output> {
-        let Read {
-            buffer,
-            ref mut reader,
-        } = &mut *self;
-        loop {
-            match reader.try_recv(buffer.available_bytes()) {
-                Ok(bytes_read) => {
-                    // Safety: we just read into the buffer.
-                    unsafe {
-                        buffer.read_bytes(bytes_read);
-                    }
-                    return Poll::Ready(Ok(bytes_read));
-                }
-                // Heph will schedule us once more bytes are available.
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(err) => return Poll::Ready(Err(err)),
-            }
-        }
-    }
-}
-
-// TODO: replace with `AsyncRead` implementation above.
-impl<'b> Future for Read<'b, &mut KeyCalculator<&mut TcpStream>, Buffer> {
-    type Output = io::Result<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context) -> Poll<Self::Output> {
-        let Read {
-            buffer,
-            ref mut reader,
-        } = &mut *self;
-        loop {
-            match reader.try_recv(buffer.available_bytes()) {
-                Ok(bytes_read) => {
-                    // Safety: we just read into the buffer.
-                    unsafe {
-                        buffer.read_bytes(bytes_read);
-                    }
-                    return Poll::Ready(Ok(bytes_read));
-                }
-                // Heph will schedule us once more bytes are available.
-                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => return Poll::Pending,
-                Err(ref err) if err.kind() == io::ErrorKind::Interrupted => continue,
-                Err(err) => return Poll::Ready(Err(err)),
-            }
-        }
-    }
-}
-
-/// [`Future`] that reads at least `N` bytes from reader `R` into buffer `B` or
-/// returns [`io::ErrorKind::UnexpectedEof`].
-///
-/// # Notes
-///
-/// This future doesn't implement any waking mechanism, it up to the reader `R`
-/// to handle wakeups.
-#[derive(Debug)]
-#[must_use = "futures do nothing unless you `.await` or poll them"]
-pub struct ReadN<'b, R, B = Buffer> {
-    read: Read<'b, R, B>,
-    left: usize,
-}
-
-impl<'b, R, B> Future for ReadN<'b, R, B>
-where
-    Read<'b, R, B>: Future<Output = io::Result<usize>> + Unpin,
-{
-    type Output = io::Result<()>;
-
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<Self::Output> {
-        loop {
-            match Pin::new(&mut self.read).poll(ctx) {
-                Poll::Ready(Ok(0)) => return Poll::Ready(Err(io::ErrorKind::UnexpectedEof.into())),
-                Poll::Ready(Ok(n)) if self.left <= n => return Poll::Ready(Ok(())),
-                Poll::Ready(Ok(n)) => {
-                    self.left -= n;
-                    // Try to read some more bytes.
-                    continue;
-                }
-                Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
-                Poll::Pending => return Poll::Pending,
-            }
-        }
     }
 }
 

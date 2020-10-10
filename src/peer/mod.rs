@@ -847,7 +847,7 @@ pub mod switcher {
         );
         let mut buf = Buffer::new();
 
-        let read_n = buf.read_n_from(&mut stream, MAGIC_LENGTH);
+        let read_n = stream.recv_n(&mut buf, MAGIC_LENGTH);
         match Deadline::timeout(&mut ctx, timeout::PEER_READ, read_n).await {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {

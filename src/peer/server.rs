@@ -157,7 +157,7 @@ pub async fn actor<M>(
         }
 
         // Read some more bytes.
-        match Deadline::timeout(&mut ctx, timeout::PEER_ALIVE, buf.read_from(&mut stream)).await {
+        match Deadline::timeout(&mut ctx, timeout::PEER_ALIVE, stream.recv(&mut buf)).await {
             Ok(0) => return Ok(()),
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading from socket")),
@@ -204,7 +204,7 @@ async fn retrieve_blob<M>(
     passport.mark(Event::ReadingPeerKey);
     if buf.len() < Key::LENGTH {
         let n = Key::LENGTH - buf.len();
-        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerKey),
             Err(err) => return Err(err.describe("reading key of blob to retrieve")),
         }
@@ -327,7 +327,7 @@ async fn retrieve_keys_since<M>(
     // Read the time before which we don't need to send the keys.
     if buf.len() < DATE_TIME_LEN {
         let n = DATE_TIME_LEN - buf.len();
-        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading date since to retrieve keys")),
         }
@@ -410,7 +410,7 @@ async fn store_blob<M>(
     // Read at least the metadata of the blob to store.
     if buf.len() < Key::LENGTH + METADATA_LEN {
         let n = (Key::LENGTH + METADATA_LEN) - buf.len();
-        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerMetadata),
             Err(err) => return Err(err.describe("reading metadata from socket")),
         }
@@ -443,7 +443,7 @@ async fn store_blob<M>(
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
         let timeout = timeout::peer_read(n as u64);
-        match Deadline::timeout(ctx, timeout, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerBlob),
             Err(err) => return Err(err.describe("reading blob from socket")),
         }

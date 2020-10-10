@@ -680,6 +680,7 @@ impl StreamBlob {
     {
         let bytes = &mut self.slice.as_mut_slice()[self.offset..];
         match write(&mut *bytes) {
+            Ok(0) => Ok(0),
             Ok(n) => {
                 // Safety: the caller needs to ensure the bytes up to `n` are
                 // initialised as per the docs.

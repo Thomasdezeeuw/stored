@@ -4,14 +4,12 @@ use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, IoSlice, IoSliceMut, Read, Write};
-use std::mem::MaybeUninit;
 use std::ops::Deref;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::task::{self, Poll};
 
 use futures_io::{AsyncRead, AsyncWrite};
-use heph::net::TcpStream;
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -357,18 +355,6 @@ impl<IO> KeyCalculator<IO> {
                 left -= length;
             }
         }
-    }
-}
-
-// Only here for the `buffer::Read` `Future` implementation.
-#[doc(hidden)]
-impl KeyCalculator<&mut TcpStream> {
-    pub(crate) fn try_recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
-        self.io.try_recv(buf).map(|n| {
-            // Safety: `try_recv` ensure atleast `n` bytes are initialised.
-            self.update_digest(unsafe { MaybeUninit::slice_assume_init_ref(&buf[..n]) });
-            n
-        })
     }
 }
 

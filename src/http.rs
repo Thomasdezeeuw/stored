@@ -341,7 +341,7 @@ impl Connection {
                 }
             }
 
-            match self.buf.read_from(&mut self.stream).await {
+            match self.stream.recv(&mut self.buf).await {
                 // No more bytes in the connection or buffer, processed all
                 // requests.
                 Ok(0) if self.buf.is_empty() => return Ok(false),
@@ -812,7 +812,7 @@ async fn read_blob(
     if conn.buf.len() < body_length {
         // Haven't read entire body yet.
         let want_n = body_length - conn.buf.len();
-        let read_n = conn.buf.read_n_from(&mut conn.stream, want_n);
+        let read_n = conn.stream.recv_n(&mut conn.buf, want_n);
         match Deadline::timeout(ctx, timeout::CLIENT_ALIVE, read_n).await {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {

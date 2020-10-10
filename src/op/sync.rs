@@ -537,7 +537,7 @@ where
 
     if buf.len() < KEY_SET_SIZE_LEN {
         let n = KEY_SET_SIZE_LEN - buf.len();
-        match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await {
+        match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading number of keys")),
         }
@@ -555,8 +555,7 @@ where
     for _ in 0..size {
         if buf.len() < Key::LENGTH {
             let n = Key::LENGTH - buf.len();
-            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await
-            {
+            match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
                 Ok(..) => {}
                 Err(err) => return Err(err.describe("reading known keys")),
             }
@@ -599,8 +598,7 @@ where
         // Read the number of keys in this part.
         if buf.len() < KEY_SET_SIZE_LEN {
             let n = KEY_SET_SIZE_LEN - buf.len();
-            match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n)).await
-            {
+            match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
                 Ok(..) => {}
                 Err(err) => return Err(err.describe("reading number of keys")),
             }
@@ -621,8 +619,7 @@ where
         for _ in 0..size {
             if buf.len() < Key::LENGTH {
                 let n = Key::LENGTH - buf.len();
-                match Deadline::timeout(ctx, timeout::PEER_READ, buf.read_n_from(&mut *stream, n))
-                    .await
+                match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await
                 {
                     Ok(..) => {}
                     Err(err) => return Err(err.describe("reading known keys")),
@@ -750,7 +747,7 @@ where
             if buf.len() < want_read {
                 let n = want_read - buf.len();
                 let timeout = timeout::peer_read(n as u64);
-                match Deadline::timeout(ctx, timeout, buf.read_n_from(&mut *stream, n)).await {
+                match Deadline::timeout(ctx, timeout, stream.recv_n(&mut *buf, n)).await {
                     Ok(..) => {}
                     Err(err) => return Err(err.describe("reading blob")),
                 }
