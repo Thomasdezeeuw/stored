@@ -13,7 +13,7 @@ build:
 
 test:
 	(cargo test \
-		&& killall -u $$(whoami) -KILL stored) || \
+		&& (killall -u $$(whoami) -KILL stored || true)) || \
 		(killall -u $$(whoami) -KILL stored && exit 1)
 
 # NOTE: when using this command you might want to change the `test` target to
