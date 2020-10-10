@@ -635,7 +635,7 @@ pub mod consensus {
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::convert::TryInto;
-    use std::io::{self, IoSlice};
+    use std::io::IoSlice;
     use std::net::SocketAddr;
     use std::slice;
     use std::time::{Duration, Instant, SystemTime};
@@ -664,7 +664,6 @@ pub mod consensus {
     };
     use crate::peer::{ConsensusVote, Peers, RequestId, COORDINATOR_MAGIC};
     use crate::storage::{BlobAlreadyStored, DateTime, Query, RemoveBlob, StoreBlob, StreamBlob};
-    use crate::util::wait_for_wakeup;
     use crate::{timeout, Buffer, Key};
 
     /// Minimum blob size to stream the blob.
@@ -877,37 +876,21 @@ pub mod consensus {
                     async move {
                         // First copy over all the contents of the blob in the
                         // buffer to the data file.
-                        // Safety: we're ensuring that we return the correct number
-                        // of bytes written.
-                        let mut written =
-                            unsafe { stream_blob.write_bytes(|bytes| Ok(buf.copy_to(bytes)))? };
+                        buf.copy_to(&mut *stream_blob);
 
-                        // If the buffer didn't contain the entire blob we need to
-                        // read more from the connection.
-                        while (written as u64) < blob_length {
-                            // Safety: the call to `try_recv` ensures that we've
-                            // initialised to number of bytes we return.
-                            let res =
-                                unsafe { stream_blob.write_bytes(|bytes| stream.try_recv(bytes)) };
-                            match res {
-                                Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                                Ok(n) => written += n,
-                                Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                                    // FIXME: put a timeout here, don't want to wait
-                                    // for ever.
-
-                                    // Heph will schedule us once there is more data
-                                    // to read.
-                                    wait_for_wakeup().await;
-                                    continue;
-                                }
-                                Err(err) => return Err(err),
-                            }
+                        // If the entire blob wasn't in the buffer, read the
+                        // remaining bytes from the stream.
+                        let bytes_left = stream_blob.bytes_left();
+                        if bytes_left > 0 {
+                            stream
+                                .recv_n(&mut *stream_blob, bytes_left)
+                                .await
+                                .map(|()| stream_blob)
+                        } else {
+                            // Entire blob was in the buffer already, so we're
+                            // done.
+                            Ok(stream_blob)
                         }
-
-                        // If we reach this point we've written the entire blob so
-                        // we're done.
-                        Ok(stream_blob)
                     }
                 };
 

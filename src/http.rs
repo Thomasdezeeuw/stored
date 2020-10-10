@@ -1,13 +1,12 @@
 //! HTTP/1.1 server implementation.
 //!
-//! The [`http::actor`] is the main type, its started by [`tcp::Server`] and is
+//! The [`http::actor`] is the main type, its started by [`TcpServer`] and is
 //! supervised by [`http::supervisor`]. Adding the HTTP actor to the runtime is
 //! a two step process, first by setting up the listener by calling
 //! [`http::setup`] and then calling the returned function in the runtime setup
 //! function.
 //!
 //! [`http::actor`]: crate::http::actor()
-//! [`tcp::Server`]: heph::net::tcp::Server
 //! [`http::supervisor`]: crate::http::supervisor
 //! [`http::setup`]: crate::http::setup
 //! [`http::start`]: crate::http::start
@@ -22,7 +21,6 @@
 use std::convert::TryFrom;
 use std::error::Error;
 use std::io::{self, IoSlice, Write};
-use std::mem::MaybeUninit;
 use std::net::SocketAddr;
 use std::ops::DerefMut;
 use std::sync::Arc;
@@ -51,7 +49,6 @@ use crate::op::{self, Outcome, StreamResult};
 use crate::passport::{Event, Passport, Uuid};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, StreamBlob};
-use crate::util::wait_for_wakeup;
 use crate::{db, timeout, Key};
 
 // TODO: get this from a configuration.
@@ -134,10 +131,9 @@ where
     Ok(())
 }
 
-/// Supervisor for the [`http::actor`]'s listener the [`tcp::Server`].
+/// Supervisor for the [`http::actor`]'s listener the [`TcpServer`].
 ///
 /// [`http::actor`]: crate::http::actor()
-/// [`tcp::Server`]: heph::net::tcp::Server
 ///
 /// Attempts to restart the listener once, stops it the second time.
 pub struct ServerSupervisor;
@@ -374,12 +370,6 @@ impl Connection {
             .write_all_vectored(bufs)
             .await
             .map(|()| passport.mark(Event::WrittenHttpResponse))
-    }
-
-    /// Directly reads from the underlying socket, skipping the buffer and any
-    /// async goodness.
-    fn try_recv(&mut self, buf: &mut [MaybeUninit<u8>]) -> io::Result<usize> {
-        self.stream.try_recv(buf)
     }
 }
 
@@ -747,36 +737,21 @@ async fn store_blob(
                 async move {
                     // First copy over all the contents of the blob in the
                     // buffer to the data file.
-                    // Safety: we're ensuring that we return the correct number
-                    // of bytes written.
-                    let mut written =
-                        unsafe { stream_blob.write_bytes(|bytes| Ok(conn.buf.copy_to(bytes)))? };
+                    conn.buf.copy_to(&mut *stream_blob);
 
-                    // If the buffer didn't contain the entire blob we need to
-                    // read more from the connection.
-                    while written < blob_length {
-                        // Safety: the call to `try_recv` ensures that we've
-                        // initialised to number of bytes we return.
-                        let res = unsafe { stream_blob.write_bytes(|bytes| conn.try_recv(bytes)) };
-                        match res {
-                            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
-                            Ok(n) => written += n,
-                            Err(ref err) if err.kind() == io::ErrorKind::WouldBlock => {
-                                // FIXME: put a timeout here, don't want to wait
-                                // for ever.
-
-                                // Heph will schedule us once there is more data
-                                // to read.
-                                wait_for_wakeup().await;
-                                continue;
-                            }
-                            Err(err) => return Err(err),
-                        }
+                    // If the entire blob wasn't in the buffer, read the
+                    // remaining bytes from the stream.
+                    let bytes_left = stream_blob.bytes_left();
+                    if bytes_left > 0 {
+                        conn.stream
+                            .recv_n(&mut *stream_blob, bytes_left)
+                            .await
+                            .map(|()| stream_blob)
+                    } else {
+                        // Entire blob was in the buffer already, so we're
+                        // done.
+                        Ok(stream_blob)
                     }
-
-                    // If we reach this point we've written the entire blob so
-                    // we're done.
-                    Ok(stream_blob)
                 }
             };
             let res =

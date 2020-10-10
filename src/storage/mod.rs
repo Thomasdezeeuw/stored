@@ -132,6 +132,7 @@ use std::time::{Duration, SystemTime};
 use std::{fmt, slice};
 
 use fxhash::FxBuildHasher;
+use heph::net::Bytes;
 use log::{error, trace, warn};
 
 use crate::key::{Key, KeyCalculator};
@@ -678,19 +679,12 @@ impl StreamBlob {
     where
         F: FnOnce(&mut [MaybeUninit<u8>]) -> io::Result<usize>,
     {
-        let bytes = &mut self.slice.as_mut_slice()[self.offset..];
-        match write(&mut *bytes) {
-            Ok(0) => Ok(0),
-            Ok(n) => {
-                // Safety: the caller needs to ensure the bytes up to `n` are
-                // initialised as per the docs.
-                let bytes = MaybeUninit::slice_assume_init_ref(&bytes[..n]);
-                self.calculator.add_bytes(bytes);
-                self.offset += n;
-                Ok(n)
-            }
-            Err(err) => Err(err),
-        }
+        write(self.as_bytes()).map(|n| {
+            // Safety: caller is responsible for return the correct number of
+            // bytes (`n`).
+            self.update_length(n);
+            n
+        })
     }
 
     /// Add the streamed blob to the database file. Returns a [`StoreBlob`]
@@ -745,6 +739,25 @@ impl StreamBlob {
 
             AddResult::Ok(StoreBlob { key })
         }
+    }
+}
+
+impl Bytes for StreamBlob {
+    fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        &mut self.slice.as_mut_slice()[self.offset..]
+    }
+
+    unsafe fn update_length(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+
+        let available_bytes = &self.slice.as_mut_slice()[self.offset..];
+        // Safety: the caller needs to ensure the bytes up to `n` are
+        // initialised as per the docs.
+        let bytes = MaybeUninit::slice_assume_init_ref(&available_bytes[..n]);
+        self.calculator.add_bytes(bytes);
+        self.offset += n;
     }
 }
 

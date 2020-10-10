@@ -84,23 +84,29 @@ impl Buffer {
     }
 
     /// Returns the unprocessed, read bytes.
+    // FIXME: this name overlaps with Bytes::as_bytes. Replace with
+    // `AsRef::as_ref`.
     pub fn as_bytes(&self) -> &[u8] {
         // NOTE: also see `split`.
         &self.data[self.processed..]
     }
 
-    /// Copies all bytes currently in the buffer (up to `dst.len()` bytes) into
-    /// `dst`, and marks the bytes as processed. Returns the number of bytes
-    /// copied.
-    pub fn copy_to(&mut self, dst: &mut [MaybeUninit<u8>]) -> usize {
+    /// Copies all bytes currently in the buffer (up to what fits into `buf`)
+    /// into `buf`, and marks the bytes as processed. Returns the number of
+    /// bytes copied.
+    pub fn copy_to<B>(&mut self, mut buf: B) -> usize
+    where
+        B: Bytes,
+    {
+        let dst = buf.as_bytes();
         let len = min(self.len(), dst.len());
         // Safety: both the src and dst pointers are good. And we've ensured
         // that the length is correct, not overwriting data we don't own or
         // reading data we don't own.
-        unsafe {
-            ptr::copy_nonoverlapping(self.as_bytes().as_ptr(), dst.as_mut_ptr().cast(), len);
-        }
+        unsafe { ptr::copy_nonoverlapping(self.as_ref().as_ptr(), dst.as_mut_ptr().cast(), len) }
         self.processed(len);
+        // Safety: just copied the bytes above.
+        unsafe { buf.update_length(len) }
         len
     }
 
@@ -220,6 +226,13 @@ impl Buffer {
             "marking bytes as read beyond read range"
         );
         self.data.set_len(self.data.len() + n)
+    }
+}
+
+impl AsRef<[u8]> for Buffer {
+    fn as_ref(&self) -> &[u8] {
+        // NOTE: also see `split`.
+        &self.data[self.processed..]
     }
 }
 
