@@ -108,28 +108,16 @@ impl Buffer {
         len
     }
 
-    /// Bytes available to read into.
-    fn available_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
-        // Safety: `Vec` ensures the pointer is correct for us. The pointer is
-        // at least valid for start + `Vec::capacity` bytes, a range we stay
-        // within.
-        unsafe {
-            // NOTE: keep this in check with `unused_bytes` in `split`.
-            let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
-            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
-        }
-    }
-
     /// Split the buffer into used bytes and unused bytes. This is equivalent to
-    /// calling `as_bytes` and `available_bytes` (but that isn't allowed due to
+    /// calling `as_slice` and `Bytes::as_bytes` (but that isn't allowed due to
     /// the lifetime restrictions).
     fn split<'b>(&'b mut self) -> (&'b [u8], &'b mut [MaybeUninit<u8>]) {
-        // NOTE: also see `as_bytes` and `available_bytes`.
+        // NOTE: also see `as_slice` and `Bytes::as_bytes`.
         assert!(self.data.len() >= self.processed);
         // Safety: since the two slices don't overlap this is safe, also see
         // `slice::split_at_mut`.
         let unused_bytes = unsafe {
-            // NOTE: keep this in check with `available_bytes`.
+            // NOTE: keep this in check with `Bytes::as_bytes`.
             let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
             slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         };
@@ -212,29 +200,27 @@ impl Buffer {
             self.processed = 0;
         }
     }
-
-    /// Mark `n` bytes as newly read.
-    ///
-    /// # Unsafety
-    ///
-    /// Caller must ensure that the bytes are initialised.
-    unsafe fn read_bytes(&mut self, n: usize) {
-        assert!(
-            self.capacity_left() >= n,
-            "marking bytes as read beyond read range"
-        );
-        self.data.set_len(self.data.len() + n)
-    }
 }
 
 impl Bytes for Buffer {
     fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
-        self.available_bytes()
+        // Safety: `Vec` ensures the pointer is correct for us. The pointer is
+        // at least valid for start + `Vec::capacity` bytes, a range we stay
+        // within.
+        unsafe {
+            // NOTE: keep this in check with `unused_bytes` in `split`.
+            let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
+            slice::from_raw_parts_mut(data_ptr, self.capacity_left())
+        }
     }
 
     unsafe fn update_length(&mut self, n: usize) {
         // Safety: caller must ensure the bytes are initialised.
-        self.read_bytes(n);
+        debug_assert!(
+            self.capacity_left() >= n,
+            "marking bytes as read beyond read range"
+        );
+        self.data.set_len(self.data.len() + n)
     }
 }
 
