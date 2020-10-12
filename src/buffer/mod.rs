@@ -190,9 +190,9 @@ impl Buffer {
 
     /// Move the read bytes to the start of the buffer, if needed.
     ///
-    /// If `force` is true it always move the buffer to the start, ensuring that
-    /// `processed` is always 0.
-    fn move_to_start(&mut self, force: bool) {
+    /// If `force` is true it always moves the unprocessed bytes to the start,
+    /// ensuring that no processed bytes are left in the buffer.
+    pub fn move_to_start(&mut self, force: bool) {
         if self.processed == 0 {
             // No need to do anything.
         } else if self.data.len() == self.processed {
@@ -209,8 +209,6 @@ impl Buffer {
 
 impl Bytes for Buffer {
     fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
-        self.move_to_start(false);
-
         // Safety: `Vec` ensures the pointer is correct for us. The pointer is
         // at least valid for start + `Vec::capacity` bytes, a range we stay
         // within.

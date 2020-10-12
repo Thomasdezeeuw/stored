@@ -180,6 +180,7 @@ pub mod relay {
         // FIXME: rather then restarting this actor on connection errors, try to
         // reconnect ourselves this way we can keep `responses` `HashMap` alive.
         loop {
+            buf.move_to_start(true);
             match select(ctx.receive_next(), stream.recv(&mut buf)).await {
                 Either::Left((msg, _)) => {
                     debug!("coordinator relay received a message: {:?}", msg);

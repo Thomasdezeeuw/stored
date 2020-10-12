@@ -188,6 +188,7 @@ pub mod dispatcher {
         // TODO: close connection cleanly, sending `EXIT_PARTICIPANT`.
 
         loop {
+            buf.move_to_start(true);
             match select(ctx.receive_next(), stream.recv(&mut buf)).await {
                 Either::Left((msg, _)) => {
                     debug!("participant dispatcher received a message: {:?}", msg);

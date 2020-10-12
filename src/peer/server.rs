@@ -157,6 +157,7 @@ pub async fn actor<M>(
         }
 
         // Read some more bytes.
+        buf.move_to_start(false);
         match Deadline::timeout(&mut ctx, timeout::PEER_ALIVE, stream.recv(&mut buf)).await {
             Ok(0) => return Ok(()),
             Ok(..) => {}

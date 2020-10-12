@@ -311,6 +311,7 @@ impl Connection {
     /// are no more requests on `stream` or an error otherwise.
     pub async fn read_request(&mut self, request: &mut Request) -> Result<bool, RequestError> {
         let mut too_short = 0;
+        self.buf.move_to_start(true);
         loop {
             // At the start we likely don't have enough bytes to read the entire
             // request, however it could be that we read (part of) a request in
