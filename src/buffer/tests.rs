@@ -31,6 +31,14 @@ fn buffer_bytes() {
 }
 
 #[test]
+fn empty_buffer_as_bytes() {
+    let mut buf = Buffer::empty();
+    let available_bytes = buf.as_bytes();
+    assert!(!available_bytes.as_ptr().is_null());
+    assert!(available_bytes.is_empty());
+}
+
+#[test]
 fn buffer_copy_to() {
     let mut buf = Buffer::new();
     let bytes = &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9];

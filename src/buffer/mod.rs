@@ -209,6 +209,8 @@ impl Bytes for Buffer {
         // within.
         unsafe {
             // NOTE: keep this in check with `unused_bytes` in `split`.
+            // NOTE: this also works with empty buffers, see
+            // `empty_buffer_as_bytes` test.
             let data_ptr = self.data.as_mut_ptr().add(self.data.len()).cast();
             slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         }
