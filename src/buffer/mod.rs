@@ -204,6 +204,8 @@ impl Buffer {
 
 impl Bytes for Buffer {
     fn as_bytes(&mut self) -> &mut [MaybeUninit<u8>] {
+        self.move_to_start(false);
+
         // Safety: `Vec` ensures the pointer is correct for us. The pointer is
         // at least valid for start + `Vec::capacity` bytes, a range we stay
         // within.
