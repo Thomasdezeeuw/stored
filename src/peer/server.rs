@@ -44,7 +44,7 @@ pub const NO_BLOB: [u8; BLOB_LENGTH_LEN] = 0u64.to_be_bytes();
 /// endian.
 pub type KeysSetSize = u64;
 
-/// The length (in bytes) that make up the size of the key set
+/// The length (in bytes) that make up the size of the key set.
 pub const KEY_SET_SIZE_LEN: usize = size_of::<KeysSetSize>();
 
 /// Size of the set send if no blobs are stored.
@@ -204,6 +204,7 @@ async fn retrieve_blob<M>(
     passport.mark(Event::ReadingPeerKey);
     if buf.len() < Key::LENGTH {
         let n = Key::LENGTH - buf.len();
+        buf.reserve_atleast(n);
         match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerKey),
             Err(err) => return Err(err.describe("reading key of blob to retrieve")),
@@ -327,6 +328,7 @@ async fn retrieve_keys_since<M>(
     // Read the time before which we don't need to send the keys.
     if buf.len() < DATE_TIME_LEN {
         let n = DATE_TIME_LEN - buf.len();
+        buf.reserve_atleast(n);
         match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => {}
             Err(err) => return Err(err.describe("reading date since to retrieve keys")),
@@ -410,6 +412,7 @@ async fn store_blob<M>(
     // Read at least the metadata of the blob to store.
     if buf.len() < Key::LENGTH + METADATA_LEN {
         let n = (Key::LENGTH + METADATA_LEN) - buf.len();
+        buf.reserve_atleast(n);
         match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerMetadata),
             Err(err) => return Err(err.describe("reading metadata from socket")),
@@ -442,6 +445,7 @@ async fn store_blob<M>(
     passport.mark(Event::ReadingPeerBlob);
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
+        buf.reserve_atleast(n);
         let timeout = timeout::peer_read(n as u64);
         match Deadline::timeout(ctx, timeout, stream.recv_n(&mut *buf, n)).await {
             Ok(..) => passport.mark(Event::ReadPeerBlob),

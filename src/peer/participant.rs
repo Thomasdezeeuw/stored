@@ -983,6 +983,7 @@ pub mod consensus {
         }
 
         // Read at least the metadata of the blob.
+        buf.reserve_atleast(METADATA_LEN);
         let write = stream.recv_n(&mut *buf, METADATA_LEN);
         match Deadline::timeout(ctx, timeout::PEER_READ, write).await {
             Ok(()) => {}
@@ -1028,6 +1029,7 @@ pub mod consensus {
         if (buf.len() as u64) < blob_length {
             // Haven't read entire blob yet.
             let want_n = blob_length - buf.len() as u64;
+            buf.reserve_atleast(want_n as usize);
             let read_n = stream.recv_n(buf, want_n as usize);
             match Deadline::timeout(ctx, timeout::peer_read(want_n), read_n).await {
                 Ok(()) => {}

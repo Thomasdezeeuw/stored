@@ -4,6 +4,8 @@ use http::header::{CONNECTION, CONTENT_LENGTH, CONTENT_TYPE, LAST_MODIFIED, LOCA
 use http::status::StatusCode;
 use log::LevelFilter;
 
+use stored::Key;
+
 use crate::util::http::{body, date_header, header};
 
 const DB_PORT: u16 = 9002;
@@ -314,6 +316,90 @@ fn empty_blob() {
         expected: StatusCode::BAD_REQUEST, b"Can't store empty blob",
         CONTENT_LENGTH => "22",
         CONTENT_TYPE => header::PLAIN_TEXT,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+#[test]
+fn max_non_stream_size() {
+    let _p = start_stored();
+
+    let blob = &[4; 4 * 1024]; // `http::MIN_STREAM_BLOB_SIZE`.
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    let blob_len = "4096";
+
+    request!(
+        POST DB_PORT, "/blob", blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => &*url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    let last_modified = date_header();
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+#[test]
+fn max_non_stream_size_minus_1() {
+    let _p = start_stored();
+
+    let blob = &[5; (4 * 1024) - 1]; // `http::MIN_STREAM_BLOB_SIZE - 1`.
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    let blob_len = "4095";
+
+    request!(
+        POST DB_PORT, "/blob", blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => &*url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    let last_modified = date_header();
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+}
+
+#[test]
+fn min_stream_size() {
+    let _p = start_stored();
+
+    let blob = &[6; (4 * 1024) + 1]; // `http::MIN_STREAM_BLOB_SIZE + 1`.
+    let key = Key::for_blob(blob);
+    let url = format!("/blob/{}", key);
+    let blob_len = "4097";
+
+    request!(
+        POST DB_PORT, "/blob", blob,
+        CONTENT_LENGTH => blob_len;
+        expected: StatusCode::CREATED, body::EMPTY,
+        CONTENT_LENGTH => body::EMPTY_LEN,
+        LOCATION => &*url,
+        CONNECTION => header::KEEP_ALIVE,
+    );
+
+    let last_modified = date_header();
+    request!(
+        GET DB_PORT, url, body::EMPTY,
+        expected: StatusCode::OK, blob,
+        CONTENT_LENGTH => blob_len,
+        LAST_MODIFIED => &last_modified,
         CONNECTION => header::KEEP_ALIVE,
     );
 }

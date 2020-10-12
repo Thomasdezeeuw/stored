@@ -787,6 +787,7 @@ async fn read_blob(
     if conn.buf.len() < body_length {
         // Haven't read entire body yet.
         let want_n = body_length - conn.buf.len();
+        conn.buf.reserve_atleast(want_n);
         let read_n = conn.stream.recv_n(&mut conn.buf, want_n);
         match Deadline::timeout(ctx, timeout::CLIENT_ALIVE, read_n).await {
             Ok(()) => {}
