@@ -301,7 +301,7 @@ impl Connection {
     pub fn new(stream: TcpStream) -> Connection {
         Connection {
             stream,
-            buf: Buffer::new(),
+            buf: Buffer::with_capacity(MAX_HEADERS_SIZE),
         }
     }
 

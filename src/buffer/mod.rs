@@ -53,8 +53,13 @@ impl Buffer {
 
     /// Create a new `Buffer` with a already allocated memory.
     pub fn new() -> Buffer {
+        Buffer::with_capacity(INITIAL_BUF_SIZE)
+    }
+
+    /// Create a new `Buffer` with `capacity` bytes pre-allocated memory.
+    pub fn with_capacity(capacity: usize) -> Buffer {
         Buffer {
-            data: Vec::with_capacity(INITIAL_BUF_SIZE),
+            data: Vec::with_capacity(capacity),
             processed: 0,
         }
     }
