@@ -60,7 +60,7 @@ pub async fn retrieve_blob<M, K>(
     key: Key,
 ) -> Result<Option<BlobEntry>, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running retrieve operation: request_id=\"{}\", key=\"{}\"",
@@ -95,7 +95,7 @@ pub async fn contains_blob<M, K>(
     key: Key,
 ) -> Result<bool, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running contains key operation: request_id=\"{}\", key=\"{}\"",
@@ -130,7 +130,7 @@ pub(crate) async fn retrieve_uncommitted_blob<M, K>(
     key: Key,
 ) -> Result<Result<UncommittedBlob, Option<BlobEntry>>, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running uncommitted retrieve operation: request_id=\"{}\", key=\"{}\"",
@@ -165,7 +165,7 @@ pub(crate) async fn retrieve_store_blob_query<M, K>(
     key: Key,
 ) -> Result<Result<Option<StoreBlob>, BlobAlreadyStored>, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running retrieve uncommitted store query operation: request_id=\"{}\", key=\"{}\"",
@@ -199,7 +199,7 @@ pub(crate) async fn retrieve_keys<M, K>(
     passport: &mut Passport,
 ) -> Result<Keys, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running retrieve keys operation: request_id=\"{}\"",
@@ -232,7 +232,7 @@ pub(crate) async fn retrieve_entries<M, K>(
     passport: &mut Passport,
 ) -> Result<Entries, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "running retrieve index entries operation: request_id=\"{}\"",
@@ -265,7 +265,7 @@ pub async fn check_health<M, K>(
     passport: &mut Passport,
 ) -> Result<HealthOk, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!("running health check: request_id=\"{}\"", passport.id());
     match db_rpc(ctx, db_ref, *passport.id(), HealthCheck) {
@@ -295,7 +295,7 @@ pub(crate) async fn sync_stored_blob<M, K>(
     timestamp: SystemTime,
 ) -> Result<BufView, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "syncing stored blob: request_id=\"{}\", blob_length={}",
@@ -329,7 +329,7 @@ pub(crate) async fn sync_removed_blob<M, K>(
     timestamp: SystemTime,
 ) -> Result<(), ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "syncing removed blob: request_id=\"{}\", key=\"{}\"",
@@ -363,7 +363,7 @@ fn db_rpc<M, K, Req, Res>(
 ) -> Result<DbRpc<Res>, ()>
 where
     db::Message: From<RpcMessage<Req, Res>>,
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     match db_ref.rpc(ctx, request) {
         Ok(rpc) => Ok(DbRpc {
@@ -666,7 +666,7 @@ pub(crate) async fn commit_query<M, K, Q>(
     timestamp: SystemTime,
 ) -> Result<SystemTime, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
     Q: Query,
     db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>>,
 {
@@ -739,7 +739,7 @@ pub(crate) async fn abort_query<M, K, Q>(
     query: Q,
 ) -> Result<(), ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
     Q: Query,
     db::Message: From<RpcMessage<Q, ()>>,
 {

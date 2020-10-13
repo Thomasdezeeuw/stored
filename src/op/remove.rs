@@ -76,7 +76,7 @@ pub(crate) async fn prep_remove_blob<M, K>(
     key: Key,
 ) -> Result<Outcome<RemoveBlob, Option<SystemTime>>, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     debug!(
         "prepping storage to removing blob: request_id=\"{}\", key=\"{}\"",

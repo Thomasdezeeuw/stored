@@ -17,7 +17,7 @@ pub(crate) async fn tcp_connect_retry<M, K>(
     max_tries: usize,
 ) -> io::Result<TcpStream>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     let mut wait = wait;
     let mut i = 1;

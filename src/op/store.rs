@@ -53,7 +53,7 @@ pub(crate) async fn add_blob<M, K>(
     blob_length: usize,
 ) -> Result<Outcome<StoreBlob, Key>, ()>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
 {
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
@@ -151,7 +151,7 @@ pub(crate) async fn stream_add_blob<M, K, F, W>(
     write: F,
 ) -> StreamResult<Outcome<StoreBlob, Key>>
 where
-    K: RuntimeAccess,
+    actor::Context<M, K>: RuntimeAccess,
     F: FnOnce(Box<StreamBlob>) -> W,
     W: Future<Output = io::Result<Box<StreamBlob>>>,
 {

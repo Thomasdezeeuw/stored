@@ -832,7 +832,7 @@ pub mod consensus {
         remote: SocketAddr,
     ) -> crate::Result<Result<StoreBlob, PrepareError>>
     where
-        K: RuntimeAccess,
+        actor::Context<M, K>: RuntimeAccess,
     {
         match retrieve_store_blob_query(ctx, db_ref, passport, key.clone()).await {
             // Already a query in progress, reuse that.
@@ -920,7 +920,7 @@ pub mod consensus {
         remote: SocketAddr,
     ) -> crate::Result<TcpStream>
     where
-        K: RuntimeAccess,
+        actor::Context<M, K>: RuntimeAccess,
     {
         debug!(
             "connecting to coordinator server: request_id=\"{}\", remote_address=\"{}\"",
@@ -965,7 +965,7 @@ pub mod consensus {
         key: &Key,
     ) -> crate::Result<Option<u64>>
     where
-        K: RuntimeAccess,
+        actor::Context<M, K>: RuntimeAccess,
     {
         trace!(
             "requesting key from coordinator server: request_id=\"{}\", key=\"{}\"",
@@ -1025,7 +1025,7 @@ pub mod consensus {
         blob_length: u64,
     ) -> crate::Result<()>
     where
-        K: RuntimeAccess,
+        actor::Context<M, K>: RuntimeAccess,
     {
         if (buf.len() as u64) < blob_length {
             // Haven't read entire blob yet.
