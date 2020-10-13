@@ -1334,9 +1334,10 @@ impl Index {
         let bytes: &[u8] = unsafe {
             slice::from_raw_parts((entry as *const Entry).cast::<u8>(), size_of::<Entry>())
         };
+
         self.file
             .write_all(&bytes)
-            .and_then(|()| self.file.sync_all())
+            .and_then(|()| self.file.sync_data())
             .map(|()| {
                 let entry_index = EntryIndex(
                     ((self.length - (INDEX_MAGIC.len() as u64)) / (bytes.len() as u64)) as usize,
@@ -1386,7 +1387,7 @@ impl Index {
             .and_then(|_| {
                 // Ensure we didn't change the file size.
                 debug_assert_eq!(self.file.metadata().unwrap().len(), self.length);
-                self.file.sync_all()
+                self.file.sync_data()
             })
     }
 }
