@@ -4,6 +4,8 @@
 //!
 //! [peer server actor]: actor()
 
+// TODO: make request and response types more consistent.
+
 use std::convert::TryInto;
 use std::io::{self, IoSlice, Write};
 use std::mem::{replace, size_of};
@@ -59,6 +61,37 @@ pub const REQUEST_KEYS_SINCE: u8 = 3;
 /// Request type to store a blob, used by the synchronisation process.
 pub const STORE_BLOB: u8 = 4;
 
+/// Response to a [`STORE_BLOB`] request.
+pub struct Response {
+    bytes: [u8; Self::SIZE],
+    msg: Option<&'static [u8]>,
+}
+
+impl Response {
+    /// Standard size of a response.
+    pub const SIZE: usize = 4;
+
+    const OK_HEADER: [u8; Self::SIZE] = *b"OK\0\0";
+    const ERR_HEADER: [u8; Self::SIZE] = *b"ERR\0";
+
+    /// OK response.
+    pub const fn ok() -> Response {
+        Response {
+            bytes: Self::OK_HEADER,
+            msg: None,
+        }
+    }
+
+    /// Error response.
+    pub const fn err(msg: &'static str) -> Response {
+        assert!(msg.len() < u32::MAX as usize);
+        Response {
+            bytes: Self::ERR_HEADER,
+            msg: Some(msg.as_bytes()),
+        }
+    }
+}
+
 /// Function to change the log target and module for the warning message,
 /// the [`peer::switcher`] has little to do with the error.
 pub(crate) async fn run_actor<M>(
@@ -88,8 +121,9 @@ pub(crate) async fn run_actor<M>(
 /// * [`REQUEST_KEYS_SINCE`] returns a stream of [`Key`]s, prefixed with the length as
 ///   `u64`.
 /// * [`STORE_BLOB`] expects the [`Key`], metadata ([`DateTime`] and length as
-///   `u64`) and the blob to store. Supports both actually stored blobs and
-///   removed blobs.
+///   `u64`) and the bytes of blob to store, iff not removed. Supports both
+///   actually stored blobs and removed blobs. Responds with [`Response::ok`] or
+///   [`Response::error`].
 ///
 /// [`participant::consensus`]: crate::peer::participant::consensus
 /// [`Blob`]: crate::storage::Blob
@@ -144,11 +178,26 @@ pub async fn actor<M>(
                 byte => {
                     // Invalid byte. Forcefully close the connection, letting
                     // the peer known there's an error.
-                    warn!(
-                        "unexpected request from peer (byte: '{}'), closing connection",
-                        byte
-                    );
-                    return Ok(());
+                    match (stream.local_addr(), stream.peer_addr()) {
+                        (Ok(local), Ok(remote)) => warn!("unexpected request from peer (byte: '{}'), closing connection: remote_address=\"{}\", local_address=\"{}\"", byte, remote, local),
+                        _ => warn!("unexpected request from peer (byte: '{}'), closing connection", byte),
+                    }
+
+                    let msg = b"invalid request type";
+                    let length = u32::to_be_bytes(msg.len() as u32);
+                    let bufs = &mut [
+                        IoSlice::new(&Response::ERR_HEADER),
+                        IoSlice::new(&length),
+                        IoSlice::new(&*msg),
+                    ];
+                    return Deadline::timeout(
+                        &mut ctx,
+                        timeout::PEER_WRITE,
+                        stream.write_all_vectored(bufs),
+                    )
+                    .await
+                    .map(|()| passport.mark(Event::WrittenPeerResponse))
+                    .map_err(|err| err.describe("writing invalid request type response"));
                 }
             }
             passport.reset();
@@ -243,7 +292,10 @@ async fn retrieve_blob<M>(
             let created_at = blob.created_at().into();
             (Blob::Committed(blob), created_at)
         }
-        Ok(Err(Some(BlobEntry::Removed(removed_at)))) => (Blob::NotFound, removed_at.into()),
+        Ok(Err(Some(BlobEntry::Removed(removed_at)))) => {
+            let removed_at = DateTime::from(removed_at).mark_removed();
+            (Blob::NotFound, removed_at)
+        }
         Ok(Err(None)) => (Blob::NotFound, DateTime::INVALID),
         Err(()) => return Err(db_error()),
     };
@@ -400,7 +452,7 @@ async fn retrieve_keys_since<M>(
 }
 
 /// Expects to read the [`Key`], metadata of the blob (timestamp, length),
-/// followed by the bytes that make up the blob. Writes nothing to the
+/// followed by the bytes that make up the blob. Writes a [`Response`] to the
 /// connection.
 async fn store_blob<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
@@ -454,29 +506,46 @@ async fn store_blob<M>(
         }
     }
 
-    match timestamp.into() {
+    let response = match timestamp.into() {
         ModifiedTime::Created(timestamp) => {
             let view = replace(buf, Buffer::empty()).view(blob_length as usize);
             match sync_stored_blob(ctx, db_ref, passport, view, timestamp).await {
                 Ok(view) => {
                     *buf = view.processed();
-                    Ok(())
+                    Response::ok()
                 }
-                Err(()) => Err(db_error()),
+                Err(()) => return Err(db_error()),
             }
         }
         ModifiedTime::Removed(timestamp) => {
+            buf.processed(blob_length as usize);
             match sync_removed_blob(ctx, db_ref, passport, key, timestamp).await {
-                Ok(()) => Ok(()),
-                Err(()) => Err(db_error()),
+                Ok(()) => Response::ok(),
+                Err(()) => return Err(db_error()),
             }
         }
         ModifiedTime::Invalid => {
+            buf.processed(blob_length as usize);
             warn!("peer wanted to a blob with an invalid timestamp");
-            // TODO: do something more?
-            Ok(())
+            Response::err("invalid timestamp")
         }
-    }
+    };
 
-    // TODO: add a response to the peer.
+    if let Some(msg) = response.msg {
+        let length = u32::to_be_bytes(msg.len() as u32);
+        let bufs = &mut [
+            IoSlice::new(&response.bytes),
+            IoSlice::new(&length),
+            IoSlice::new(&msg),
+        ];
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
+            .await
+            .map(|()| passport.mark(Event::WrittenPeerResponse))
+            .map_err(|err| err.describe("writing error response"))
+    } else {
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&response.bytes))
+            .await
+            .map(|()| passport.mark(Event::WrittenPeerResponse))
+            .map_err(|err| err.describe("writing ok response"))
+    }
 }

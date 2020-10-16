@@ -829,7 +829,8 @@ pub mod switcher {
     };
     use crate::{db, timeout, Buffer};
 
-    const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
+    /// Error returned when the magic string is incorrect.
+    pub const MAGIC_ERROR_MSG: &[u8] = b"incorrect connection magic";
 
     /// Actor that acts as switcher between acting as a coordinator server or
     /// participant.

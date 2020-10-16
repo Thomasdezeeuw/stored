@@ -3,6 +3,7 @@
     array_value_iter,
     bool_to_option,
     can_vector,
+    const_panic,
     exact_size_is_empty,
     fmt_as_str,
     hash_set_entry,
