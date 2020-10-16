@@ -74,9 +74,11 @@ pub fn start(
         peers.clone(),
     );
 
-    // NOTE: the synchronisation actor only starts once all peers are connected
-    // and all worker threads are started, as defined by the `start_sync` latch.
-    start_sync_actor(runtime, db_ref, start_http_ref, start_sync, peers.clone());
+    if !peers.is_empty() {
+        // NOTE: the synchronisation actor only starts once all peers are connected
+        // and all worker threads are started, as defined by the `start_sync` latch.
+        start_sync_actor(runtime, db_ref, start_http_ref, start_sync, peers.clone());
+    }
 
     Ok(peers)
 }
