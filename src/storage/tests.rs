@@ -2107,6 +2107,27 @@ mod storage {
     }
 
     #[test]
+    fn database_unlocking() {
+        let path = temp_dir("database_unlocking.db");
+        let storage1 = Storage::open(&path).unwrap();
+
+        match Storage::open(&path) {
+            Ok(_) => panic!("expected to fail opening storage"),
+            Err(err) => {
+                assert_eq!(err.kind(), io::ErrorKind::Other);
+                assert!(err.to_string().contains("database already in used"));
+            }
+        }
+
+        // Dropping the `Storage` should unlock it.
+        drop(storage1);
+
+        // This should not panic.
+        let storage2 = Storage::open(&path).unwrap();
+        drop(storage2);
+    }
+
+    #[test]
     fn add_blob_after_removed() {
         let path = temp_dir("add_blob_after_removed.db");
         let mut storage = Storage::open(&path).unwrap();

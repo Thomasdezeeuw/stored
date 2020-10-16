@@ -997,13 +997,16 @@ impl Data {
             .read(true)
             .append(true)
             .open(path)
+            // NOTE: the locking MUST happen before creating the `Data`
+            // structure, because `Data` truncates itself to `used_bytes` (which
+            // will be 0 if the locking fails).
+            .and_then(|mut file| lock(&mut file).map(|()| file))
             .map(|file| Data {
                 file,
                 used_bytes: 0,
                 mmaped_bytes: 0,
                 areas: Vec::new(),
             })?;
-        lock(&mut data.file)?;
 
         let metadata = data.file.metadata()?;
         data.used_bytes = metadata.len();
