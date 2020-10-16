@@ -127,10 +127,7 @@ impl Buffer {
             slice::from_raw_parts_mut(data_ptr, self.capacity_left())
         };
         let used_bytes = &self.data[self.processed..];
-        assert!(
-            used_bytes.as_ptr() as usize + used_bytes.len()
-                < unused_bytes.as_ptr() as usize + unused_bytes.len()
-        );
+        assert!(used_bytes.as_ptr() as usize + used_bytes.len() == unused_bytes.as_ptr() as usize);
         (used_bytes, unused_bytes)
     }
 

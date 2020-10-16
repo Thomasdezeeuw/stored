@@ -267,13 +267,6 @@ impl Hash for Key {
     where
         H: Hasher,
     {
-        /* Changing to use u128 well for AHasher.
-        state.write_u128(unsafe { *(&self.bytes[0..16] as *const _ as *const u128) });
-        state.write_u128(unsafe { *(&self.bytes[16..32] as *const _ as *const u128) });
-        state.write_u128(unsafe { *(&self.bytes[32..48] as *const _ as *const u128) });
-        state.write_u128(unsafe { *(&self.bytes[48..64] as *const _ as *const u128) });
-        */
-
         Hash::hash(&self.bytes[..], state)
     }
 }
