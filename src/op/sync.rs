@@ -408,6 +408,8 @@ restart_supervisor!(
     (ActorRef<db::Message>, SocketAddr),
     5,
     Duration::from_secs(60),
+    ": remote_address=\"{}\"",
+    args.1
 );
 
 /// Actor that synchronises with a single peer.
