@@ -53,7 +53,7 @@ fn buffer_copy_to() {
         &bytes[..2]
     );
     // Empty dst.
-    let mut dst = [0; 0];
+    let mut dst = [MaybeUninit::uninit(); 0];
     assert_eq!(buf.copy_to(&mut dst), 0);
 
     // dst > buf.
