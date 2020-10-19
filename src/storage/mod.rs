@@ -1452,8 +1452,8 @@ impl Entry {
     {
         Entry {
             key,
-            offset: u64::from_ne_bytes(offset.to_be_bytes()),
-            length: u32::from_ne_bytes(length.to_be_bytes()),
+            offset: offset.to_be(),
+            length: length.to_be(),
             // `From<SystemTime> for DateTime` always returns a created at time.
             time: created_at.into(),
         }
@@ -1466,12 +1466,12 @@ impl Entry {
 
     /// Returns the offset for the entry, in native endian.
     fn offset(&self) -> u64 {
-        u64::from_be_bytes(self.offset.to_ne_bytes())
+        u64::from_be(self.offset)
     }
 
     /// Returns the length for the entry, in native endian.
     pub fn length(&self) -> u32 {
-        u32::from_be_bytes(self.length.to_ne_bytes())
+        u32::from_be(self.length)
     }
 
     /// Returns the time at which this entry was created.
@@ -1532,14 +1532,14 @@ impl DateTime {
     /// Create a new `DateTime`.
     const fn new(seconds: u64, subsec_nanos: u32) -> DateTime {
         DateTime {
-            seconds: u64::from_be_bytes(seconds.to_ne_bytes()),
-            subsec_nanos: u32::from_be_bytes(subsec_nanos.to_ne_bytes()),
+            seconds: seconds.to_be(),
+            subsec_nanos: subsec_nanos.to_be(),
         }
     }
 
     /// Returns the number of whole seconds.
     fn secs(&self) -> u64 {
-        u64::from_be_bytes(self.seconds.to_ne_bytes())
+        u64::from_be(self.seconds)
     }
 
     /// Returns the fractional part in nanoseconds. This is always less than one
@@ -1551,7 +1551,7 @@ impl DateTime {
     /// Returns the same fractional part as  `subsec_nanos`, but doesn't remove
     /// the indicator bits (`REMOVED_BIT` and `INVALID_BIT`).
     fn subsec_nanos_raw(&self) -> u32 {
-        u32::from_be_bytes(self.subsec_nanos.to_ne_bytes())
+        u32::from_be(self.subsec_nanos)
     }
 
     /// Returns `true` if the `REMOVED_BIT` is set.
@@ -1571,7 +1571,7 @@ impl DateTime {
     pub fn mark_removed(mut self) -> Self {
         let mut subsec_nanos = self.subsec_nanos_raw();
         subsec_nanos |= DateTime::REMOVED_BIT;
-        self.subsec_nanos = u32::from_ne_bytes(subsec_nanos.to_be_bytes());
+        self.subsec_nanos = subsec_nanos.to_be();
         self
     }
 
