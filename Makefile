@@ -3,10 +3,10 @@
 # will cause recompilation).
 RUSTFLAGS                ?= -C target-cpu=native
 MACOSX_DEPLOYMENT_TARGET ?= 10.15
-export GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
+GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
 # Either " modified" or empty if on a clean branch.
-export GIT_MODIFIED              = $(shell git diff --quiet --ignore-submodules HEAD 2> /dev/null || echo " modified")
-export COMMIT_VERSION            = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
+GIT_MODIFIED              = $(shell git diff --quiet --ignore-submodules HEAD 2> /dev/null || echo " modified")
+export COMMIT_VERSION     = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
 
 build:
 	RUSTFLAGS="$(RUSTFLAGS)" MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)" cargo build --release
