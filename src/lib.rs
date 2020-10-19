@@ -8,7 +8,6 @@
     fmt_as_str,
     hash_set_entry,
     maybe_uninit_slice,
-    move_ref_pattern,
     never_type,
     type_alias_impl_trait,
     write_all_vectored
