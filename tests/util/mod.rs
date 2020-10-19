@@ -280,10 +280,18 @@ fn build_stored() {
     static mut BUILD_SUCCESS: bool = false;
 
     BUILD.call_once(|| {
-        let mut cmd = Command::new("cargo");
+        if let Ok(_) = fs::metadata(env!("CARGO_BIN_EXE_stored")) {
+            // Already build.
+            unsafe { BUILD_SUCCESS = true }
+            return;
+        }
+
+        let mut cmd = Command::new(env!("CARGO"));
         cmd.args(&["build", "--bin", "stored"]);
-        #[cfg(not(debug_assertions))]
-        cmd.arg("--release");
+        if env!("CARGO_BIN_EXE_stored").contains("release") {
+            cmd.arg("--release");
+        }
+
         let output = cmd.output().expect("unable to build server");
 
         if !output.status.success() {
