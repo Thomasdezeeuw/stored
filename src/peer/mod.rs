@@ -3,6 +3,7 @@
 use std::fmt;
 use std::future::Future;
 use std::mem::replace;
+use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -24,6 +25,7 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Describe;
+use crate::net::local_address;
 use crate::storage::{RemoveBlob, StoreBlob};
 use crate::util::CountDownLatch;
 use crate::{config, db, timeout, Key};
@@ -57,21 +59,17 @@ pub fn start(
     let relay = consensus::actor as fn(_, _) -> _;
     let participant_ref =
         runtime.spawn(NoSupervisor, relay, db_ref.clone(), ActorOptions::default());
+    let local_addresses = local_address().map_err(|err| err.describe("getting local addresses"))?;
     let peers = Peers::new(
+        local_addresses.into_boxed_slice(),
+        config.peer_address.port(),
         participant_ref,
         start_sync.clone(),
         db_ref.clone(),
-        config.peer_address,
     );
 
     start_listener(runtime, db_ref.clone(), config.peer_address, peers.clone())?;
-    start_relays(
-        runtime,
-        config.peers.0,
-        &db_ref,
-        config.peer_address,
-        peers.clone(),
-    );
+    start_relays(runtime, config.peers.0, &db_ref, peers.clone());
 
     // NOTE: the synchronisation actor only starts once all peers are connected
     // and all worker threads are started, as defined by the `start_sync` latch.
@@ -116,14 +114,13 @@ fn start_relays(
     runtime: &mut Runtime,
     mut peer_addresses: Vec<SocketAddr>,
     db_ref: &ActorRef<db::Message>,
-    server: SocketAddr,
     peers: Peers,
 ) {
     peer_addresses.sort_unstable();
     peer_addresses.dedup();
 
     for peer_address in peer_addresses {
-        if same_addr(&peer_address, &server) {
+        if peers.is_own_address(&peer_address) {
             // Don't want to add ourselves.
             continue;
         }
@@ -164,43 +161,6 @@ fn start_sync_actor(
         .with_priority(Priority::HIGH)
         .mark_ready();
     runtime.spawn(NoSupervisor, actor, args, options);
-}
-
-/// Returns `true` if `addr1` and `addr2` are the same address, or if the have
-/// the same port and are both loopback addresses.
-///
-/// # Notes
-///
-/// This ignores if the addresses are different versions.
-fn same_addr(addr1: &SocketAddr, addr2: &SocketAddr) -> bool {
-    addr1 == addr2
-        || (addr1.port() == addr2.port()
-            && (addr1.ip().is_loopback() || addr1.ip().is_unspecified())
-            && (addr2.ip().is_loopback() || addr2.ip().is_unspecified()))
-}
-
-#[test]
-fn test_same_addr() {
-    let tests = &[
-        ("127.0.0.1:123", "127.0.0.1:123", true),
-        ("127.0.0.1:123", "[::1]:123", true),
-        ("127.0.0.1:123", "[::]:123", true),
-        ("127.0.0.1:123", "0.0.0.0:123", true),
-        ("127.0.0.1:123", "0.0.0.0:1234", false),
-        ("80.0.0.1:1234", "0.0.0.0:1234", false),
-    ];
-
-    for (addr1, addr2, expected) in tests {
-        let addr1 = addr1.parse().unwrap();
-        let addr2 = addr2.parse().unwrap();
-        assert_eq!(
-            same_addr(&addr1, &addr2),
-            *expected,
-            "address1=\"{}\", addres2=\"{}\"",
-            addr1,
-            addr2
-        );
-    }
 }
 
 /// Exit message send by coordinator for a clean shutdown.
@@ -307,9 +267,11 @@ pub struct Peers {
 }
 
 struct PeersInner {
+    /// Local addresses and server port, used to determine is a peer address is
+    /// actually ourself.
+    local_addresses: Box<[IpAddr]>,
+    server_port: u16,
     peers: RwLock<Vec<Peer>>,
-    /// Address to which peers can connect.
-    server_address: SocketAddr,
     /// Unique id for each consensus run.
     consensus_id: AtomicUsize,
     /// Count down latch that gets decreased once a (previously unconnected)
@@ -333,15 +295,17 @@ struct Peer {
 impl Peers {
     /// Create a new peer collections.
     pub fn new(
+        local_addresses: Box<[IpAddr]>,
+        server_port: u16,
         participant_ref: ActorRef<consensus::Message>,
         peers_connected: Arc<CountDownLatch>,
         db_ref: ActorRef<db::Message>,
-        server_address: SocketAddr,
     ) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
+                local_addresses,
+                server_port,
                 peers: RwLock::new(Vec::new()),
-                server_address,
                 consensus_id: AtomicUsize::new(0),
                 peers_connected,
                 participant_ref,
@@ -355,9 +319,9 @@ impl Peers {
         self.inner.peers.read().is_empty()
     }
 
-    /// Returns the `peer::server` for this node.
-    pub fn server_address(&self) -> SocketAddr {
-        self.inner.server_address
+    /// Returns the port used by `peer::server` on this node.
+    pub fn server_port(&self) -> u16 {
+        self.inner.server_port
     }
 
     /// Start a consensus algorithm to store blob with `key`.
@@ -562,12 +526,8 @@ impl Peers {
 
     /// Attempts to spawn a [`coordinator::relay`] actor for `peer_address`..
     fn spawn<M>(&self, ctx: &mut actor::Context<M, ThreadSafe>, peer_address: SocketAddr) {
-        let server = self.inner.server_address;
-
-        // If we get the known peers addresses from a peer it could be that we
-        // (this node) it a known peer, but we don't want to add ourselves to
-        // this list.
-        if same_addr(&peer_address, &server) {
+        if self.is_own_address(&peer_address) {
+            // Don't want to connect to ourself.
             return;
         }
 
@@ -617,7 +577,7 @@ impl Peers {
 
     /// Attempts to add `peer` to the collection.
     fn add(&self, peer: Peer) {
-        if same_addr(&peer.address, &self.inner.server_address) {
+        if self.is_own_address(&peer.address) {
             // Don't want to add ourselves.
             return;
         }
@@ -648,6 +608,12 @@ impl Peers {
                 self.inner.peers_connected.decrease();
             }
         }
+    }
+
+    /// Returns true if the `address` would connect to ourself.
+    fn is_own_address(&self, address: &SocketAddr) -> bool {
+        address.port() == self.inner.server_port
+            && self.inner.local_addresses.contains(&address.ip())
     }
 
     /// Returns `true` if a peer at `address` is already in the collection.

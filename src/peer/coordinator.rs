@@ -125,8 +125,8 @@ pub mod relay {
         let mut req_id = RequestId(0);
         let mut buf = Buffer::new();
 
-        let server = peers.server_address();
-        let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
+        let server_port = peers.server_port();
+        let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, server_port).await?;
         read_known_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
 
         // In case the participant send an exit message along with the known
@@ -405,7 +405,7 @@ pub mod relay {
         ctx: &mut actor::Context<Message, ThreadSafe>,
         remote: SocketAddr,
         buf: &mut Buffer,
-        server: &SocketAddr,
+        server_port: u16,
     ) -> crate::Result<TcpStream> {
         trace!(
             "coordinator relay connecting to peer participant: remote_address=\"{}\"",
@@ -425,11 +425,10 @@ pub mod relay {
             .await
             .map_err(|err| err.describe("failed to write participant magic"))?;
 
-        // Need space for the magic bytes and a IPv6 address (max. 45 bytes).
-        let mut wbuf = buf.split_write(45).1;
-        // The address of the `coordinator::server`.
-        serde_json::to_writer(&mut wbuf, server)
-            .map_err(|err| io::Error::from(err).describe("serializing server address"))?;
+        // The port for the `coordinator::server`.
+        let mut wbuf = buf.split_write(5).1;
+        serde_json::to_writer(&mut wbuf, &server_port)
+            .map_err(|err| io::Error::from(err).describe("serializing server port"))?;
 
         // We buffer all response and send them in a single write call.
         if let Err(err) = stream.set_nodelay(true) {

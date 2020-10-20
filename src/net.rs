@@ -1,6 +1,6 @@
-use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
+use std::{io, ptr};
 
 use heph::actor;
 use heph::net::TcpStream;
@@ -42,4 +42,48 @@ where
         wait *= 2;
         i += 1;
     }
+}
+
+/// Get all local known IP address.
+pub(crate) fn local_address() -> io::Result<Vec<IpAddr>> {
+    let mut addresses = Vec::new();
+    let mut interfaces: *mut libc::ifaddrs = ptr::null_mut();
+
+    if unsafe { libc::getifaddrs(&mut interfaces) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // Loop over the interfaces.
+    let mut ifa = interfaces;
+    while let Some(interface) = unsafe { ifa.as_ref() } {
+        if let Some(addr) = unsafe { interface.ifa_addr.as_ref() } {
+            match addr.sa_family as libc::c_int {
+                libc::AF_INET => {
+                    let address = IpAddr::V4(unsafe {
+                        // (sockaddr -> sockaddr_in).sin_addr -> in_addr -> Ipv4Addr.
+                        *(&(*(addr as *const _ as *const libc::sockaddr_in)).sin_addr
+                            as *const libc::in_addr as *const Ipv4Addr)
+                    });
+                    addresses.push(address);
+                }
+                libc::AF_INET6 => {
+                    let address = IpAddr::V6(unsafe {
+                        // (sockaddr -> sockaddr_in6).sockaddr_in -> sockaddr_in -> Ipv6Addr.
+                        *(&(*(addr as *const _ as *const libc::sockaddr_in6)).sin6_addr
+                            as *const libc::in6_addr as *const Ipv6Addr)
+                    });
+                    addresses.push(address);
+                }
+                // Only interested in IP interfaces.
+                _ => {}
+            }
+        }
+
+        // Next interface.
+        ifa = interface.ifa_next;
+    }
+
+    unsafe { libc::freeifaddrs(interfaces) };
+
+    Ok(addresses)
 }

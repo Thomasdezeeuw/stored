@@ -168,14 +168,8 @@ pub mod dispatcher {
         debug!("starting participant dispatcher");
 
         // Read the address at which the peer is listening for peer connections.
-        // TODO: maybe only send the port? We can use the address from
-        // `stream_address`.
-        let mut remote_server = read_server_address(&mut ctx, &mut stream, &mut buf).await?;
-        if remote_server.ip().is_unspecified() {
-            // If the peer listener is bound to an unspecified address (e.g.
-            // "0.0.0.0") we'll use the address the peer connected to us with.
-            remote_server.set_ip(stream_address.ip())
-        }
+        let remote_server =
+            read_server_address(&mut ctx, &mut stream, &stream_address, &mut buf).await?;
 
         // Add it to the list of known peers.
         peers.spawn(&mut ctx, remote_server);
@@ -218,13 +212,15 @@ pub mod dispatcher {
         }
     }
 
-    /// Reads the address of the `coordinator::server` from `stream`.
+    /// Reads the port of the `coordinator::server` from `stream`, return the
+    /// address for it based on `remote`.
     async fn read_server_address(
         ctx: &mut actor::Context<Response, ThreadSafe>,
         stream: &mut TcpStream,
+        remote: &SocketAddr,
         buf: &mut Buffer,
     ) -> crate::Result<SocketAddr> {
-        trace!("reading peer's server address");
+        trace!("reading peer's server port");
         loop {
             // NOTE: because we didn't create `buf` it could be its already
             // holding a request, so try to deserialise before reading.
@@ -234,26 +230,26 @@ pub mod dispatcher {
             // `byte_offset` below.
             let mut iter = serde_json::Deserializer::from_slice(buf.as_slice()).into_iter();
             match iter.next() {
-                Some(Ok(address)) => {
+                Some(Ok(port)) => {
                     let bytes_processed = iter.byte_offset();
                     buf.processed(bytes_processed);
-                    return Ok(address);
+                    return Ok(SocketAddr::new(remote.ip(), port));
                 }
                 // Continue to reading below.
                 None => {}
                 Some(Err(ref err)) if err.is_eof() => {}
                 Some(Err(err)) => {
-                    return Err(io::Error::from(err).describe("deserializing peer's server address"))
+                    return Err(io::Error::from(err).describe("deserializing peer's server port"))
                 }
             }
 
             match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv(&mut *buf)).await {
                 Ok(0) => {
                     return Err(io::Error::from(io::ErrorKind::UnexpectedEof)
-                        .describe("reading peer's server address"));
+                        .describe("reading peer's server port"));
                 }
                 Ok(..) => {}
-                Err(err) => return Err(err.describe("reading peer's server address")),
+                Err(err) => return Err(err.describe("reading peer's server port")),
             }
         }
     }
