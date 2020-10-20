@@ -20,6 +20,10 @@ use crate::{db, storage, Key};
 const MAX_CONSENSUS_TRIES: usize = 3;
 
 pub(crate) trait Query: storage::Query {
+    /// Name of the consensus, e.g. "store" or "remove.
+    const NAME: &'static str;
+
+    /// [`Future`] returned by [`Query::alredy_done`].
     type AlreadyDone: Future<Output = Result<Option<SystemTime>, ()>>;
 
     /// Check in between consensus attempt to ensure the operation isn't already
@@ -93,7 +97,8 @@ pub(crate) async fn consensus<M, Q>(
 ) -> Result<SystemTime, ()>
 where
     Q: Query,
-    db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>> + From<RpcMessage<Q, ()>>,
+    db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>>, // Commit.
+    db::Message: From<RpcMessage<Q, ()>>,                       // Abort.
 {
     // The consensus id of a previous run, only used after we failed a consensus
     // run previously.
@@ -127,7 +132,8 @@ where
         // storage layer.
         let (consensus_id, rpc) = query.peers_prepare(ctx, peers);
         debug!(
-            "requesting peers to prepare query: request_id=\"{}\", consensus_id={}, key=\"{}\"",
+            "requesting peers to prepare {} query: request_id=\"{}\", consensus_id={}, key=\"{}\"",
+            Q::NAME,
             passport.id(),
             consensus_id,
             query.key()
@@ -146,13 +152,13 @@ where
         if aborted > 0 || failed > 0 {
             // TODO: allow some failure here.
             warn!(
-                "consensus algorithm failed: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
-                passport.id(), consensus_id, query.key(), committed, aborted, failed
+                "{} consensus algorithm failed: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
+                Q::NAME, passport.id(), consensus_id, query.key(), committed, aborted, failed
             );
 
             // Await aborting the previous run, if any.
             if let Some(abort_rpc) = abort_rpc {
-                abort_consensus(
+                abort_consensus::<Q>(
                     passport,
                     abort_rpc,
                     prev_consensus_id.take().unwrap(),
@@ -168,13 +174,14 @@ where
         }
 
         debug!(
-            "consensus algorithm succeeded: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
-            passport.id(), consensus_id, query.key(), committed, aborted, failed
+            "{} consensus algorithm succeeded: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
+            Q::NAME, passport.id(), consensus_id, query.key(), committed, aborted, failed
         );
 
         // Phase two of 2PC: ask the participants to commit.
         debug!(
-            "requesting peers to commit: request_id=\"{}\", consensus_id={}, key=\"{}\"",
+            "requesting peers to commit to {} query: request_id=\"{}\", consensus_id={}, key=\"{}\"",
+            Q::NAME,
             passport.id(),
             consensus_id,
             query.key()
@@ -186,7 +193,7 @@ where
 
         // Await aborting the previous run, if any.
         if let Some(abort_rpc) = abort_rpc {
-            abort_consensus(
+            abort_consensus::<Q>(
                 passport,
                 abort_rpc,
                 prev_consensus_id.take().unwrap(),
@@ -202,8 +209,8 @@ where
         if aborted > 0 || failed > 0 {
             // TODO: allow some failure here.
             warn!(
-                "consensus algorithm commitment failed: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
-                passport.id(), consensus_id, query.key(), committed, aborted, failed
+                "{} consensus algorithm commitment failed: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
+                Q::NAME, passport.id(), consensus_id, query.key(), committed, aborted, failed
             );
 
             // Try again, ensuring that this run is aborted in the next
@@ -213,8 +220,8 @@ where
         }
 
         debug!(
-            "consensus algorithm commitment success: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
-            passport.id(), consensus_id, query.key(), committed, aborted, failed
+            "{} consensus algorithm commitment success: request_id=\"{}\", consensus_id={}, key=\"{}\", votes_commit={}, votes_abort={}, failed_votes={}",
+            Q::NAME, passport.id(), consensus_id, query.key(), committed, aborted, failed
         );
 
         // NOTE: Its crucial here that at least a single peer received the
@@ -239,8 +246,9 @@ where
 
     // Failed too many times.
     error!(
-        "failed {} consensus algorithm runs: request_id=\"{}\", key=\"{}\"",
+        "failed {} {} consensus algorithm runs: request_id=\"{}\", key=\"{}\"",
         MAX_CONSENSUS_TRIES,
+        Q::NAME,
         passport.id(),
         query.key()
     );
@@ -265,7 +273,8 @@ where
     db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>>,
 {
     debug!(
-        "committing to query: request_id=\"{}\", key=\"{}\"",
+        "committing to {} query: request_id=\"{}\", key=\"{}\"",
+        Q::NAME,
         passport.id(),
         query.key()
     );
@@ -301,22 +310,25 @@ where
     db::Message: From<RpcMessage<Q, ()>>,
 {
     let abort_rpc = query.peers_abort(ctx, peers, consensus_id);
-    abort_consensus(passport, abort_rpc, consensus_id, query.key()).await;
+    abort_consensus::<Q>(passport, abort_rpc, consensus_id, query.key()).await;
     abort_query(ctx, db_ref, passport, query).await
 }
 
 /// Await the results in `abort_rpc`, logging the results.
-async fn abort_consensus(
+async fn abort_consensus<Q>(
     passport: &mut Passport,
     abort_rpc: PeerRpc<()>,
     consensus_id: ConsensusId,
     key: &Key,
-) {
+) where
+    Q: Query,
+{
     let results = abort_rpc.await;
     passport.mark(Event::AbortedConsensusRun);
     let (committed, aborted, failed) = count_consensus_votes(&results);
     info!(
-        "aborted consensus algorithm: request_id=\"{}\", consensus_id=\"{}\", key=\"{}\", success={}, failed={}",
+        "aborted {} consensus algorithm: request_id=\"{}\", consensus_id=\"{}\", key=\"{}\", success={}, failed={}",
+        Q::NAME,
         passport.id(),
         consensus_id,
         key,
@@ -338,7 +350,8 @@ where
     db::Message: From<RpcMessage<Q, ()>>,
 {
     debug!(
-        "aborting query: request_id=\"{}\", key=\"{}\"",
+        "aborting {} query: request_id=\"{}\", key=\"{}\"",
+        Q::NAME,
         passport.id(),
         query.key()
     );

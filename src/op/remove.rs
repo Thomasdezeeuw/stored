@@ -105,6 +105,8 @@ where
 }
 
 impl super::Query for RemoveBlob {
+    const NAME: &'static str = "remove";
+
     type AlreadyDone = AlreadyDone;
 
     fn already_done<M>(

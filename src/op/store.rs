@@ -246,6 +246,8 @@ async fn store_phase_two<M>(
 }
 
 impl super::Query for StoreBlob {
+    const NAME: &'static str = "store";
+
     type AlreadyDone = AlreadyDone;
 
     fn already_done<M>(
