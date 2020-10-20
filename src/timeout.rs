@@ -29,7 +29,7 @@ pub const PEER_ALIVE: Duration = Duration::from_secs(120);
 /// See [`peer_write`] for larger writes.
 pub const PEER_WRITE: Duration = Duration::from_secs(1);
 /// Timeout used in making an Remote Procedure Call.
-pub const PEER_RPC: Duration = Duration::from_secs(5);
+pub const PEER_RPC: Duration = Duration::from_secs(10);
 /// Time participants wait for a consensus phase.
 pub const PEER_CONSENSUS: Duration = Duration::from_secs(10);
 /// Time to wait between connection tries when connecting to a peer, should be
