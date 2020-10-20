@@ -31,7 +31,7 @@ pub const PEER_WRITE: Duration = Duration::from_secs(1);
 /// Timeout used in making an Remote Procedure Call.
 pub const PEER_RPC: Duration = Duration::from_secs(10);
 /// Time participants wait for a consensus phase.
-pub const PEER_CONSENSUS: Duration = Duration::from_secs(10);
+pub const PEER_CONSENSUS: Duration = Duration::from_secs(15);
 /// Time to wait between connection tries when connecting to a peer, should be
 /// doubled after each try.
 pub const PEER_CONNECT: Duration = Duration::from_millis(500);
@@ -41,8 +41,8 @@ pub const PEER_CONNECT: Duration = Duration::from_millis(500);
 /// [`peer::sync`]: crate::peer::sync::actor
 pub const BEFORE_FULL_SYNC: Duration = Duration::from_secs(5);
 
-// Put a limit on the functions below: currently for a 1 GB blob the timeout
-// would be ~17 minutes.
+// TODO: put a limit on the functions below: currently for a 1 GB blob the
+// timeout would be ~17 minutes.
 
 /// Returns the timeout for a read of `size` bytes.
 ///
