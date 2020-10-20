@@ -63,6 +63,16 @@ fn buffer_copy_to() {
         unsafe { MaybeUninit::slice_assume_init_ref(&dst[..8]) },
         &bytes[2..]
     );
+
+    // dst == buf
+    const BYTES: &[u8] = &[11, 12, 13, 14];
+    buf.data.extend(BYTES);
+    let mut dst = [MaybeUninit::uninit(); BYTES.len()];
+    assert_eq!(buf.copy_to(&mut dst), BYTES.len());
+    assert_eq!(
+        unsafe { MaybeUninit::slice_assume_init_ref(&dst[..BYTES.len()]) },
+        BYTES,
+    );
 }
 
 #[test]
