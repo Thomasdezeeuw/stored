@@ -874,11 +874,11 @@ pub mod consensus {
             }
             blob_length => {
                 let write = move |mut stream_blob: Box<StreamBlob>| {
-                    async move {
-                        // First copy over all the contents of the blob in the
-                        // buffer to the data file.
-                        buf.copy_to(&mut *stream_blob);
+                    // First copy over all the contents of the blob in the
+                    // buffer to the data file.
+                    buf.copy_to(&mut *stream_blob);
 
+                    async move {
                         // If the entire blob wasn't in the buffer, read the
                         // remaining bytes from the stream.
                         let bytes_left = stream_blob.bytes_left();

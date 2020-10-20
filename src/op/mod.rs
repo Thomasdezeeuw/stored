@@ -395,7 +395,7 @@ struct DbRpc<Res> {
 
 /* TODO: change Result::Err for `DbRpc` to:
  * enum DbError {
- *  TimeOut,
+ *  TimedOut,
  *  Unavailable,
  * }
  */
