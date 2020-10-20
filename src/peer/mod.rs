@@ -57,15 +57,14 @@ pub fn start(
     let relay = consensus::actor as fn(_, _) -> _;
     let participant_ref =
         runtime.spawn(NoSupervisor, relay, db_ref.clone(), ActorOptions::default());
-    let peers = Peers::new(participant_ref, start_sync.clone(), db_ref.clone());
-
-    start_listener(
-        runtime,
+    let peers = Peers::new(
+        participant_ref,
+        start_sync.clone(),
         db_ref.clone(),
         config.peer_address,
-        peers.clone(),
-        config.peer_address,
-    )?;
+    );
+
+    start_listener(runtime, db_ref.clone(), config.peer_address, peers.clone())?;
     start_relays(
         runtime,
         config.peers.0,
@@ -74,9 +73,9 @@ pub fn start(
         peers.clone(),
     );
 
+    // NOTE: the synchronisation actor only starts once all peers are connected
+    // and all worker threads are started, as defined by the `start_sync` latch.
     if !peers.is_empty() {
-        // NOTE: the synchronisation actor only starts once all peers are connected
-        // and all worker threads are started, as defined by the `start_sync` latch.
         start_sync_actor(runtime, db_ref, start_http_ref, start_sync, peers.clone());
     }
 
@@ -94,14 +93,13 @@ fn start_listener(
     db_ref: ActorRef<db::Message>,
     address: SocketAddr,
     peers: Peers,
-    server: SocketAddr,
 ) -> crate::Result<()> {
     debug!("starting peer listener: address=\"{}\"", address);
 
     // Peer interaction blocks other peers so give them a high priority.
     let options = ActorOptions::default().with_priority(Priority::HIGH);
-    let switcher = (switcher::actor as fn(_, _, _, _, _, _) -> _)
-        .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone(), server));
+    let switcher = (switcher::actor as fn(_, _, _, _, _) -> _)
+        .map_arg(move |(stream, remote)| (stream, remote, peers.clone(), db_ref.clone()));
     let server_actor = TcpServer::setup(address, NoSupervisor, switcher, options.clone())
         .map_err(|err| err.describe("creating peer listener"))?;
     let supervisor = ListenerSupervisor::new(());
@@ -134,14 +132,10 @@ fn start_relays(
             "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
-        let args = (peer_address, db_ref.clone(), peers.clone(), server, None);
-        let supervisor = coordinator::relay::Supervisor::new(
-            peer_address,
-            db_ref.clone(),
-            peers.clone(),
-            server,
-        );
-        let relay = coordinator::relay::actor as fn(_, _, _, _, _, _) -> _;
+        let args = (peer_address, db_ref.clone(), peers.clone(), None);
+        let supervisor =
+            coordinator::relay::Supervisor::new(peer_address, db_ref.clone(), peers.clone());
+        let relay = coordinator::relay::actor as fn(_, _, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -193,7 +187,7 @@ fn test_same_addr() {
         ("127.0.0.1:123", "[::]:123", true),
         ("127.0.0.1:123", "0.0.0.0:123", true),
         ("127.0.0.1:123", "0.0.0.0:1234", false),
-        ("80.0.0.1:123", "0.0.0.0:1234", false),
+        ("80.0.0.1:1234", "0.0.0.0:1234", false),
     ];
 
     for (addr1, addr2, expected) in tests {
@@ -314,6 +308,8 @@ pub struct Peers {
 
 struct PeersInner {
     peers: RwLock<Vec<Peer>>,
+    /// Address to which peers can connect.
+    server_address: SocketAddr,
     /// Unique id for each consensus run.
     consensus_id: AtomicUsize,
     /// Count down latch that gets decreased once a (previously unconnected)
@@ -340,10 +336,12 @@ impl Peers {
         participant_ref: ActorRef<consensus::Message>,
         peers_connected: Arc<CountDownLatch>,
         db_ref: ActorRef<db::Message>,
+        server_address: SocketAddr,
     ) -> Peers {
         Peers {
             inner: Arc::new(PeersInner {
                 peers: RwLock::new(Vec::new()),
+                server_address,
                 consensus_id: AtomicUsize::new(0),
                 peers_connected,
                 participant_ref,
@@ -355,6 +353,11 @@ impl Peers {
     /// Returns `true` if the collection is empty.
     pub fn is_empty(&self) -> bool {
         self.inner.peers.read().is_empty()
+    }
+
+    /// Returns the `peer::server` for this node.
+    pub fn server_address(&self) -> SocketAddr {
+        self.inner.server_address
     }
 
     /// Start a consensus algorithm to store blob with `key`.
@@ -558,12 +561,9 @@ impl Peers {
     }
 
     /// Attempts to spawn a [`coordinator::relay`] actor for `peer_address`..
-    fn spawn<M>(
-        &self,
-        ctx: &mut actor::Context<M, ThreadSafe>,
-        peer_address: SocketAddr,
-        server: SocketAddr,
-    ) {
+    fn spawn<M>(&self, ctx: &mut actor::Context<M, ThreadSafe>, peer_address: SocketAddr) {
+        let server = self.inner.server_address;
+
         // If we get the known peers addresses from a peer it could be that we
         // (this node) it a known peer, but we don't want to add ourselves to
         // this list.
@@ -582,20 +582,13 @@ impl Peers {
             "starting relay actor for peer: remote_address=\"{}\"",
             peer_address
         );
-        let args = (
-            peer_address,
-            self.inner.db_ref.clone(),
-            self.clone(),
-            server,
-            None,
-        );
+        let args = (peer_address, self.inner.db_ref.clone(), self.clone(), None);
         let supervisor = coordinator::relay::Supervisor::new(
             peer_address,
             self.inner.db_ref.clone(),
             self.clone(),
-            server,
         );
-        let relay = coordinator::relay::actor as fn(_, _, _, _, _, _) -> _;
+        let relay = coordinator::relay::actor as fn(_, _, _, _, _) -> _;
         let options = ActorOptions::default()
             .with_priority(Priority::HIGH)
             .mark_ready();
@@ -614,17 +607,21 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadSafe>,
         peer_addresses: &[SocketAddr],
-        server: SocketAddr,
     ) {
         // NOTE: we don't lock the entire collection up front here because we
         // don't want to hold the lock for too long.
         for peer_address in peer_addresses.iter().copied() {
-            self.spawn(ctx, peer_address, server);
+            self.spawn(ctx, peer_address);
         }
     }
 
     /// Attempts to add `peer` to the collection.
     fn add(&self, peer: Peer) {
+        if same_addr(&peer.address, &self.inner.server_address) {
+            // Don't want to add ourselves.
+            return;
+        }
+
         let mut peers = self.inner.peers.write();
         if !known_peer(&peers, &peer.address) {
             if !peer.is_connected {
@@ -842,12 +839,8 @@ pub mod switcher {
         remote: SocketAddr,
         peers: Peers,
         db_ref: ActorRef<db::Message>,
-        server: SocketAddr,
     ) -> Result<(), !> {
-        debug!(
-            "accepted peer connection: remote_address=\"{}\", server_addres=\"{}\"",
-            remote, server
-        );
+        debug!("accepted peer connection: remote_address=\"{}\"", remote);
         let mut buf = Buffer::new();
 
         let read_n = stream.recv_n(&mut buf, MAGIC_LENGTH);
@@ -855,23 +848,23 @@ pub mod switcher {
             Ok(()) => {}
             Err(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {
                 warn!(
-                    "closing connection: missing connection magic: remote_address=\"{}\", local_address=\"{}\"",
-                    remote, server
+                    "closing connection: missing connection magic: remote_address=\"{}\"",
+                    remote
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
                 if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
                     warn!(
-                        "error writing error response: {}: remote_address=\"{}\", local_address=\"{}\"",
-                        err, remote, server
+                        "error writing error response: {}: remote_address=\"{}\"",
+                        err, remote
                     );
                 }
                 return Ok(());
             }
             Err(err) => {
                 warn!(
-                    "closing connection: error reading connection magic: {}: remote_address=\"{}\", local_address=\"{}\"",
-                    err, remote, server
+                    "closing connection: error reading connection magic: {}: remote_address=\"{}\"",
+                    err, remote
                 );
                 return Ok(());
             }
@@ -885,21 +878,20 @@ pub mod switcher {
             }
             PARTICIPANT_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                participant::dispatcher::run_actor(ctx, stream, buf, peers, db_ref, server, remote)
-                    .await;
+                participant::dispatcher::run_actor(ctx, stream, buf, peers, db_ref, remote).await;
                 Ok(())
             }
             _ => {
                 warn!(
-                    "closing connection: incorrect connection magic: remote_address=\"{}\", local_address=\"{}\"",
-                    remote, server,
+                    "closing connection: incorrect connection magic: remote_address=\"{}\"",
+                    remote
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
                 if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
                     warn!(
-                        "error writing error response: {}: remote_address=\"{}\", local_address=\"{}\"",
-                        err, remote, server
+                        "error writing error response: {}: remote_address=\"{}\"",
+                        err, remote
                     );
                 }
                 Ok(())

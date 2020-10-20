@@ -44,7 +44,6 @@ pub mod relay {
         remote: SocketAddr,
         db_ref: ActorRef<db::Message>,
         peers: Peers,
-        server: SocketAddr,
         restarts_left: usize,
     }
 
@@ -53,17 +52,11 @@ pub mod relay {
 
     impl Supervisor {
         /// Create a new `Supervisor`.
-        pub fn new(
-            remote: SocketAddr,
-            db_ref: ActorRef<db::Message>,
-            peers: Peers,
-            server: SocketAddr,
-        ) -> Supervisor {
+        pub fn new(remote: SocketAddr, db_ref: ActorRef<db::Message>, peers: Peers) -> Supervisor {
             Supervisor {
                 remote,
                 db_ref,
                 peers,
-                server,
                 restarts_left: MAX_RESTARTS,
             }
         }
@@ -72,13 +65,7 @@ pub mod relay {
     impl<NA, A> heph::Supervisor<NA> for Supervisor
     where
         NA: NewActor<
-            Argument = (
-                SocketAddr,
-                ActorRef<db::Message>,
-                Peers,
-                SocketAddr,
-                Option<SystemTime>,
-            ),
+            Argument = (SocketAddr, ActorRef<db::Message>, Peers, Option<SystemTime>),
             Error = !,
             Actor = A,
         >,
@@ -96,7 +83,6 @@ pub mod relay {
                     self.remote,
                     self.db_ref.clone(),
                     self.peers.clone(),
-                    self.server,
                     Some(last_seen),
                 ))
             } else {
@@ -131,7 +117,6 @@ pub mod relay {
         remote: SocketAddr,
         db_ref: ActorRef<db::Message>,
         peers: Peers,
-        server: SocketAddr,
         last_seen: Option<SystemTime>,
     ) -> crate::Result<()> {
         debug!("starting coordinator relay: remote_address=\"{}\"", remote);
@@ -140,8 +125,9 @@ pub mod relay {
         let mut req_id = RequestId(0);
         let mut buf = Buffer::new();
 
+        let server = peers.server_address();
         let mut stream = connect_to_participant(&mut ctx, remote, &mut buf, &server).await?;
-        read_known_peers(&mut ctx, &mut stream, &mut buf, &peers, server).await?;
+        read_known_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
 
         // In case the participant send an exit message along with the known
         // peers already.
@@ -470,7 +456,6 @@ pub mod relay {
         stream: &mut TcpStream,
         buf: &mut Buffer,
         peers: &Peers,
-        server: SocketAddr,
     ) -> crate::Result<()> {
         trace!("coordinator relay reading known peers from connection");
         loop {
@@ -492,7 +477,7 @@ pub mod relay {
             // which we need to advance the buffer.
             match iter.next() {
                 Some(Ok(addresses)) => {
-                    peers.spawn_many(ctx, &addresses, server);
+                    peers.spawn_many(ctx, &addresses);
                     let bytes_processed = iter.byte_offset();
                     buf.processed(bytes_processed);
                     return Ok(());

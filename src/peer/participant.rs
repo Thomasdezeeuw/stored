@@ -141,10 +141,9 @@ pub mod dispatcher {
         buf: Buffer,
         peers: Peers,
         db_ref: ActorRef<db::Message>,
-        server: SocketAddr,
         remote: SocketAddr,
     ) {
-        if let Err(err) = actor(ctx, stream, remote, buf, peers, db_ref, server).await {
+        if let Err(err) = actor(ctx, stream, remote, buf, peers, db_ref).await {
             warn!(
                 "participant dispatcher failed: {}: remote_address=\"{}\"",
                 err, remote
@@ -165,7 +164,6 @@ pub mod dispatcher {
         mut buf: Buffer,
         peers: Peers,
         db_ref: ActorRef<db::Message>,
-        server: SocketAddr,
     ) -> crate::Result<()> {
         debug!("starting participant dispatcher");
 
@@ -180,7 +178,7 @@ pub mod dispatcher {
         }
 
         // Add it to the list of known peers.
-        peers.spawn(&mut ctx, remote_server, server);
+        peers.spawn(&mut ctx, remote_server);
 
         write_peers(&mut ctx, &mut stream, &mut buf, &peers).await?;
         let mut running = HashMap::with_hasher(FxBuildHasher::default());
