@@ -11,7 +11,7 @@ use log::debug;
 
 use crate::db::{self, RemoveBlobResponse};
 use crate::op::{commit_query, consensus, db_rpc, DbRpc, Outcome};
-use crate::passport::{Event, Passport};
+use crate::passport::{Event, Passport, Uuid};
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::storage::{BlobEntry, Query, RemoveBlob};
 use crate::Key;
@@ -129,8 +129,9 @@ impl super::Query for RemoveBlob {
         &self,
         ctx: &mut actor::Context<M>,
         peers: &Peers,
+        request_id: Uuid,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
-        peers.remove_blob(ctx, self.key().clone())
+        peers.remove_blob(ctx, request_id, self.key().clone())
     }
 
     const COMMITTED: Event = Event::CommittedRemovingBlob;
@@ -141,9 +142,10 @@ impl super::Query for RemoveBlob {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
-        peers.commit_to_remove_blob(ctx, id, self.key().clone(), timestamp)
+        peers.commit_to_remove_blob(ctx, id, request_id, self.key().clone(), timestamp)
     }
 
     const ABORTED: Event = Event::AbortedRemovingBlob;
@@ -154,8 +156,9 @@ impl super::Query for RemoveBlob {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
     ) -> PeerRpc<()> {
-        peers.abort_remove_blob(ctx, id, self.key().clone())
+        peers.abort_remove_blob(ctx, id, request_id, self.key().clone())
     }
 
     fn committed(peers: &Peers, id: ConsensusId, key: Key, timestamp: SystemTime) {

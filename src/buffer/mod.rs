@@ -284,6 +284,11 @@ pub struct WriteBuffer<'b> {
 }
 
 impl<'b> WriteBuffer<'b> {
+    /// Returns the number of bytes written to the write buffer.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
     /// Returns `true` if the buffer has no unprocessed, written bytes.
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()

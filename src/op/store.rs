@@ -13,7 +13,7 @@ use log::debug;
 
 use crate::db::{self, AddBlobResponse};
 use crate::op::{commit_query, consensus, db_rpc, DbRpc, Outcome};
-use crate::passport::{Event, Passport};
+use crate::passport::{Event, Passport, Uuid};
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::storage::{BlobEntry, Query, StoreBlob, StreamBlob};
 use crate::{Buffer, Key};
@@ -108,7 +108,7 @@ pub async fn store_streaming_blob<M, F, W>(
     write: F,
 ) -> StreamResult<Key>
 where
-    // Note: `F` really should be `FnOnce(&mut StreamBlob) -> W`, but I couldn't
+    // TODO: `F` really should be `FnOnce(&mut StreamBlob) -> W`, but I couldn't
     // get the lifetime to work.
     F: FnOnce(Box<StreamBlob>) -> W,
     W: Future<Output = io::Result<Box<StreamBlob>>>,
@@ -159,11 +159,16 @@ where
     match db_rpc(ctx, db_ref, *passport.id(), blob_length) {
         Ok(rpc) => match rpc.await {
             Ok(stream_blob) => {
+                passport.mark(Event::StreamingBlob);
+
                 // Write the blob to the data file.
                 let stream_blob = match write(stream_blob).await {
-                    Ok(stream_blob) => stream_blob,
+                    Ok(stream_blob) => {
+                        passport.mark(Event::StreamedBlob);
+                        stream_blob
+                    }
                     Err(err) => {
-                        passport.mark(Event::FailedToAddBlob);
+                        passport.mark(Event::FailedToStreamBlob);
                         return StreamResult::IoErr(err);
                     }
                 };
@@ -195,12 +200,12 @@ where
                 }
             }
             Err(()) => {
-                passport.mark(Event::FailedToAddBlob);
+                passport.mark(Event::FailedToStreamBlob);
                 StreamResult::DbError
             }
         },
         Err(()) => {
-            passport.mark(Event::FailedToAddBlob);
+            passport.mark(Event::FailedToStreamBlob);
             StreamResult::DbError
         }
     }
@@ -270,8 +275,9 @@ impl super::Query for StoreBlob {
         &self,
         ctx: &mut actor::Context<M>,
         peers: &Peers,
+        request_id: Uuid,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
-        peers.add_blob(ctx, self.key().clone())
+        peers.add_blob(ctx, request_id, self.key().clone())
     }
 
     const COMMITTED: Event = Event::CommittedStoringBlob;
@@ -282,9 +288,10 @@ impl super::Query for StoreBlob {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
-        peers.commit_to_store_blob(ctx, id, self.key().clone(), timestamp)
+        peers.commit_to_store_blob(ctx, id, request_id, self.key().clone(), timestamp)
     }
 
     const ABORTED: Event = Event::AbortedStoringBlob;
@@ -295,8 +302,9 @@ impl super::Query for StoreBlob {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
     ) -> PeerRpc<()> {
-        peers.abort_store_blob(ctx, id, self.key().clone())
+        peers.abort_store_blob(ctx, id, request_id, self.key().clone())
     }
 
     fn committed(peers: &Peers, id: ConsensusId, key: Key, timestamp: SystemTime) {

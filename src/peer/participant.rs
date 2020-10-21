@@ -138,15 +138,15 @@ pub mod dispatcher {
     pub(crate) async fn run_actor(
         ctx: actor::Context<Response, ThreadSafe>,
         stream: TcpStream,
+        address: SocketAddr,
         buf: Buffer,
         peers: Peers,
         db_ref: ActorRef<db::Message>,
-        remote: SocketAddr,
     ) {
-        if let Err(err) = actor(ctx, stream, remote, buf, peers, db_ref).await {
+        if let Err(err) = actor(ctx, stream, address, buf, peers, db_ref).await {
             warn!(
                 "participant dispatcher failed: {}: remote_address=\"{}\"",
-                err, remote
+                err, address
             );
         }
     }
@@ -652,7 +652,7 @@ pub mod consensus {
         abort_query, add_blob, commit_query, prep_remove_blob, retrieve_store_blob_query,
         stream_add_blob, Outcome, StreamResult,
     };
-    use crate::passport::{Passport, Uuid};
+    use crate::passport::{Event, Passport, Uuid};
     use crate::peer::participant::RpcResponder;
     use crate::peer::server::{
         BLOB_LENGTH_LEN, DATE_TIME_LEN, METADATA_LEN, NO_BLOB, REQUEST_BLOB,
@@ -692,22 +692,26 @@ pub mod consensus {
         key: Key,
         mut responder: RpcResponder,
     ) -> crate::Result<()> {
-        // TODO: use and log the passport properly.
         let mut passport = Passport::new();
         debug!(
-            "store blob consensus actor started: request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
-            passport.id(), key, remote
+            "store blob consensus actor started: \
+                request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
+            passport.id(),
+            key,
+            remote
         );
 
         let prepare = prepare_store_blob(&mut ctx, &mut db_ref, &mut passport, key.clone(), remote);
         let query = match prepare.await? {
             Ok(query) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
+                passport.mark(Event::ConsensusPhaseOneComplete);
                 query
             }
             Err(PrepareError::BlobAlreadyStored) => {
                 info!(
-                    "blob already stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    "blob already stored, voting to abort consensus: \
+                        request_id=\"{}\", key=\"{}\"",
                     passport.id(),
                     key
                 );
@@ -715,9 +719,13 @@ pub mod consensus {
                 return Ok(());
             }
             Err(PrepareError::FailedToRetrieveBlob) => {
+                passport.mark(Event::ConsensusFailed);
                 error!(
-                    "couldn't get blob from coordinator server, failing consensus: request_id=\"{}\", key=\"{}\"",
-                    passport.id(), key
+                    "couldn't get blob from coordinator server, failing consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
+                    passport.id(),
+                    key,
+                    passport
                 );
                 // As this shouldn't happen we don't vote to abort, but to fail
                 // it.
@@ -725,9 +733,13 @@ pub mod consensus {
                 return Ok(());
             }
             Err(PrepareError::IncorrectKey) => {
+                passport.mark(Event::ConsensusFailed);
                 error!(
-                    "coordinator server responded with incorrect blob, failing consensus: request_id=\"{}\", key=\"{}\"",
-                    passport.id(), key
+                    "coordinator server responded with incorrect blob, failing consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
+                    passport.id(),
+                    key,
+                    passport
                 );
                 // As this shouldn't happen we don't vote to abort, but to fail
                 // it.
@@ -744,19 +756,24 @@ pub mod consensus {
                 // Update the `RpcResponder.id` to ensure we're responding to
                 // the correct request.
                 responder.id = vote_result.request_id;
+                passport.mark(Event::ConsensusPhaseOneResults);
                 vote_result
             }
             Either::Right(..) => {
+                passport.mark(Event::ConsensusFailed);
                 warn!(
-                    "failed to get consensus result in time, running participant consensus: request_id=\"{}\", key=\"{}\"",
-                    passport.id(), query.key()
+                    "failed to get consensus result in time, running participant consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
+                    passport.id(),
+                    key,
+                    passport
                 );
                 peers.uncommitted_stored(query);
                 return Ok(());
             }
         };
 
-        let response = match vote_result.result {
+        let result = match vote_result.result {
             ConsensusVote::Commit(timestamp) => {
                 match commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp).await {
                     Ok(got_timestamp) if got_timestamp == timestamp => Ok(Some(timestamp)),
@@ -772,7 +789,7 @@ pub mod consensus {
             }
         };
 
-        let timestamp = match response {
+        let timestamp = match result {
             Ok(timestamp) => {
                 let response = ConsensusVote::Commit(SystemTime::now());
                 responder.respond(response);
@@ -792,16 +809,30 @@ pub mod consensus {
         let f = select(ctx.receive_next(), timer);
         match f.await {
             // Coordinator committed, so we're done.
-            Either::Left((vote, ..)) if vote.is_committed() => Ok(()),
+            Either::Left((vote, ..)) if vote.is_committed() => {
+                passport.mark(Event::ConsensusPhaseTwoResults);
+                info!(
+                    "completed store blob consensus: \
+                        request_id=\"{}\", key=\"{}\", runtime=\"{:?}\", passport={}",
+                    passport.id(),
+                    key,
+                    passport.elapsed(),
+                    passport,
+                );
+                Ok(())
+            }
             Either::Left(..) | Either::Right(..) => {
                 // If the coordinator didn't send us a message that it (and all
                 // other participants) committed we could be in an invalid
                 // state, where some participants committed and some didn't. We
                 // use participant consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, running participant consensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running participant consensus: \
+                        request_id=\"{}\", key=\"{}\", runtime=\"{:?}\", passport={}",
                     passport.id(),
-                    key
+                    key,
+                    passport.elapsed(),
+                    passport,
                 );
                 // We're committed, let all other participants know.
                 peers.share_stored_commitment(key, timestamp);
@@ -840,7 +871,6 @@ pub mod consensus {
         }
 
         // TODO: reuse stream and buffer.
-
         let mut stream = peer_connect(ctx, passport, remote).await?;
         let mut buf = Buffer::new();
 
@@ -853,7 +883,7 @@ pub mod consensus {
             blob_length if blob_length <= MIN_STREAM_BLOB_SIZE => {
                 read_blob(ctx, &mut stream, passport, &mut buf, blob_length).await?;
 
-                // NOTE: `store_blob` will advance the buffer for use.
+                // NOTE: `add_blob` will advance the buffer for us.
                 match add_blob(ctx, db_ref, passport, &mut buf, blob_length as usize).await {
                     Ok(Outcome::Continue(query)) if *query.key() == key => Ok(Ok(query)),
                     // Key of the blob we retrieve doesn't match.
@@ -944,6 +974,7 @@ pub mod consensus {
             );
         }
 
+        passport.mark(Event::ConnectedToPeerServer);
         Ok(stream)
     }
 
@@ -976,6 +1007,7 @@ pub mod consensus {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing blob request")),
         }
+        passport.mark(Event::WrittenRequestBlobRequest);
 
         // Read at least the metadata of the blob.
         buf.reserve_atleast(METADATA_LEN);
@@ -984,6 +1016,7 @@ pub mod consensus {
             Ok(()) => {}
             Err(err) => return Err(err.describe("reading blob length")),
         }
+        passport.mark(Event::ReadRequestBlobResponse);
 
         // Safety: we just read enough bytes, so the marking processed and
         // indexing won't panic.
@@ -1030,6 +1063,7 @@ pub mod consensus {
                 Ok(()) => {}
                 Err(err) => return Err(err.describe("reading blob")),
             }
+            passport.mark(Event::ReadRequestBlobResponseBlob);
         }
 
         trace!(
@@ -1051,11 +1085,12 @@ pub mod consensus {
         key: Key,
         mut responder: RpcResponder,
     ) -> crate::Result<()> {
-        // TODO: use and log the passport properly.
         let mut passport = Passport::new();
         debug!(
             "remove blob consensus actor started: request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
-            passport.id(), key, remote
+            passport.id(),
+            key,
+            remote
         );
 
         // Phase one: removing the blob, readying it to be removed from the database.
@@ -1063,24 +1098,31 @@ pub mod consensus {
         {
             Ok(Outcome::Continue(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
+                passport.mark(Event::ConsensusPhaseOneComplete);
                 query
             }
             Ok(Outcome::Done(..)) => {
+                passport.mark(Event::ConsensusFailed);
                 // FIXME: if we're not synced this can happen, but we should
                 // continue.
                 info!(
-                    "blob already removed/not stored, voting to abort consensus: request_id=\"{}\", key=\"{}\"",
+                    "blob already removed/not stored, voting to abort consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
                     passport.id(),
-                    key
+                    key,
+                    passport
                 );
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
             }
             Err(()) => {
+                passport.mark(Event::ConsensusFailed);
                 warn!(
-                    "failed to prepare storage to remove blob, failing consensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to prepare storage to remove blob, failing consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
                     passport.id(),
-                    key
+                    key,
+                    passport
                 );
                 responder.respond(ConsensusVote::Fail);
                 return Ok(());
@@ -1096,20 +1138,24 @@ pub mod consensus {
                 // Update the `RpcResponder.id` to ensure we're responding to
                 // the correct request.
                 responder.id = vote_result.request_id;
+                passport.mark(Event::ConsensusPhaseOneResults);
                 vote_result
             }
             Either::Right(..) => {
+                passport.mark(Event::ConsensusFailed);
                 warn!(
-                    "failed to get consensus result in time, running participant consensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get consensus result in time, running participant consensus: \
+                        request_id=\"{}\", key=\"{}\", passport={}",
                     passport.id(),
-                    query.key()
+                    query.key(),
+                    passport
                 );
                 peers.uncommitted_removed(query);
                 return Ok(());
             }
         };
 
-        let response = match vote_result.result {
+        let result = match vote_result.result {
             ConsensusVote::Commit(timestamp) => {
                 commit_query(&mut ctx, &mut db_ref, &mut passport, query, timestamp)
                     .await
@@ -1122,7 +1168,7 @@ pub mod consensus {
             }
         };
 
-        let timestamp = match response {
+        let timestamp = match result {
             Ok(timestamp) => {
                 let response = ConsensusVote::Commit(SystemTime::now());
                 responder.respond(response);
@@ -1142,16 +1188,30 @@ pub mod consensus {
         let f = select(ctx.receive_next(), timer);
         match f.await {
             // Coordinator committed, so we're done.
-            Either::Left((vote, ..)) if vote.is_committed() => Ok(()),
+            Either::Left((vote, ..)) if vote.is_committed() => {
+                passport.mark(Event::ConsensusPhaseTwoResults);
+                info!(
+                    "completed remove blob consensus: \
+                        request_id=\"{}\", key=\"{}\", runtime=\"{:?}\", passport={}",
+                    passport.id(),
+                    key,
+                    passport.elapsed(),
+                    passport,
+                );
+                Ok(())
+            }
             Either::Left(..) | Either::Right(..) => {
                 // If the coordinator didn't send us a message that it (and all
                 // other participants) committed we could be in an invalid
                 // state, where some participants committed and some didn't. We
                 // use participant consensus to get us back into an ok state.
                 warn!(
-                    "failed to get committed message from coordinator, running participant consensus: request_id=\"{}\", key=\"{}\"",
+                    "failed to get committed message from coordinator, running participant consensus: \
+                        request_id=\"{}\", key=\"{}\", runtime=\"{:?}\", passport={}",
                     passport.id(),
-                    key
+                    key,
+                    passport.elapsed(),
+                    passport,
                 );
                 // We're committed, let all other participants know.
                 peers.share_removed_commitment(key, timestamp);
@@ -1248,8 +1308,8 @@ pub mod consensus {
         // TODO: use and log the passport properly.
         let mut passport = Passport::empty();
         loop {
-            passport.reset();
             let msg = ctx.receive_next().await;
+            passport.reset();
             passport.set_id(Uuid::new());
             debug!("participant consensus received a message: {:?}", msg);
 

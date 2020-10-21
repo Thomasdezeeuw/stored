@@ -5,6 +5,7 @@
 //! [peer server actor]: actor()
 
 // TODO: make request and response types more consistent.
+// Let the peer provide the RequestId (in the passport).
 
 use std::convert::TryInto;
 use std::io::{self, IoSlice, Write};
@@ -17,7 +18,7 @@ use heph::actor::context::ThreadSafe;
 use heph::net::TcpStream;
 use heph::timer::Deadline;
 use heph::{actor, ActorRef};
-use log::{debug, warn};
+use log::{debug, info, warn};
 
 use crate::buffer::Buffer;
 use crate::db::{self, db_error};
@@ -61,9 +62,20 @@ pub const REQUEST_KEYS_SINCE: u8 = 3;
 /// Request type to store a blob, used by the synchronisation process.
 pub const STORE_BLOB: u8 = 4;
 
+/// Returns a (loggable) name for the request types above.
+fn request_name(request_byte: u8) -> &'static str {
+    match request_byte {
+        REQUEST_BLOB => "request blob",
+        REQUEST_KEYS => "request keys",
+        REQUEST_KEYS_SINCE => "request keys since",
+        STORE_BLOB => "store blob",
+        _ => "invalid",
+    }
+}
+
 /// Response to a [`STORE_BLOB`] request.
 pub struct Response {
-    bytes: [u8; Self::SIZE],
+    header: [u8; Self::SIZE],
     msg: Option<&'static [u8]>,
 }
 
@@ -77,7 +89,7 @@ impl Response {
     /// OK response.
     pub const fn ok() -> Response {
         Response {
-            bytes: Self::OK_HEADER,
+            header: Self::OK_HEADER,
             msg: None,
         }
     }
@@ -86,7 +98,7 @@ impl Response {
     pub const fn err(msg: &'static str) -> Response {
         assert!(msg.len() < u32::MAX as usize);
         Response {
-            bytes: Self::ERR_HEADER,
+            header: Self::ERR_HEADER,
             msg: Some(msg.as_bytes()),
         }
     }
@@ -97,12 +109,15 @@ impl Response {
 pub(crate) async fn run_actor<M>(
     ctx: actor::Context<M, ThreadSafe>,
     stream: TcpStream,
+    address: SocketAddr,
     buf: Buffer,
     db_ref: ActorRef<db::Message>,
-    remote: SocketAddr,
 ) {
-    if let Err(err) = actor(ctx, stream, buf, db_ref).await {
-        warn!("peer server failed: {}: remote_address=\"{}\"", err, remote);
+    if let Err(err) = actor(ctx, stream, address, buf, db_ref).await {
+        warn!(
+            "peer server failed: {}: remote_address=\"{}\"",
+            err, address
+        );
     }
 }
 
@@ -130,6 +145,7 @@ pub(crate) async fn run_actor<M>(
 pub async fn actor<M>(
     mut ctx: actor::Context<M, ThreadSafe>,
     mut stream: TcpStream,
+    address: SocketAddr,
     mut buf: Buffer,
     mut db_ref: ActorRef<db::Message>,
 ) -> crate::Result<()> {
@@ -140,40 +156,34 @@ pub async fn actor<M>(
         warn!("failed to set no delay, continuing: {}", err);
     }
 
-    // TODO: read request-id from peer?
+    // TODO: read request-id from peer? Then use `Passport::empty()`.
     let mut passport = Passport::new();
-    passport.mark(Event::ReadingPeerRequest);
     loop {
         // NOTE: we don't create `buf` ourselves so it could be that it already
         // contains a request, so check it first and only after read some more
         // bytes.
         while let Some(request_byte) = buf.next_byte() {
             passport.mark(Event::ReadPeerRequest);
-            match request_byte {
+            let start_length = buf.len();
+            let response_length = match request_byte {
                 REQUEST_BLOB => {
                     buf.processed(1);
                     retrieve_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
-                        .await?;
+                        .await?
                 }
                 REQUEST_KEYS => {
                     buf.processed(1);
                     retrieve_keys(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
-                        .await?;
+                        .await?
                 }
                 REQUEST_KEYS_SINCE => {
                     buf.processed(1);
-                    retrieve_keys_since(
-                        &mut ctx,
-                        &mut stream,
-                        &mut passport,
-                        &mut buf,
-                        &mut db_ref,
-                    )
-                    .await?;
+                    retrieve_keys_since(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref)
+                        .await?
                 }
                 STORE_BLOB => {
                     buf.processed(1);
-                    store_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref).await?;
+                    store_blob(&mut ctx, &mut stream, &mut passport, &mut buf, &mut db_ref).await?
                 }
                 byte => {
                     // Invalid byte. Forcefully close the connection, letting
@@ -190,19 +200,28 @@ pub async fn actor<M>(
                         IoSlice::new(&length),
                         IoSlice::new(&*msg),
                     ];
-                    return Deadline::timeout(
-                        &mut ctx,
-                        timeout::PEER_WRITE,
-                        stream.write_all_vectored(bufs),
-                    )
-                    .await
-                    .map(|()| passport.mark(Event::WrittenPeerResponse))
-                    .map_err(|err| err.describe("writing invalid request type response"));
+                    let timeout = timeout::PEER_WRITE;
+                    return Deadline::timeout(&mut ctx, timeout, stream.write_all_vectored(bufs))
+                        .await
+                        .map_err(|err| err.describe("writing invalid request type response"));
                 }
-            }
+            };
+
+            let request_length = start_length - buf.len();
+            info!(
+                "peer request: request_id=\"{}\", remote_address=\"{}\", request_type=\"{}\", \
+                    request_length={}, response_time=\"{:?}\", response_length={}, passport={}",
+                passport.id(),
+                address,
+                request_name(request_byte),
+                request_length,
+                passport.elapsed(),
+                response_length,
+                passport,
+            );
+
             passport.reset();
             passport.set_id(Uuid::new());
-            passport.mark(Event::ReadingPeerRequest);
         }
 
         // Read some more bytes.
@@ -243,15 +262,14 @@ impl Blob {
 }
 
 /// Expects to read a [`Key`] on the `stream` and writes the metadata and blob
-/// bytes to it.
+/// bytes to it. Returns the response length.
 async fn retrieve_blob<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
     passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
-) -> crate::Result<()> {
-    passport.mark(Event::ReadingPeerKey);
+) -> crate::Result<usize> {
     if buf.len() < Key::LENGTH {
         let n = Key::LENGTH - buf.len();
         buf.reserve_atleast(n);
@@ -300,32 +318,35 @@ async fn retrieve_blob<M>(
         Err(()) => return Err(db_error()),
     };
 
-    passport.mark(Event::WritingPeerResponse);
     let length: [u8; BLOB_LENGTH_LEN] = (blob.len() as u64).to_be_bytes();
     let bufs = &mut [
         IoSlice::new(timestamp.as_bytes()),
         IoSlice::new(&length),
         IoSlice::new(blob.bytes()),
     ];
+    let response_length = bufs.iter().map(|b| b.len()).sum();
     let timeout = timeout::peer_write(blob.len() as u64);
     Deadline::timeout(ctx, timeout, stream.write_all_vectored(bufs))
         .await
-        .map(|()| passport.mark(Event::WrittenPeerResponse))
+        .map(|()| {
+            passport.mark(Event::WrittenPeerResponse);
+            response_length
+        })
         .map_err(|err| err.describe("writing blob"))
 }
 
 /// Writes all [`Key`]s stored at the time of calling this function, prefixed
-/// with the length as `u64`.
+/// with the length as `u64`. Returns the response length.
 async fn retrieve_keys<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
     passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
-) -> crate::Result<()> {
+) -> crate::Result<usize> {
     debug!("retrieving keys for peer: request_id=\"{}\"", passport.id());
 
-    let keys = crate::op::retrieve_keys(ctx, db_ref, passport)
+    let keys = op::retrieve_keys(ctx, db_ref, passport)
         .await
         .map_err(|()| db_error())?;
     let mut iter = keys.into_iter();
@@ -335,8 +356,8 @@ async fn retrieve_keys<M>(
     // TODO: benchmark with larger sizes.
     const N_KEYS: usize = 100;
 
-    passport.mark(Event::WritingPeerResponse);
     let mut first = true;
+    let mut response_length = 0;
     loop {
         let mut wbuf = buf.split_write(BLOB_LENGTH_LEN + (N_KEYS * Key::LENGTH)).1;
 
@@ -356,23 +377,26 @@ async fn retrieve_keys<M>(
         // Wrote all keys.
         if wbuf.is_empty() {
             passport.mark(Event::WrittenPeerResponse);
-            return Ok(());
+            return Ok(response_length);
         }
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice()))
+        response_length += wbuf.len();
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
 }
 
+/// Same as [`retrieve_keys`], but only returns the blob stored since a certain
+/// date. Returns the response length.
 async fn retrieve_keys_since<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
     passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
-) -> crate::Result<()> {
+) -> crate::Result<usize> {
     debug!(
         "retrieving keys since for peer: request_id=\"{}\"",
         passport.id()
@@ -383,7 +407,7 @@ async fn retrieve_keys_since<M>(
         let n = DATE_TIME_LEN - buf.len();
         buf.reserve_atleast(n);
         match Deadline::timeout(ctx, timeout::PEER_READ, stream.recv_n(&mut *buf, n)).await {
-            Ok(..) => {}
+            Ok(..) => passport.mark(Event::ReadPeerDateSince),
             Err(err) => return Err(err.describe("reading date since to retrieve keys")),
         }
     }
@@ -404,7 +428,7 @@ async fn retrieve_keys_since<M>(
     // TODO: benchmark with larger sizes.
     const N_KEYS: usize = 100;
 
-    passport.mark(Event::WritingPeerResponse);
+    let mut response_length = 0;
     loop {
         let mut wbuf = buf.split_write(BLOB_LENGTH_LEN + (N_KEYS * Key::LENGTH)).1;
 
@@ -429,15 +453,14 @@ async fn retrieve_keys_since<M>(
         if length == 0 {
             // Write the last length, which is zero, to indicate no more keys
             // are coming.
-            let res = Deadline::timeout(
-                ctx,
-                timeout::PEER_WRITE,
-                stream.write_all(&u64::to_be_bytes(length)),
-            )
-            .await
-            .map_err(|err| err.describe("writing keys"));
-            passport.mark(Event::WrittenPeerResponse);
-            return res;
+            response_length += wbuf.len();
+            return Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice()))
+                .await
+                .map(|()| {
+                    passport.mark(Event::WrittenPeerResponse);
+                    response_length
+                })
+                .map_err(|err| err.describe("writing keys"));
         }
 
         // Write the actual number of keys we're going to write.
@@ -445,7 +468,8 @@ async fn retrieve_keys_since<M>(
         wbuf.as_mut_bytes()[0..KEY_SET_SIZE_LEN].copy_from_slice(&u64::to_be_bytes(length));
 
         // TODO: use vectored I/O here using `Key::as_bytes` directly.
-        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice()))
+        response_length += wbuf.len();
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice()))
             .await
             .map_err(|err| err.describe("writing keys"))?;
     }
@@ -453,15 +477,14 @@ async fn retrieve_keys_since<M>(
 
 /// Expects to read the [`Key`], metadata of the blob (timestamp, length),
 /// followed by the bytes that make up the blob. Writes a [`Response`] to the
-/// connection.
+/// connection. Returns the response length.
 async fn store_blob<M>(
     ctx: &mut actor::Context<M, ThreadSafe>,
     stream: &mut TcpStream,
     passport: &mut Passport,
     buf: &mut Buffer,
     db_ref: &mut ActorRef<db::Message>,
-) -> crate::Result<()> {
-    passport.mark(Event::ReadingPeerMetadata);
+) -> crate::Result<usize> {
     // Read at least the metadata of the blob to store.
     if buf.len() < Key::LENGTH + METADATA_LEN {
         let n = (Key::LENGTH + METADATA_LEN) - buf.len();
@@ -495,7 +518,6 @@ async fn store_blob<M>(
     );
 
     // Read the entire blob.
-    passport.mark(Event::ReadingPeerBlob);
     if buf.len() < (blob_length as usize) {
         let n = (blob_length as usize) - buf.len();
         buf.reserve_atleast(n);
@@ -534,18 +556,25 @@ async fn store_blob<M>(
     if let Some(msg) = response.msg {
         let length = u32::to_be_bytes(msg.len() as u32);
         let bufs = &mut [
-            IoSlice::new(&response.bytes),
+            IoSlice::new(&response.header),
             IoSlice::new(&length),
             IoSlice::new(&msg),
         ];
+        let response_length = bufs.iter().map(|b| b.len()).sum();
         Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all_vectored(bufs))
             .await
-            .map(|()| passport.mark(Event::WrittenPeerResponse))
+            .map(|()| {
+                passport.mark(Event::WrittenPeerResponse);
+                response_length
+            })
             .map_err(|err| err.describe("writing error response"))
     } else {
-        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&response.bytes))
+        Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(&response.header))
             .await
-            .map(|()| passport.mark(Event::WrittenPeerResponse))
+            .map(|()| {
+                passport.mark(Event::WrittenPeerResponse);
+                response.header.len()
+            })
             .map_err(|err| err.describe("writing ok response"))
     }
 }

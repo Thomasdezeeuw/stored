@@ -324,16 +324,19 @@ events!(
 
     // # Peer interaction.
     // Server.
-    ReadingPeerRequest => "reading peer request header",
     ReadPeerRequest => "read peer request header",
-    ReadingPeerKey => "reading key from peer",
     ReadPeerKey => "read key from peer",
-    ReadingPeerMetadata => "reading blob metadata from peer",
+    ReadPeerDateSince => "reading date since to retrieve keys",
     ReadPeerMetadata => "read blob metadata from peer",
-    ReadingPeerBlob => "reading blob from peer",
     ReadPeerBlob => "read blob from peer",
-    WritingPeerResponse => "writing peer response",
+    ConnectedToPeerServer => "connected to peer server",
     WrittenPeerResponse => "written peer response",
+    // Store/remove blob.
+    WrittenRequestBlobRequest => "written request blob peer request",
+    ReadRequestBlobResponse => "read request blob response",
+    ReadRequestBlobResponseBlob => "read blob from request blob response",
+    ConsensusPhaseOneComplete => "consensus phase one complete",
+    ConsensusFailed => "consensus failed",
 
     // # Ops.
     // Store blob.
@@ -343,6 +346,10 @@ events!(
     FailedToCommitStoringBlob => "failed to commit storing blob query",
     AbortedStoringBlob => "aborted store blob query",
     FailedToAbortStoringBlob => "failed to abort store blob query",
+    // Streaming blob.
+    StreamingBlob => "streaming blob to storage",
+    StreamedBlob => "streamed blob to storage",
+    FailedToStreamBlob => "failed to stream blob to storage",
     // Retrieve blob.
     RetrievedBlob => "retrieved blob",
     FailedToRetrieveBlob => "failed to retrieve blob",

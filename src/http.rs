@@ -45,7 +45,7 @@ use parking_lot::{Once, RwLock};
 
 use crate::buffer::{Buffer, WriteBuffer};
 use crate::error::Describe;
-use crate::op::{self, Outcome, StreamResult};
+use crate::op::{self, store_streaming_blob, Outcome, StreamResult};
 use crate::passport::{Event, Passport, Uuid};
 use crate::peer::Peers;
 use crate::storage::{Blob, BlobEntry, StreamBlob};
@@ -246,7 +246,7 @@ pub async fn actor(
         request!(
             "request: request_id=\"{}\", remote_address=\"{}\", method=\"{}\", \
                 path=\"{}\", user_agent=\"{}\", request_length={}, \
-                response_time=\"{:?}\", response_status={}, response_length={}",
+                response_time=\"{:?}\", response_status={}, response_length={}, passport={}",
             request.id(),
             address,
             request.method,
@@ -256,8 +256,8 @@ pub async fn actor(
             request.passport.elapsed(),
             response.status_code().0,
             response.len(),
+            request.passport,
         );
-        debug!("request passport: {}", request.passport);
 
         // If we hit an error somewhere we want to return it to our supervisor.
         if let Some(err) = err {
@@ -755,8 +755,7 @@ async fn store_blob(
                     }
                 }
             };
-            let res =
-                op::store_streaming_blob(ctx, db_ref, passport, peers, blob_length, write).await;
+            let res = store_streaming_blob(ctx, db_ref, passport, peers, blob_length, write).await;
             match res {
                 StreamResult::Ok(key) => Ok((ResponseKind::Stored(key), false)),
                 StreamResult::IoErr(ref err) if err.kind() == io::ErrorKind::UnexpectedEof => {

@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Describe;
 use crate::net::local_address;
+use crate::passport::Uuid;
 use crate::storage::{RemoveBlob, StoreBlob};
 use crate::util::CountDownLatch;
 use crate::{config, db, timeout, Key};
@@ -328,10 +329,17 @@ impl Peers {
     pub fn add_blob<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
+        request_id: Uuid,
         key: Key,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
         let id = self.new_consensus_id();
-        let rpc = self.rpc(ctx, id, coordinator::relay::AddBlob(key));
+        let rpc = self.rpc(
+            ctx,
+            id,
+            request_id,
+            key.clone(),
+            coordinator::relay::AddBlob(key),
+        );
         (id, rpc)
     }
 
@@ -340,10 +348,17 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
+        request_id: Uuid,
         key: Key,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
-        self.rpc(ctx, id, coordinator::relay::CommitStoreBlob(key, timestamp))
+        self.rpc(
+            ctx,
+            id,
+            request_id,
+            key.clone(),
+            coordinator::relay::CommitStoreBlob(key, timestamp),
+        )
     }
 
     /// Abort storing a blob.
@@ -351,9 +366,16 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
+        request_id: Uuid,
         key: Key,
     ) -> PeerRpc<()> {
-        self.rpc(ctx, id, coordinator::relay::AbortStoreBlob(key))
+        self.rpc(
+            ctx,
+            id,
+            request_id,
+            key.clone(),
+            coordinator::relay::AbortStoreBlob(key),
+        )
     }
 
     /// Committed to storing a blob.
@@ -367,10 +389,17 @@ impl Peers {
     pub fn remove_blob<M>(
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
+        request_id: Uuid,
         key: Key,
     ) -> (ConsensusId, PeerRpc<SystemTime>) {
         let id = self.new_consensus_id();
-        let rpc = self.rpc(ctx, id, coordinator::relay::RemoveBlob(key));
+        let rpc = self.rpc(
+            ctx,
+            id,
+            request_id,
+            key.clone(),
+            coordinator::relay::RemoveBlob(key),
+        );
         (id, rpc)
     }
 
@@ -379,12 +408,15 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
+        request_id: Uuid,
         key: Key,
         timestamp: SystemTime,
     ) -> PeerRpc<()> {
         self.rpc(
             ctx,
             id,
+            request_id,
+            key.clone(),
             coordinator::relay::CommitRemoveBlob(key, timestamp),
         )
     }
@@ -394,9 +426,16 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
+        request_id: Uuid,
         key: Key,
     ) -> PeerRpc<()> {
-        self.rpc(ctx, id, coordinator::relay::AbortRemoveBlob(key))
+        self.rpc(
+            ctx,
+            id,
+            request_id,
+            key.clone(),
+            coordinator::relay::AbortRemoveBlob(key),
+        )
     }
 
     /// Committed to removing a blob.
@@ -445,6 +484,8 @@ impl Peers {
         &self,
         ctx: &mut actor::Context<M, ThreadLocal>,
         id: ConsensusId,
+        request_id: Uuid,
+        key: Key,
         request: Req,
     ) -> PeerRpc<Res>
     where
@@ -461,8 +502,9 @@ impl Peers {
                     Ok(rpc) => RpcStatus::InProgress(rpc),
                     Err(SendError) => {
                         warn!(
-                            "failed to send message to peer relay: address=\"{}\"",
-                            peer.address
+                            "failed to send message to peer relay: \
+                                request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
+                            request_id, key, peer.address,
                         );
                         RpcStatus::Done(Err(relay::Error::Failed))
                     }
@@ -474,7 +516,12 @@ impl Peers {
             })
             .collect();
         let timer = Timer::timeout(ctx, timeout::PEER_RPC);
-        PeerRpc { rpcs, timer }
+        PeerRpc {
+            rpcs,
+            timer,
+            request_id,
+            key,
+        }
     }
 
     /// Send a message to all peers in the collection.
@@ -660,6 +707,8 @@ fn known_peer(peers: &[Peer], address: &SocketAddr) -> bool {
 pub struct PeerRpc<Res> {
     rpcs: Box<[SinglePeerRpc<Res>]>,
     timer: Timer,
+    request_id: Uuid,
+    key: Key,
 }
 
 impl<Res> PeerRpc<Res> {
@@ -721,8 +770,12 @@ impl<Res> Future for PeerRpc<Res> {
         if has_pending && !self.timer.has_passed() {
             return Poll::Pending;
         } else if has_pending {
-            // FIXME: add more context.
-            warn!("peer RPC timed out: failed_peers={}", self.timeout_peers());
+            warn!(
+                "peer RPC timed out: request_id=\"{}\", key=\"{}\", failed_peers={}",
+                self.request_id,
+                self.key,
+                self.timeout_peers(),
+            );
         }
 
         // If we reached this point all statuses should be `Done`.
@@ -839,12 +892,12 @@ pub mod switcher {
         match &buf.as_slice()[..MAGIC_LENGTH] {
             COORDINATOR_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                server::run_actor(ctx, stream, buf, db_ref, remote).await;
+                server::run_actor(ctx, stream, remote, buf, db_ref).await;
                 Ok(())
             }
             PARTICIPANT_MAGIC => {
                 buf.processed(MAGIC_LENGTH);
-                participant::dispatcher::run_actor(ctx, stream, buf, peers, db_ref, remote).await;
+                participant::dispatcher::run_actor(ctx, stream, remote, buf, peers, db_ref).await;
                 Ok(())
             }
             _ => {

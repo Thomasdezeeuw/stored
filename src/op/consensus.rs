@@ -11,7 +11,7 @@ use heph::rt::RuntimeAccess;
 use log::{debug, error, info, warn};
 
 use crate::op::db_rpc;
-use crate::passport::{Event, Passport};
+use crate::passport::{Event, Passport, Uuid};
 use crate::peer::coordinator::relay;
 use crate::peer::{ConsensusId, PeerRpc, Peers};
 use crate::{db, storage, Key};
@@ -54,6 +54,7 @@ pub(crate) trait Query: storage::Query {
         &self,
         ctx: &mut actor::Context<M>,
         peers: &Peers,
+        request_id: Uuid,
     ) -> (ConsensusId, PeerRpc<SystemTime>);
 
     // Events in the request [`Passport`] regarding committing to a storage
@@ -68,6 +69,7 @@ pub(crate) trait Query: storage::Query {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
         timestamp: SystemTime,
     ) -> PeerRpc<()>;
 
@@ -81,6 +83,7 @@ pub(crate) trait Query: storage::Query {
         ctx: &mut actor::Context<M>,
         peers: &Peers,
         id: ConsensusId,
+        request_id: Uuid,
     ) -> PeerRpc<()>;
 
     /// Coordinator committed to the query.
@@ -130,7 +133,7 @@ where
 
         // Phase one of 2PC: ask the participants (`peers`) to prepare the
         // storage layer.
-        let (consensus_id, rpc) = query.peers_prepare(ctx, peers);
+        let (consensus_id, rpc) = query.peers_prepare(ctx, peers, *passport.id());
         debug!(
             "requesting peers to prepare {} query: request_id=\"{}\", consensus_id={}, key=\"{}\"",
             Q::NAME,
@@ -145,8 +148,8 @@ where
         // If we failed a previous run we want to start aborting it now.
         // NOTE: we wait for the participants to prepare it first to ensure that
         // the storage layer query can be reused.
-        let abort_rpc =
-            prev_consensus_id.map(|consensus_id| query.peers_abort(ctx, peers, consensus_id));
+        let abort_rpc = prev_consensus_id
+            .map(|consensus_id| query.peers_abort(ctx, peers, consensus_id, *passport.id()));
 
         let (committed, aborted, failed) = count_consensus_votes(&results);
         if aborted > 0 || failed > 0 {
@@ -181,15 +184,12 @@ where
         // Phase two of 2PC: ask the participants to commit.
         debug!(
             "requesting peers to commit to {} query: request_id=\"{}\", consensus_id={}, key=\"{}\"",
-            Q::NAME,
-            passport.id(),
-            consensus_id,
-            query.key()
+            Q::NAME, passport.id(), consensus_id, query.key()
         );
         // Select a single timestamp to for the operation, to ensure its
         // consistent on all nodes.
         let timestamp = select_timestamp(&results);
-        let rpc = query.peers_commit(ctx, peers, consensus_id, timestamp);
+        let rpc = query.peers_commit(ctx, peers, consensus_id, *passport.id(), timestamp);
 
         // Await aborting the previous run, if any.
         if let Some(abort_rpc) = abort_rpc {
@@ -309,7 +309,7 @@ where
     Q: Query,
     db::Message: From<RpcMessage<Q, ()>>,
 {
-    let abort_rpc = query.peers_abort(ctx, peers, consensus_id);
+    let abort_rpc = query.peers_abort(ctx, peers, consensus_id, *passport.id());
     abort_consensus::<Q>(passport, abort_rpc, consensus_id, query.key()).await;
     abort_query(ctx, db_ref, passport, query).await
 }

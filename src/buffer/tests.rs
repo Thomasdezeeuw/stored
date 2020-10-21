@@ -303,9 +303,13 @@ fn write_buffer_length() {
 
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, bytes);
+    assert_eq!(wbuf.len(), 0);
+    assert!(wbuf.is_empty());
     assert_eq!(wbuf.as_slice(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
+    assert_eq!(wbuf.len(), wbytes.len());
+    assert!(!wbuf.is_empty());
     assert_eq!(wbuf.as_slice(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
@@ -313,9 +317,13 @@ fn write_buffer_length() {
     buf.processed(100);
     let (original_bytes, mut wbuf) = buf.split_write(wbytes.len());
     assert_eq!(original_bytes, &bytes[100..]);
+    assert_eq!(wbuf.len(), 0);
+    assert!(wbuf.is_empty());
     assert_eq!(wbuf.as_slice(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
+    assert_eq!(wbuf.len(), wbytes.len());
+    assert!(!wbuf.is_empty());
     assert_eq!(wbuf.as_slice(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
@@ -326,6 +334,9 @@ fn write_buffer_length() {
     assert_eq!(wbuf.as_slice(), EMPTY);
     assert_eq!(wbuf.as_mut_bytes(), EMPTY);
     wbuf.write_all(wbytes).unwrap();
+    assert_eq!(wbuf.len(), wbytes.len());
+    assert!(!wbuf.is_empty());
+    assert_eq!(wbuf.as_slice(), wbytes);
     assert_eq!(wbuf.as_slice(), wbytes);
     assert_eq!(wbuf.as_mut_bytes(), wbytes);
     drop(wbuf);
