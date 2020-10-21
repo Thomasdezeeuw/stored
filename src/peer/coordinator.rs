@@ -598,7 +598,7 @@ pub mod relay {
                         Some(rpc_response) => {
                             if let Err(err) = rpc_response.respond(response.vote) {
                                 warn!(
-                                    "failed to relay peer response to actor: {}: request_id=\"{}\"",
+                                    "failed to relay peer response to actor: {}: request_id={}",
                                     err, response.request_id
                                 );
                             }

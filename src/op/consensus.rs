@@ -327,7 +327,7 @@ async fn abort_consensus<Q>(
     passport.mark(Event::AbortedConsensusRun);
     let (committed, aborted, failed) = count_consensus_votes(&results);
     info!(
-        "aborted {} consensus algorithm: request_id=\"{}\", consensus_id=\"{}\", key=\"{}\", success={}, failed={}",
+        "aborted {} consensus algorithm: request_id=\"{}\", consensus_id={}, key=\"{}\", success={}, failed={}",
         Q::NAME,
         passport.id(),
         consensus_id,
