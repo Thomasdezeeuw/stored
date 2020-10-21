@@ -190,8 +190,7 @@ impl Blob {
     pub fn prefetch(&self) -> io::Result<()> {
         // TODO: benchmark at what size it makes sense to use this.
         if self.len() > PAGE_SIZE {
-            self.mmap_slice
-                .madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)
+            self.mmap_slice.madvise(libc::MADV_WILLNEED)
         } else {
             Ok(())
         }
@@ -234,8 +233,7 @@ impl UncommittedBlob {
     pub fn prefetch(&self) -> io::Result<()> {
         // TODO: benchmark at what size it makes sense to use this.
         if self.len() > PAGE_SIZE {
-            self.mmap_slice
-                .madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED)
+            self.mmap_slice.madvise(libc::MADV_WILLNEED)
         } else {
             Ok(())
         }
