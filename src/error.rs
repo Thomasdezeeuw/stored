@@ -25,6 +25,14 @@ pub trait Describe {
     {
         Error::new(self, description)
     }
+
+    /// Describe an error with additional context.
+    fn describe_with<T>(self, description: &'static str, ctx: T) -> Error<(Self, T)>
+    where
+        Self: Sized,
+    {
+        Error::new((self, ctx), description)
+    }
 }
 
 impl<E> Describe for E {}
@@ -49,9 +57,34 @@ impl<E> Error<E> {
         Error { err, description }
     }
 
+    /// Add more context to the error.
+    pub fn with<T>(self, ctx: T) -> Error<(E, T)> {
+        Error {
+            err: (self.err, ctx),
+            description: self.description,
+        }
+    }
+
     /// Returns the wrapped error `E`.
-    pub fn inner(self) -> E {
+    pub fn into_inner(self) -> E {
         self.err
+    }
+
+    /// Returns the description of the error.
+    pub const fn description(&self) -> &'static str {
+        self.description
+    }
+}
+
+impl<E, T> Error<(E, T)> {
+    /// Returns a reference to the wrapper error `E`.
+    pub fn error(&self) -> &E {
+        &self.err.0
+    }
+
+    /// Returns a reference to the additional context.
+    pub fn context(&self) -> &T {
+        &self.err.1
     }
 }
 
