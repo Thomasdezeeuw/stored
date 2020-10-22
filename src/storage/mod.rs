@@ -1315,7 +1315,7 @@ impl Index {
         // Note that we don't care about the result as its just an advise to the
         // OS, if t can't comply we'll continue on.
         if let Err(err) = slice.madvise(libc::MADV_SEQUENTIAL | libc::MADV_WILLNEED) {
-            warn!("madvise failed, continuing: {}", err);
+            warn!("madvise failed on the index file, continuing: {}", err);
         }
 
         Ok(slice)
