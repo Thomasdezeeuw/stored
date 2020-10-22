@@ -169,8 +169,15 @@ where
 /// [`http::actor`]: crate::http::actor()
 ///
 /// Logs the error and stops the actor.
-pub fn supervisor(err: crate::Error) -> SupervisorStrategy<(TcpStream, SocketAddr)> {
-    error!("error handling HTTP connection: {}", err);
+pub fn supervisor(
+    err: crate::Error<(io::Error, Passport)>,
+) -> SupervisorStrategy<(TcpStream, SocketAddr)> {
+    error!(
+        "error handling HTTP connection: {}: {}: passport={}",
+        err.description(),
+        err.error(),
+        err.context()
+    );
     SupervisorStrategy::Stop
 }
 
@@ -183,7 +190,7 @@ pub async fn actor(
     address: SocketAddr,
     mut db_ref: ActorRef<db::Message>,
     peers: Option<Peers>,
-) -> crate::Result<()> {
+) -> Result<(), crate::Error<(io::Error, Passport)>> {
     debug!("accepted connection: remote_address=\"{}\"", address);
     let mut conn = Connection::new(stream);
     let mut request = Request::empty();
@@ -261,7 +268,7 @@ pub async fn actor(
 
         // If we hit an error somewhere we want to return it to our supervisor.
         if let Some(err) = err {
-            return Err(err);
+            return Err(err.with(request.passport));
         }
 
         // In cases were we don't/can't read the (entire) body we need to close
