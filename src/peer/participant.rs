@@ -116,12 +116,13 @@ pub mod dispatcher {
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::rt::options::ActorOptions;
-    use heph::supervisor::SupervisorStrategy;
+    use heph::supervisor::{NoSupervisor, SupervisorStrategy};
     use heph::timer::Deadline;
     use heph::{actor, ActorRef};
     use log::{debug, trace, warn};
 
     use crate::error::Describe;
+    use crate::passport::Passport;
     use crate::peer::participant::consensus::{self, VoteResult};
     use crate::peer::participant::{ConsensusPhase, RpcResponder};
     use crate::peer::{
@@ -400,9 +401,9 @@ pub mod dispatcher {
                     responder,
                 );
                 let actor_ref = ctx.spawn(
-                    move |err| {
-                        warn!("store blob consensus actor failed: {}: remote_address=\"{}\", key=\"{}\"",
-                            err, remote, key);
+                    move |err: crate::Error<(io::Error, Passport)>| {
+                        warn!("store blob consensus actor failed: {}: {}: remote_address=\"{}\", key=\"{}\", passport={}",
+                            err.description(), err.error(), remote, key, err.context());
                         SupervisorStrategy::Stop
                     },
                     consensus,
@@ -520,7 +521,6 @@ pub mod dispatcher {
                 );
                 let consensus = consensus::remove_blob_actor as fn(_, _, _, _, _, _) -> _;
                 let remote = *remote;
-                let key = request.key.clone();
                 let args = (
                     db_ref.clone(),
                     peers.clone(),
@@ -529,11 +529,7 @@ pub mod dispatcher {
                     responder,
                 );
                 let actor_ref = ctx.spawn(
-                    move |err| {
-                        warn!("remove blob consensus actor failed: {}: remote_address=\"{}\", key=\"{}\"",
-                            err, remote, key);
-                        SupervisorStrategy::Stop
-                    },
+                    NoSupervisor,
                     consensus,
                     args,
                     ActorOptions::default().mark_ready(),
@@ -630,7 +626,7 @@ pub mod consensus {
     use std::collections::hash_map::Entry;
     use std::collections::HashMap;
     use std::convert::TryInto;
-    use std::io::IoSlice;
+    use std::io::{self, IoSlice};
     use std::net::SocketAddr;
     use std::slice;
     use std::time::{Duration, Instant, SystemTime};
@@ -691,7 +687,7 @@ pub mod consensus {
         remote: SocketAddr,
         key: Key,
         mut responder: RpcResponder,
-    ) -> crate::Result<()> {
+    ) -> Result<(), crate::Error<(io::Error, Passport)>> {
         let mut passport = Passport::new();
         debug!(
             "store blob consensus actor started: \
@@ -702,13 +698,13 @@ pub mod consensus {
         );
 
         let prepare = prepare_store_blob(&mut ctx, &mut db_ref, &mut passport, key.clone(), remote);
-        let query = match prepare.await? {
-            Ok(query) => {
+        let query = match prepare.await {
+            Ok(Ok(query)) => {
                 responder.respond(ConsensusVote::Commit(SystemTime::now()));
                 passport.mark(Event::ConsensusPhaseOneComplete);
                 query
             }
-            Err(PrepareError::BlobAlreadyStored) => {
+            Ok(Err(PrepareError::BlobAlreadyStored)) => {
                 info!(
                     "blob already stored, voting to abort consensus: \
                         request_id=\"{}\", key=\"{}\"",
@@ -718,7 +714,7 @@ pub mod consensus {
                 responder.respond(ConsensusVote::Abort);
                 return Ok(());
             }
-            Err(PrepareError::FailedToRetrieveBlob) => {
+            Ok(Err(PrepareError::FailedToRetrieveBlob)) => {
                 passport.mark(Event::ConsensusFailed);
                 error!(
                     "couldn't get blob from coordinator server, failing consensus: \
@@ -732,7 +728,7 @@ pub mod consensus {
                 responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
-            Err(PrepareError::IncorrectKey) => {
+            Ok(Err(PrepareError::IncorrectKey)) => {
                 passport.mark(Event::ConsensusFailed);
                 error!(
                     "coordinator server responded with incorrect blob, failing consensus: \
@@ -746,6 +742,7 @@ pub mod consensus {
                 responder.respond(ConsensusVote::Fail);
                 return Ok(());
             }
+            Err(err) => return Err(err.with(passport)),
         };
 
         // Phase two: commit or abort the query.
@@ -1084,7 +1081,7 @@ pub mod consensus {
         remote: SocketAddr,
         key: Key,
         mut responder: RpcResponder,
-    ) -> crate::Result<()> {
+    ) -> Result<(), !> {
         let mut passport = Passport::new();
         debug!(
             "remove blob consensus actor started: request_id=\"{}\", key=\"{}\", remote_address=\"{}\"",
