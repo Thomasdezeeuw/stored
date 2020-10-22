@@ -140,7 +140,10 @@ async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(
     let signal = ctx.receive_next().await;
     match signal {
         Signal::Interrupt | Signal::Terminate | Signal::Quit => {
-            info!("received {:#} signal, shutting down", signal);
+            info!(
+                "received {:#} signal, waiting on all connection be closed before shutting down",
+                signal
+            );
             Ok(())
         }
     }

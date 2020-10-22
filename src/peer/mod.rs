@@ -158,9 +158,7 @@ fn start_sync_actor(
     debug!("spawning peer synchronisation actor");
     let actor = sync::actor as fn(_, _, _, _, _) -> _;
     let args = (db_ref, start_http_ref, start, peers);
-    let options = ActorOptions::default()
-        .with_priority(Priority::HIGH)
-        .mark_ready();
+    let options = ActorOptions::default().mark_ready();
     runtime.spawn(NoSupervisor, actor, args, options);
 }
 
