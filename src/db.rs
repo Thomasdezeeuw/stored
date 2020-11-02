@@ -13,12 +13,12 @@ use std::io;
 use std::path::Path;
 use std::time::SystemTime;
 
-use heph::actor::sync::{SyncActor, SyncContext};
+use heph::actor::sync::SyncContext;
 use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::rt::SyncActorOptions;
-use heph::supervisor::{SupervisorStrategy, SyncSupervisor};
+use heph::supervisor::SupervisorStrategy;
 use heph::{from_message, rt, Runtime};
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, trace, warn};
 
 use crate::buffer::BufView;
 use crate::error::Describe;
@@ -31,62 +31,18 @@ use crate::Key;
 /// Start the database actor.
 pub fn start(
     runtime: &mut Runtime,
-    path: Box<Path>,
+    path: &Path,
 ) -> crate::Result<ActorRef<Message>, rt::Error<io::Error>> {
     let storage =
-        Storage::open(&*path).map_err(|err| rt::Error::from(err).describe("opening database"))?;
-    let supervisor = Supervisor::new(path);
+        Storage::open(path).map_err(|err| rt::Error::from(err).describe("opening database"))?;
+    let supervisor = |err| {
+        error!("error operating on database: {}", err);
+        SupervisorStrategy::Stop
+    };
     let options = SyncActorOptions::default().with_name("Storage".to_owned());
     runtime
         .spawn_sync_actor(supervisor, actor as fn(_, _) -> _, storage, options)
         .map_err(|err| err.map_type().describe("spawning database actor"))
-}
-
-/// Supervisor for the [`db::actor`].
-///
-/// [`db::actor`]: crate::db::actor
-///
-/// It logs the error and tries to reopen the database, restarting the actor if
-/// successful.
-pub struct Supervisor(Box<Path>);
-
-impl Supervisor {
-    /// Create a new `DbSupervisor`.
-    pub const fn new(path: Box<Path>) -> Supervisor {
-        Supervisor(path)
-    }
-}
-
-impl<A> SyncSupervisor<A> for Supervisor
-where
-    A: SyncActor<Argument = Storage, Error = crate::Error>,
-{
-    fn decide(&mut self, err: crate::Error) -> SupervisorStrategy<Storage> {
-        error!("error operating on database: {}", err);
-        info!(
-            "attempting to reopen database: path=\"{}\"",
-            self.0.display()
-        );
-        match Storage::open(&self.0) {
-            Ok(storage) => {
-                info!(
-                    "successfully reopened database, restarting database actor: path=\"{}\"",
-                    self.0.display()
-                );
-                SupervisorStrategy::Restart(storage)
-            }
-            Err(err) => {
-                // FIXME: shutdown the entire server somehow? Maybe by sending
-                // the TCP server a shutdown message?
-                error!(
-                    "failed to reopen database, not restarting database actor: {}: path=\"{}\"",
-                    err,
-                    self.0.display(),
-                );
-                SupervisorStrategy::Stop
-            }
-        }
-    }
 }
 
 /// Actor that handles storage [`Message`]s and applies them to [`Storage`].
