@@ -341,14 +341,6 @@ pub enum Message {
     HealthCheck(RpcMessage<HealthCheck, HealthOk>),
 }
 
-/// Message to check if the database actor is running.
-#[derive(Debug)]
-pub struct HealthCheck;
-
-/// Message returned to [`HealthCheck`].
-#[derive(Debug)]
-pub struct HealthOk(());
-
 from_message!(Message::AddBlob(BufView) -> (AddBlobResponse, BufView));
 from_message!(Message::CommitStoreBlob(StoreBlob, SystemTime) -> SystemTime);
 from_message!(Message::AbortStoreBlob(StoreBlob) -> ());
@@ -366,6 +358,14 @@ from_message!(Message::RemoveBlob(Key) -> RemoveBlobResponse);
 from_message!(Message::CommitRemoveBlob(RemoveBlob, SystemTime) -> SystemTime);
 from_message!(Message::AbortRemoveBlob(RemoveBlob) -> ());
 from_message!(Message::HealthCheck(HealthCheck) -> HealthOk);
+
+/// Message to check if the database actor is running.
+#[derive(Debug)]
+pub struct HealthCheck;
+
+/// Message returned to [`HealthCheck`].
+#[derive(Debug)]
+pub struct HealthOk(());
 
 /// Response to [`Message::AddBlob`].
 #[derive(Debug)]
