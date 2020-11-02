@@ -158,96 +158,6 @@ const DATA_PRE_ALLOC_BYTES: usize = DATA_PRE_ALLOC_PAGES * PAGE_SIZE; // 65,536 
 const DATA_MAGIC: &[u8] = b"Stored data v01\0"; // Null padded to 16 bytes.
 const INDEX_MAGIC: &[u8] = b"Stored index v01";
 
-/// A Binary Large OBject (BLOB).
-#[derive(Clone)]
-pub struct Blob {
-    mmap_slice: MmapSlice<u8>,
-    /// Date at which the `Blob` was created/stored.
-    created: SystemTime,
-}
-
-impl Blob {
-    /// Returns the bytes that make up the `Blob`.
-    pub fn bytes<'b>(&'b self) -> &'b [u8] {
-        self.mmap_slice.as_slice()
-    }
-
-    /// Returns the length of `Blob`.
-    pub fn len(&self) -> usize {
-        self.mmap_slice.len()
-    }
-
-    /// Returns the time at which the blob was stored.
-    pub fn created_at(&self) -> SystemTime {
-        self.created
-    }
-
-    /// Prefetch the bytes that make up this `Blob`.
-    ///
-    /// # Notes
-    ///
-    /// If this returns an error it doesn't mean the bytes are inaccessible.
-    pub fn prefetch(&self) -> io::Result<()> {
-        // TODO: benchmark at what size it makes sense to use this.
-        if self.len() > PAGE_SIZE {
-            self.mmap_slice.madvise(libc::MADV_WILLNEED)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl fmt::Debug for Blob {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("Blob")
-            .field("bytes", &self.bytes())
-            .field("created", &self.created)
-            .finish()
-    }
-}
-
-/// A Binary Large OBject (BLOB) that is **not** committed to [`Storage`].
-#[derive(Clone)]
-pub struct UncommittedBlob {
-    mmap_slice: MmapSlice<u8>,
-    /// Offset in the data file.
-    offset: u64,
-}
-
-impl UncommittedBlob {
-    /// Returns the bytes that make up the `UncommittedBlob`.
-    pub fn bytes<'b>(&'b self) -> &'b [u8] {
-        self.mmap_slice.as_slice()
-    }
-
-    /// Returns the length of `UncommittedBlob`.
-    pub fn len(&self) -> usize {
-        self.mmap_slice.len()
-    }
-
-    /// Prefetch the bytes that make up this `UncommittedBlob`.
-    ///
-    /// # Notes
-    ///
-    /// If this returns an error it doesn't mean the bytes are inaccessible.
-    pub fn prefetch(&self) -> io::Result<()> {
-        // TODO: benchmark at what size it makes sense to use this.
-        if self.len() > PAGE_SIZE {
-            self.mmap_slice.madvise(libc::MADV_WILLNEED)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-impl fmt::Debug for UncommittedBlob {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("UncommittedBlob")
-            .field("bytes", &self.bytes())
-            .finish()
-    }
-}
-
 /// Handle to a database.
 #[derive(Debug)]
 pub struct Storage {
@@ -270,15 +180,6 @@ pub struct Storage {
     ///
     /// Must outlive `blobs`, the lifetime `'s` refers to this.
     data: Data,
-}
-
-/// Blob entry in the [`Storage`].
-#[derive(Clone, Debug)]
-pub enum BlobEntry {
-    /// Blob is stored.
-    Stored(Blob),
-    /// Blob was removed at the provided time.
-    Removed(SystemTime),
 }
 
 impl Storage {
@@ -607,6 +508,105 @@ impl Storage {
                 removed_at
             })
         }
+    }
+}
+
+/// Blob entry in the [`Storage`].
+#[derive(Clone, Debug)]
+pub enum BlobEntry {
+    /// Blob is stored.
+    Stored(Blob),
+    /// Blob was removed at the provided time.
+    Removed(SystemTime),
+}
+
+/// A Binary Large OBject (BLOB).
+#[derive(Clone)]
+pub struct Blob {
+    mmap_slice: MmapSlice<u8>,
+    /// Date at which the `Blob` was created/stored.
+    created: SystemTime,
+}
+
+impl Blob {
+    /// Returns the bytes that make up the `Blob`.
+    pub fn bytes<'b>(&'b self) -> &'b [u8] {
+        self.mmap_slice.as_slice()
+    }
+
+    /// Returns the length of `Blob`.
+    pub fn len(&self) -> usize {
+        self.mmap_slice.len()
+    }
+
+    /// Returns the time at which the blob was stored.
+    pub fn created_at(&self) -> SystemTime {
+        self.created
+    }
+
+    /// Prefetch the bytes that make up this `Blob`.
+    ///
+    /// # Notes
+    ///
+    /// If this returns an error it doesn't mean the bytes are inaccessible.
+    pub fn prefetch(&self) -> io::Result<()> {
+        // TODO: benchmark at what size it makes sense to use this.
+        if self.len() > PAGE_SIZE {
+            self.mmap_slice.madvise(libc::MADV_WILLNEED)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl fmt::Debug for Blob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Blob")
+            .field("bytes", &self.bytes())
+            .field("created", &self.created)
+            .finish()
+    }
+}
+
+/// A Binary Large OBject (BLOB) that is **not** committed to [`Storage`].
+#[derive(Clone)]
+pub struct UncommittedBlob {
+    mmap_slice: MmapSlice<u8>,
+    /// Offset in the data file.
+    offset: u64,
+}
+
+impl UncommittedBlob {
+    /// Returns the bytes that make up the `UncommittedBlob`.
+    pub fn bytes<'b>(&'b self) -> &'b [u8] {
+        self.mmap_slice.as_slice()
+    }
+
+    /// Returns the length of `UncommittedBlob`.
+    pub fn len(&self) -> usize {
+        self.mmap_slice.len()
+    }
+
+    /// Prefetch the bytes that make up this `UncommittedBlob`.
+    ///
+    /// # Notes
+    ///
+    /// If this returns an error it doesn't mean the bytes are inaccessible.
+    pub fn prefetch(&self) -> io::Result<()> {
+        // TODO: benchmark at what size it makes sense to use this.
+        if self.len() > PAGE_SIZE {
+            self.mmap_slice.madvise(libc::MADV_WILLNEED)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl fmt::Debug for UncommittedBlob {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("UncommittedBlob")
+            .field("bytes", &self.bytes())
+            .finish()
     }
 }
 
