@@ -1,8 +1,8 @@
-#![feature(never_type, process_exitcode_placeholder)]
+#![feature(never_type, process_exitcode_placeholder, available_concurrency)]
 
-use std::env;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::{env, thread};
 
 use heph::actor;
 use heph::actor::context::ThreadSafe;
@@ -84,7 +84,7 @@ fn try_main() -> Result<(), ExitCode> {
 
     let mut runtime = Runtime::new()
         .map_err(map_err!("error creating Heph runtime: {}"))?
-        .use_all_cores();
+        .num_threads(worker_threads());
 
     let actor_ref = runtime.spawn(
         NoSupervisor,
@@ -133,6 +133,21 @@ fn try_main() -> Result<(), ExitCode> {
         })
         .start()
         .map_err(map_err!("{}"))
+}
+
+/// Determine the amount of worker threads to use to handle HTTP requests.
+fn worker_threads() -> usize {
+    let worker_threads = thread::available_concurrency()
+        .map(|n| n.get())
+        .unwrap_or(1);
+
+    // If we have enough CPU core we dedicate one of them to the `db::actor`,
+    // which runs as sync actor on its own thread.
+    if worker_threads >= 8 {
+        worker_threads - 1
+    } else {
+        worker_threads
+    }
 }
 
 /// Actor that waits for a signal and prints a message.
