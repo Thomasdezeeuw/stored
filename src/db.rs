@@ -23,8 +23,8 @@ use log::{debug, error, trace, warn};
 use crate::buffer::BufView;
 use crate::error::Describe;
 use crate::storage::{
-    AddResult, BlobAlreadyStored, BlobEntry, Entries, Keys, RemoveBlob, RemoveResult, Storage,
-    StoreBlob, StreamBlob, UncommittedBlob,
+    AddResult, BlobAlreadyStored, BlobEntry, Entries, Keys, Query, RemoveBlob, RemoveResult,
+    Storage, StoreBlob, StreamBlob, UncommittedBlob,
 };
 use crate::Key;
 
@@ -45,6 +45,20 @@ pub fn start(
         .map_err(|err| err.map_type().describe("spawning database actor"))
 }
 
+/// Macro to remove the repeated code from `actor`.
+macro_rules! handle_rpc {
+    ($response: ident, $handle: block) => {{
+        // If the receiving actor is no longer waiting we can skip the request.
+        if !$response.is_connected() {
+            continue;
+        }
+        let result = $handle;
+        if let Err(err) = $response.respond(result) {
+            warn!("db actor failed to send response: {}", err);
+        }
+    }};
+}
+
 /// Actor that handles storage [`Message`]s and applies them to [`Storage`].
 pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Result<()> {
     debug!(
@@ -57,162 +71,120 @@ pub fn actor(mut ctx: SyncContext<Message>, mut storage: Storage) -> crate::Resu
     while let Ok(msg) = ctx.receive_next() {
         trace!("database actor received message: {:?}", msg);
         match msg {
-            Message::AddBlob(RpcMessage { request, response }) => {
+            Message::AddBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let view = request;
-                use AddResult::*;
-                let result = match storage.add_blob(view.as_slice()) {
-                    Ok(query) => (AddBlobResponse::Query(query), view),
-                    AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), view),
-                    Err(err) => return Result::Err(err.describe("adding a blob")),
-                };
-                if let Result::Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
+                match storage.add_blob(view.as_slice()) {
+                    AddResult::Ok(query) => (AddBlobResponse::Query(query), view),
+                    AddResult::AlreadyStored(key) => (AddBlobResponse::AlreadyStored(key), view),
+                    AddResult::Err(err) => return Err(err.describe("adding a blob")),
                 }
-            }
-            Message::StreamBlob(RpcMessage { request, response }) => {
+            }),
+            Message::StreamBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let blob_length = request;
-                let stream_blob = storage
+                storage
                     .stream_blob(blob_length)
                     .map(Box::new)
-                    .map_err(|err| err.describe("streaming a blob"))?;
-                if let Result::Err(err) = response.respond(stream_blob) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::AddStreamedBlob(RpcMessage { request, response }) => {
+                    .map_err(|err| err.describe("streaming a blob"))?
+            }),
+            Message::AddStreamedBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let stream_blob = request;
-                use AddResult::*;
-                let result = match stream_blob.finish(&mut storage) {
-                    Ok(query) => AddBlobResponse::Query(query),
-                    AlreadyStored(key) => AddBlobResponse::AlreadyStored(key),
-                    Err(err) => return Result::Err(err.describe("adding streamed blob")),
-                };
-                if let Result::Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
+                match stream_blob.finish(&mut storage) {
+                    AddResult::Ok(query) => AddBlobResponse::Query(query),
+                    AddResult::AlreadyStored(key) => AddBlobResponse::AlreadyStored(key),
+                    AddResult::Err(err) => return Err(err.describe("adding streamed blob")),
                 }
-            }
-            Message::CommitStoreBlob(RpcMessage { request, response }) => {
+            }),
+            Message::CommitStoreBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let (query, created_at) = request;
-                let timestamp = storage
-                    .commit(query, created_at)
-                    .map_err(|err| err.describe("committing to adding blob"))?;
-                if let Err(err) = response.respond(timestamp) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::AbortStoreBlob(RpcMessage { request, response }) => {
+                debug!("committing store query: key=\"{}\"", query.key());
                 storage
-                    .abort(request)
-                    .map_err(|err| err.describe("aborting adding blob"))?;
-                if let Err(err) = response.respond(()) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::GetBlob(RpcMessage { request, response }) => {
+                    .commit(query, created_at)
+                    .map_err(|err| err.describe("committing to adding blob"))?
+            }),
+            Message::AbortStoreBlob(RpcMessage { request, response }) => handle_rpc!(response, {
+                let query = request;
+                debug!("aborting store query: key=\"{}\"", query.key());
+                storage
+                    .abort(query)
+                    .map_err(|err| err.describe("aborting adding blob"))?
+            }),
+            Message::GetBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let key = request;
                 debug!("retrieving blob: key=\"{}\"", key);
-                let result = storage.lookup(&key);
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::ContainsBlob(RpcMessage { request, response }) => {
+                storage.lookup(&key)
+            }),
+            Message::ContainsBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let key = request;
                 debug!("checking if blob is stored: key=\"{}\"", key);
-                let result = storage.contains(&key);
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
+                storage.contains(&key)
+            }),
             Message::GetUncommittedBlob(RpcMessage { request, response }) => {
-                let key = request;
-                debug!("retrieving uncommitted blob: key=\"{}\"", key);
-                let result = storage
-                    .lookup_uncommitted(&key)
-                    .ok_or_else(|| storage.lookup(&key));
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
+                handle_rpc!(response, {
+                    let key = request;
+                    debug!("retrieving uncommitted blob: key=\"{}\"", key);
+                    storage
+                        .lookup_uncommitted(&key)
+                        .ok_or_else(|| storage.lookup(&key))
+                })
             }
             Message::GetStoreBlobQuery(RpcMessage { request, response }) => {
-                let key = request;
-                debug!("retrieving uncommitted store blob query: key=\"{}\"", key);
-                let result = storage.get_store_blob_query(key);
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
+                handle_rpc!(response, {
+                    let key = request;
+                    debug!("retrieving uncommitted store blob query: key=\"{}\"", key);
+                    storage.get_store_blob_query(key)
+                })
             }
-            Message::GetKeys(RpcMessage { response, .. }) => {
+            Message::GetKeys(RpcMessage { response, .. }) => handle_rpc!(response, {
                 debug!("retrieving storage keys");
-                let result = storage
+                storage
                     .keys()
-                    .map_err(|err| err.describe("retrieving stored keys"))?;
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::GetEntries(RpcMessage { response, .. }) => {
+                    .map_err(|err| err.describe("retrieving stored keys"))?
+            }),
+            Message::GetEntries(RpcMessage { response, .. }) => handle_rpc!(response, {
                 debug!("retrieving index entries");
-                let result = storage
+                storage
                     .entries()
-                    .map_err(|err| err.describe("retrieving index entries"))?;
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::SyncStoredBlob(RpcMessage { request, response }) => {
+                    .map_err(|err| err.describe("retrieving index entries"))?
+            }),
+            Message::SyncStoredBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let (view, created_at) = request;
                 storage
                     .store_blob(view.as_slice(), created_at)
-                    .map_err(|err| err.describe("syncing stored blob"))?;
-                if let Err(err) = response.respond(view) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::SyncRemovedBlob(RpcMessage { request, response }) => {
+                    .map(|_| view)
+                    .map_err(|err| err.describe("syncing stored blob"))?
+            }),
+            Message::SyncRemovedBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let (key, removed_at) = request;
                 storage
                     .store_removed_blob(key, removed_at)
-                    .map_err(|err| err.describe("syncing removed blob"))?;
-                if let Err(err) = response.respond(()) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::RemoveBlob(RpcMessage { request, response }) => {
+                    .map(|_| ())
+                    .map_err(|err| err.describe("syncing removed blob"))?
+            }),
+            Message::RemoveBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let key = request;
-                use RemoveResult::*;
-                let result = match storage.remove_blob(key) {
-                    Ok(query) => RemoveBlobResponse::Query(query),
-                    NotStored(t) => RemoveBlobResponse::NotStored(t),
-                };
-                if let Err(err) = response.respond(result) {
-                    warn!("db actor failed to send response to actor: {}", err);
+                match storage.remove_blob(key) {
+                    RemoveResult::Ok(query) => RemoveBlobResponse::Query(query),
+                    RemoveResult::NotStored(t) => RemoveBlobResponse::NotStored(t),
                 }
-            }
-            Message::CommitRemoveBlob(RpcMessage { request, response }) => {
+            }),
+            Message::CommitRemoveBlob(RpcMessage { request, response }) => handle_rpc!(response, {
                 let (query, removed_at) = request;
-                let removed_at = storage
-                    .commit(query, removed_at)
-                    .map_err(|err| err.describe("committing to removing blob"))?;
-                if let Err(err) = response.respond(removed_at) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::AbortRemoveBlob(RpcMessage { request, response }) => {
+                debug!("committing to removing query: key=\"{}\"", query.key());
                 storage
-                    .abort(request)
-                    .map_err(|err| err.describe("aborting a remove blob operation"))?;
-                // If the actor is disconnected this is not really a problem.
-                if let Err(err) = response.respond(()) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
-            Message::HealthCheck(RpcMessage { response, .. }) => {
+                    .commit(query, removed_at)
+                    .map_err(|err| err.describe("committing to removing blob"))?
+            }),
+            Message::AbortRemoveBlob(RpcMessage { request, response }) => handle_rpc!(response, {
+                let query = request;
+                debug!("aborting removing query: key=\"{}\"", query.key());
+                storage
+                    .abort(query)
+                    .map_err(|err| err.describe("aborting a remove blob operation"))?
+            }),
+            Message::HealthCheck(RpcMessage { response, .. }) => handle_rpc!(response, {
                 debug!("database health check");
-                if let Err(err) = response.respond(HealthOk(())) {
-                    warn!("db actor failed to send response to actor: {}", err);
-                }
-            }
+                HealthOk(())
+            }),
         }
     }
 
