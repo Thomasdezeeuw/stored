@@ -101,12 +101,13 @@ impl Buffer {
     where
         B: Bytes,
     {
+        let src = self.as_slice().as_ptr();
         let dst = buf.as_bytes();
         let len = min(self.len(), dst.len());
-        // Safety: both the src and dst pointers are good. And we've ensured
-        // that the length is correct, not overwriting data we don't own or
-        // reading data we don't own.
-        unsafe { ptr::copy_nonoverlapping(self.as_slice().as_ptr(), dst.as_mut_ptr().cast(), len) }
+        // Safety: both the `src` and `dst` pointers are valid. And we've
+        // ensured that the length is correct, not overwriting data we don't own
+        // or reading data we don't own.
+        unsafe { ptr::copy_nonoverlapping(src, dst.as_mut_ptr().cast(), len) }
         self.processed(len);
         // Safety: just copied the bytes above.
         unsafe { buf.update_length(len) }
@@ -317,7 +318,7 @@ impl<'b> Write for WriteBuffer<'b> {
             ptr::copy_nonoverlapping(
                 buf.as_ptr(),
                 MaybeUninit::slice_as_mut_ptr(&mut self.inner.buf[self.inner.length..]),
-                buf.len(),
+                len,
             );
         }
         self.inner.length += len;

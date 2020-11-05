@@ -40,12 +40,10 @@ impl Key {
     /// This will panic if `bytes` is not of length `Key::LENGTH`.
     pub fn from_bytes<'a>(bytes: &'a [u8]) -> &'a Key {
         assert_eq!(bytes.len(), Key::LENGTH, "invalid Key length");
-        unsafe {
-            // Safety: we ensured above that `bytes` is of length `Key::LENGTH`
-            // and `Key` has the same layout as `[u8; Key::LENGTH]` because we
-            // use the `repr(transparent)` attribute.
-            &*(bytes.as_ptr().cast())
-        }
+        // Safety: we ensured above that `bytes` is of length `Key::LENGTH` and
+        // `Key` has the same layout as `[u8; Key::LENGTH]` because we use the
+        // `repr(transparent)` attribute, so this cast is same.
+        unsafe { &*(bytes.as_ptr().cast()) }
     }
 
     /// Calculate the `Key` for the provided `blob`.

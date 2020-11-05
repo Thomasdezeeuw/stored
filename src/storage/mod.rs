@@ -1500,7 +1500,7 @@ impl fmt::Debug for Entry {
 ///
 /// Can't represent times before Unix epoch.
 /// Integers are stored in big-endian format on disk **and in memory**.
-#[repr(C, packed)] // Packed to reduce the size of `Index`.
+#[repr(C, packed)] // Packed to reduce the size of `Entry`.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct DateTime {
     /// Number of seconds since Unix epoch.
@@ -2365,12 +2365,12 @@ impl<T> MmapSliceMut<MaybeUninit<T>> {
     {
         // Safety: we check if we own the memory after the offset.
         assert!(self.length >= offset);
-        let dst_address = unsafe { self.address.as_ptr().add(offset) };
+        let dst = unsafe { self.address.as_ptr().add(offset) };
         assert!(src.len() <= self.length - offset);
         // Safety: src is available for reading, dst for writing and we checked
         // the length above.
         unsafe {
-            ptr::copy_nonoverlapping(src.as_ptr(), dst_address as *mut _, src.len());
+            ptr::copy_nonoverlapping(src.as_ptr(), dst as *mut _, src.len());
         }
     }
 }
