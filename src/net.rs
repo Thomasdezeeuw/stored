@@ -2,10 +2,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 use std::{io, ptr};
 
-use heph::actor;
 use heph::net::TcpStream;
-use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
+use heph::{actor, rt};
 use log::debug;
 
 // FIXME: move this to a new `net2` module in Heph, see
@@ -17,7 +16,7 @@ pub(crate) async fn tcp_connect_retry<M, K>(
     max_tries: usize,
 ) -> io::Result<TcpStream>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     let mut wait = wait;
     let mut i = 1;

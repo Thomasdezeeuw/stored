@@ -636,9 +636,8 @@ pub mod consensus {
     use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
-    use heph::rt::RuntimeAccess;
     use heph::timer::{Deadline, Timer};
-    use heph::{actor, ActorRef};
+    use heph::{actor, rt, ActorRef};
     use log::{debug, error, info, trace, warn};
 
     use crate::db::{self, db_error};
@@ -854,7 +853,7 @@ pub mod consensus {
         remote: SocketAddr,
     ) -> crate::Result<Result<StoreBlob, PrepareError>>
     where
-        actor::Context<M, K>: RuntimeAccess,
+        actor::Context<M, K>: rt::Access,
     {
         match retrieve_store_blob_query(ctx, db_ref, passport, key.clone()).await {
             // Already a query in progress, reuse that.
@@ -941,7 +940,7 @@ pub mod consensus {
         remote: SocketAddr,
     ) -> crate::Result<TcpStream>
     where
-        actor::Context<M, K>: RuntimeAccess,
+        actor::Context<M, K>: rt::Access,
     {
         debug!(
             "connecting to coordinator server: request_id=\"{}\", remote_address=\"{}\"",
@@ -987,7 +986,7 @@ pub mod consensus {
         key: &Key,
     ) -> crate::Result<Option<u64>>
     where
-        actor::Context<M, K>: RuntimeAccess,
+        actor::Context<M, K>: rt::Access,
     {
         trace!(
             "requesting key from coordinator server: request_id=\"{}\", key=\"{}\"",
@@ -1049,7 +1048,7 @@ pub mod consensus {
         blob_length: u64,
     ) -> crate::Result<()>
     where
-        actor::Context<M, K>: RuntimeAccess,
+        actor::Context<M, K>: rt::Access,
     {
         if (buf.len() as u64) < blob_length {
             // Haven't read entire blob yet.

@@ -7,8 +7,7 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::time::SystemTime;
 
-use heph::rt::RuntimeAccess;
-use heph::{actor, ActorRef};
+use heph::{actor, rt, ActorRef};
 use log::debug;
 
 use crate::db::{self, AddBlobResponse};
@@ -53,7 +52,7 @@ pub(crate) async fn add_blob<M, K>(
     blob_length: usize,
 ) -> Result<Outcome<StoreBlob, Key>, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     // We need ownership of the `Buffer`, so temporarily replace it with an
     // empty one.
@@ -151,7 +150,7 @@ pub(crate) async fn stream_add_blob<M, K, F, W>(
     write: F,
 ) -> StreamResult<Outcome<StoreBlob, Key>>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
     F: FnOnce(Box<StreamBlob>) -> W,
     W: Future<Output = io::Result<Box<StreamBlob>>>,
 {

@@ -16,9 +16,8 @@ use heph::actor::context::ThreadSafe;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::net::TcpStream;
 use heph::rt::options::{ActorOptions, Priority};
-use heph::rt::RuntimeAccess;
 use heph::timer::Deadline;
-use heph::{actor, restart_supervisor};
+use heph::{actor, restart_supervisor, rt};
 use log::{debug, error, warn};
 
 use crate::buffer::Buffer;
@@ -419,7 +418,7 @@ async fn peer_sync_actor<K>(
     peer_address: SocketAddr,
 ) -> crate::Result<()>
 where
-    actor::Context<Message, K>: RuntimeAccess,
+    actor::Context<Message, K>: rt::Access,
 {
     // We use a low retry value because the peer should already be connected
     // when a peer sync is run, so we know its up and running.
@@ -530,7 +529,7 @@ async fn get_known_keys<M, K>(
     buf: &mut Buffer,
 ) -> crate::Result<HashSet<Key>>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     stream
         .write_all(slice::from_ref(&REQUEST_KEYS))
@@ -583,7 +582,7 @@ async fn get_known_keys_since<M, K>(
     since: SystemTime,
 ) -> crate::Result<HashSet<Key>>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     let since = DateTime::from(since);
     let bufs = &mut [
@@ -653,7 +652,7 @@ async fn share_blobs<M, K>(
     keys: Vec<Key>,
 ) -> crate::Result<()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     for key in keys {
         match retrieve_blob(ctx, db_ref, passport, key.clone()).await {
@@ -692,7 +691,7 @@ async fn write_store_blob_request<M, K>(
     blob: &[u8],
 ) -> crate::Result<()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     // TODO: buffer smaller blobs, current minimum is 84 bytes (which we
     // directly send as we use `TCP_NODELAY`).
@@ -726,7 +725,7 @@ async fn retrieve_blobs<M, K>(
     stored_keys: &mut Vec<Key>,
 ) -> crate::Result<()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     let mut keys = replace(stored_keys, Vec::new());
 

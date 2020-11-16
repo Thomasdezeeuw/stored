@@ -5,8 +5,7 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::time::SystemTime;
 
-use heph::rt::RuntimeAccess;
-use heph::{actor, ActorRef};
+use heph::{actor, rt, ActorRef};
 use log::debug;
 
 use crate::db::{self, RemoveBlobResponse};
@@ -76,7 +75,7 @@ pub(crate) async fn prep_remove_blob<M, K>(
     key: Key,
 ) -> Result<Outcome<RemoveBlob, Option<SystemTime>>, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "prepping storage to removing blob: request_id=\"{}\", key=\"{}\"",

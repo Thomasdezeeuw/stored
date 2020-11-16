@@ -5,9 +5,8 @@
 use std::future::Future;
 use std::time::SystemTime;
 
-use heph::actor;
 use heph::actor_ref::{ActorRef, RpcMessage};
-use heph::rt::RuntimeAccess;
+use heph::{actor, rt};
 use log::{debug, error, info, warn};
 
 use crate::op::db_rpc;
@@ -268,7 +267,7 @@ pub(crate) async fn commit_query<M, K, Q>(
     timestamp: SystemTime,
 ) -> Result<SystemTime, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
     Q: Query,
     db::Message: From<RpcMessage<(Q, SystemTime), SystemTime>>,
 {
@@ -345,7 +344,7 @@ pub(crate) async fn abort_query<M, K, Q>(
     query: Q,
 ) -> Result<(), ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
     Q: Query,
     db::Message: From<RpcMessage<Q, ()>>,
 {

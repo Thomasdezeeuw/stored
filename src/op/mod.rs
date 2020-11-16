@@ -5,10 +5,9 @@ use std::pin::Pin;
 use std::task::{self, Poll};
 use std::time::SystemTime;
 
-use heph::actor;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
-use heph::rt::RuntimeAccess;
 use heph::timer::Timer;
+use heph::{actor, rt};
 use log::{debug, error};
 
 use crate::buffer::BufView;
@@ -55,7 +54,7 @@ pub async fn retrieve_blob<M, K>(
     key: Key,
 ) -> Result<Option<BlobEntry>, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running retrieve operation: request_id=\"{}\", key=\"{}\"",
@@ -90,7 +89,7 @@ pub async fn contains_blob<M, K>(
     key: Key,
 ) -> Result<bool, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running contains key operation: request_id=\"{}\", key=\"{}\"",
@@ -125,7 +124,7 @@ pub(crate) async fn retrieve_uncommitted_blob<M, K>(
     key: Key,
 ) -> Result<Result<UncommittedBlob, Option<BlobEntry>>, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running uncommitted retrieve operation: request_id=\"{}\", key=\"{}\"",
@@ -160,7 +159,7 @@ pub(crate) async fn retrieve_store_blob_query<M, K>(
     key: Key,
 ) -> Result<Result<Option<StoreBlob>, BlobAlreadyStored>, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running retrieve uncommitted store query operation: request_id=\"{}\", key=\"{}\"",
@@ -194,7 +193,7 @@ pub(crate) async fn retrieve_keys<M, K>(
     passport: &mut Passport,
 ) -> Result<Keys, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running retrieve keys operation: request_id=\"{}\"",
@@ -227,7 +226,7 @@ pub(crate) async fn retrieve_entries<M, K>(
     passport: &mut Passport,
 ) -> Result<Entries, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "running retrieve index entries operation: request_id=\"{}\"",
@@ -260,7 +259,7 @@ pub async fn check_health<M, K>(
     passport: &mut Passport,
 ) -> Result<HealthOk, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!("running health check: request_id=\"{}\"", passport.id());
     match db_rpc(ctx, db_ref, *passport.id(), HealthCheck) {
@@ -290,7 +289,7 @@ pub(crate) async fn sync_stored_blob<M, K>(
     timestamp: SystemTime,
 ) -> Result<BufView, ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "syncing stored blob: request_id=\"{}\", blob_length={}",
@@ -324,7 +323,7 @@ pub(crate) async fn sync_removed_blob<M, K>(
     timestamp: SystemTime,
 ) -> Result<(), ()>
 where
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     debug!(
         "syncing removed blob: request_id=\"{}\", key=\"{}\"",
@@ -358,7 +357,7 @@ fn db_rpc<M, K, Req, Res>(
 ) -> Result<DbRpc<Res>, ()>
 where
     db::Message: From<RpcMessage<Req, Res>>,
-    actor::Context<M, K>: RuntimeAccess,
+    actor::Context<M, K>: rt::Access,
 {
     match db_ref.rpc(ctx, request) {
         Ok(rpc) => Ok(DbRpc {
