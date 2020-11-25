@@ -13,7 +13,7 @@ futures-util      = { version = "0.3.6", default-features = false, features = ["
 fxhash            = { version = "0.2.1", default-features = false }
 getrandom         = { version = "0.2.0", default-features = false }
 # TODO: replace with published crate.
-heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "d47b8e282a16a82a0f5566d1a400f347d7662618" }
+heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "00640b2a5d1759b572a2c9e9e13b06df4f3e40c5" }
 libc              = { version = "0.2.74", default-features = false }
 log               = { version = "0.4.11", default-features = false, features = ["release_max_level_info"] }
 num_cpus          = { version = "1.13.0", default-features = false }

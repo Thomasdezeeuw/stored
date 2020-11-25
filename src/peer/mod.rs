@@ -134,9 +134,7 @@ fn start_relays(
         let supervisor =
             coordinator::relay::Supervisor::new(peer_address, db_ref.clone(), peers.clone());
         let relay = coordinator::relay::actor as fn(_, _, _, _, _) -> _;
-        let options = ActorOptions::default()
-            .with_priority(Priority::HIGH)
-            .mark_ready();
+        let options = ActorOptions::default().with_priority(Priority::HIGH);
         let relay_ref = runtime.spawn(supervisor, relay, args, options);
 
         peers.add(Peer {
@@ -158,7 +156,7 @@ fn start_sync_actor(
     debug!("spawning peer synchronisation actor");
     let actor = sync::actor as fn(_, _, _, _, _) -> _;
     let args = (db_ref, start_http_ref, start, peers);
-    let options = ActorOptions::default().mark_ready();
+    let options = ActorOptions::default();
     runtime.spawn(NoSupervisor, actor, args, options);
 }
 
@@ -378,7 +376,7 @@ impl Peers {
 
     /// Committed to storing a blob.
     pub fn committed_store_blob(&self, id: ConsensusId, key: Key, timestamp: SystemTime) {
-        self.send(coordinator::relay::CoordinatorCommittedStore(
+        self.try_send(coordinator::relay::CoordinatorCommittedStore(
             id, key, timestamp,
         ))
     }
@@ -438,7 +436,7 @@ impl Peers {
 
     /// Committed to removing a blob.
     pub fn committed_remove_blob(&self, id: ConsensusId, key: Key, timestamp: SystemTime) {
-        self.send(coordinator::relay::CoordinatorCommittedRemove(
+        self.try_send(coordinator::relay::CoordinatorCommittedRemove(
             id, key, timestamp,
         ))
     }
@@ -446,12 +444,12 @@ impl Peers {
     /// Share with the peers to commit to storing the blob with `key` at
     /// `timestamp`.
     pub fn share_stored_commitment(&self, key: Key, timestamp: SystemTime) {
-        self.send(coordinator::relay::ShareCommitmentStored(key, timestamp))
+        self.try_send(coordinator::relay::ShareCommitmentStored(key, timestamp))
     }
 
     /// Same as `share_stored_commitment` but for a remove query.
     pub fn share_removed_commitment(&self, key: Key, timestamp: SystemTime) {
-        self.send(coordinator::relay::ShareCommitmentRemoved(key, timestamp))
+        self.try_send(coordinator::relay::ShareCommitmentRemoved(key, timestamp))
     }
 
     /// 2PC participant is uncommitted the `query` and the coordinator timed
@@ -469,7 +467,7 @@ impl Peers {
     ///
     /// [participant consensus actor]: consensus::actor
     pub(crate) fn send_participant_consensus(&self, msg: consensus::Message) {
-        if let Err(err) = self.inner.participant_ref.send(msg) {
+        if let Err(err) = self.inner.participant_ref.try_send(msg) {
             warn!(
                 "failed to send message to participant consensus actor: {}",
                 err
@@ -523,13 +521,13 @@ impl Peers {
     }
 
     /// Send a message to all peers in the collection.
-    fn send<Req>(&self, request: Req)
+    fn try_send<Req>(&self, request: Req)
     where
         relay::Message: From<Req>,
         Req: Clone,
     {
         for peer in self.inner.peers.read().iter() {
-            if let Err(err) = peer.actor_ref.send(request.clone()) {
+            if let Err(err) = peer.actor_ref.try_send(request.clone()) {
                 warn!(
                     "failed to send message to peer relay: {}: address=\"{}\"",
                     err, peer.address
@@ -594,9 +592,7 @@ impl Peers {
             self.clone(),
         );
         let relay = coordinator::relay::actor as fn(_, _, _, _, _) -> _;
-        let options = ActorOptions::default()
-            .with_priority(Priority::HIGH)
-            .mark_ready();
+        let options = ActorOptions::default().with_priority(Priority::HIGH);
         let relay_ref = ctx.spawn(supervisor, relay, args, options);
         self.add(Peer {
             actor_ref: relay_ref,

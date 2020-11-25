@@ -352,9 +352,7 @@ impl SyncingPeer {
         let args = (db_ref.clone(), peer_address);
         let supervisor = Supervisor::new((db_ref, peer_address));
         let peer_sync_actor = peer_sync_actor as fn(_, _, _) -> _;
-        let options = ActorOptions::default()
-            .with_priority(Priority::HIGH)
-            .mark_ready();
+        let options = ActorOptions::default().with_priority(Priority::HIGH);
         let actor_ref = ctx.spawn(supervisor, peer_sync_actor, args, options);
         match actor_ref.rpc(ctx, ()) {
             Ok(rpc) => Some(SyncingPeer {
@@ -380,7 +378,7 @@ impl SyncingPeer {
 
 impl Drop for SyncingPeer {
     fn drop(&mut self) {
-        let _ = self.actor_ref.send(Message::Stop);
+        let _ = self.actor_ref.try_send(Message::Stop);
     }
 }
 

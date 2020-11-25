@@ -69,7 +69,8 @@ pub fn setup(
     let p = peers.clone(); // Moved into `http_actor`.
     let http_actor = (actor as fn(_, _, _, _, _) -> _)
         .map_arg(move |(stream, arg)| (stream, arg, db_ref.clone(), p.clone()));
-    let http_listener = TcpServer::setup(address, supervisor, http_actor, ActorOptions::default())?;
+    let options = ActorOptions::default().mark_not_ready();
+    let http_listener = TcpServer::setup(address, supervisor, http_actor, options)?;
     // The returned closure is copied for each worker thread started, but we
     // only want to log that we start the HTTP listener once.
     let log_once = Arc::new(Once::new());

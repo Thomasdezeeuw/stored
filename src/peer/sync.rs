@@ -53,7 +53,7 @@ pub async fn actor(
     match full_sync(&mut ctx, &mut db_ref, &peers).await {
         Ok(()) => {
             debug!("completed full synchronisation, starting HTTP actor");
-            if let Err(err) = start_http_ref.read().send(Start(())) {
+            if let Err(err) = start_http_ref.read().try_send(Start(())) {
                 error!("failed to start HTTP listener: {}", err);
             }
         }

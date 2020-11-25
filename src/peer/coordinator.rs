@@ -155,9 +155,7 @@ pub mod relay {
             let args = (remote, db_ref.clone(), last_seen);
             let supervisor = super::sync::Supervisor::new(args.clone());
             let sync_actor = super::sync::actor as fn(_, _, _, _) -> _;
-            let options = ActorOptions::default()
-                .with_priority(Priority::HIGH)
-                .mark_ready();
+            let options = ActorOptions::default().with_priority(Priority::HIGH);
             ctx.spawn(supervisor, sync_actor, args, options);
         }
 

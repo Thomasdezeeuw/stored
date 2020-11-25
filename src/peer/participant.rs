@@ -80,7 +80,7 @@ impl RpcResponder {
     /// Send `response` to this dispatcher.
     fn send_response(&mut self, response: Response) {
         debug!("responding to dispatcher: response={:?}", response);
-        if let Err(err) = self.actor_ref.send(response) {
+        if let Err(err) = self.actor_ref.try_send(response) {
             warn!("failed to respond to the dispatcher: {}", err);
         }
     }
@@ -377,7 +377,7 @@ pub mod dispatcher {
                     };
                     // If we fail to send the actor already stopped, so that's
                     // fine.
-                    let _ = actor_ref.send(msg);
+                    let _ = actor_ref.try_send(msg);
                     return;
                 }
 
@@ -408,7 +408,7 @@ pub mod dispatcher {
                     },
                     consensus,
                     args,
-                    ActorOptions::default().mark_ready(),
+                    ActorOptions::default(),
                 );
                 // Checked above that we don't have duplicates.
                 let _ = running.insert(consensus_id, actor_ref);
@@ -421,7 +421,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Commit(timestamp),
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
                         // In case we failed, we send ourself a message to relay
@@ -431,7 +431,7 @@ pub mod dispatcher {
                             vote: ConsensusVote::Fail,
                         };
                         // We can always send ourselves a message.
-                        ctx.actor_ref().send(response).unwrap();
+                        ctx.actor_ref().try_send(response).unwrap();
                     }
                 } else {
                     warn!("can't find consensus actor for commit request: request_id={}, consensus_id={}",
@@ -441,7 +441,7 @@ pub mod dispatcher {
                         vote: ConsensusVote::Fail,
                     };
                     // We can always send ourselves a message.
-                    ctx.actor_ref().send(response).unwrap();
+                    ctx.actor_ref().try_send(response).unwrap();
                 }
             }
             Operation::AbortStoreBlob => {
@@ -452,7 +452,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Abort,
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         // If we can't send a message to the actor it is likely
                         // that the actor failed and caused the consensus run to
                         // fail as well. In any case the consensus run will
@@ -462,7 +462,7 @@ pub mod dispatcher {
                             vote: ConsensusVote::Commit(SystemTime::now()),
                         };
                         // We can always send ourselves a message.
-                        ctx.actor_ref().send(response).unwrap();
+                        ctx.actor_ref().try_send(response).unwrap();
                     }
                 } else {
                     warn!("can't find consensus actor for abort request: request_id={}, consensus_id={}",
@@ -472,7 +472,7 @@ pub mod dispatcher {
                         vote: ConsensusVote::Fail,
                     };
                     // We can always send ourselves a message.
-                    ctx.actor_ref().send(response).unwrap();
+                    ctx.actor_ref().try_send(response).unwrap();
                 }
             }
             Operation::StoreCommitted(timestamp) => {
@@ -483,7 +483,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Commit(timestamp),
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         warn!("failed to send to consensus actor for committed request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
                     }
@@ -506,7 +506,7 @@ pub mod dispatcher {
                     };
                     // If we fail to send the actor already stopped, so that's
                     // fine.
-                    let _ = actor_ref.send(msg);
+                    let _ = actor_ref.try_send(msg);
                     return;
                 }
 
@@ -528,12 +528,7 @@ pub mod dispatcher {
                     request.key,
                     responder,
                 );
-                let actor_ref = ctx.spawn(
-                    NoSupervisor,
-                    consensus,
-                    args,
-                    ActorOptions::default().mark_ready(),
-                );
+                let actor_ref = ctx.spawn(NoSupervisor, consensus, args, ActorOptions::default());
                 // Checked above that we don't have duplicates.
                 let _ = running.insert(consensus_id, actor_ref);
             }
@@ -545,7 +540,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Commit(timestamp),
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         warn!("failed to send to consensus actor for commit request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
                         // In case we failed, we send ourself a message to relay
@@ -555,7 +550,7 @@ pub mod dispatcher {
                             vote: ConsensusVote::Fail,
                         };
                         // We can always send ourselves a message.
-                        ctx.actor_ref().send(response).unwrap();
+                        ctx.actor_ref().try_send(response).unwrap();
                     }
                 } else {
                     warn!("can't find consensus actor for commit request: request_id={}, consensus_id={}",
@@ -565,7 +560,7 @@ pub mod dispatcher {
                         vote: ConsensusVote::Fail,
                     };
                     // We can always send ourselves a message.
-                    ctx.actor_ref().send(response).unwrap();
+                    ctx.actor_ref().try_send(response).unwrap();
                 }
             }
             Operation::AbortRemoveBlob => {
@@ -576,7 +571,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Abort,
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         // If we can't send a message to the actor it is likely
                         // that the actor failed and caused the consensus run to
                         // fail as well. In any case the consensus run will
@@ -586,7 +581,7 @@ pub mod dispatcher {
                             vote: ConsensusVote::Commit(SystemTime::now()),
                         };
                         // We can always send ourselves a message.
-                        ctx.actor_ref().send(response).unwrap();
+                        ctx.actor_ref().try_send(response).unwrap();
                     }
                 } else {
                     warn!("can't find consensus actor for abort request: request_id={}, consensus_id={}",
@@ -596,7 +591,7 @@ pub mod dispatcher {
                         vote: ConsensusVote::Fail,
                     };
                     // We can always send ourselves a message.
-                    ctx.actor_ref().send(response).unwrap();
+                    ctx.actor_ref().try_send(response).unwrap();
                 }
             }
             Operation::RemoveCommitted(timestamp) => {
@@ -607,7 +602,7 @@ pub mod dispatcher {
                         key: request.key,
                         result: ConsensusVote::Commit(timestamp),
                     };
-                    if let Err(..) = actor_ref.send(msg) {
+                    if let Err(..) = actor_ref.try_send(msg) {
                         warn!("failed to send to consensus actor for committed request: request_id={}, consensus_id={}",
                             request.id, request.consensus_id);
                     }
