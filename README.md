@@ -1,5 +1,6 @@
 # Store*d*
 
+**Store*d* is an experimental prototype not to be used in production!**
 
 Store*d* (pronounced store-daemon, or just stored) is a distributed immutable
 blob store. Stored is not a key-value store, as the key isn't the decided by the
