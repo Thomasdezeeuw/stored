@@ -55,7 +55,11 @@ const USAGE: &str = "Usage:
     stored -h or --help";
 
 fn main() -> ExitCode {
+    // Enable logging.
     heph::log::init();
+    // Make the generated `Uuid`s random.
+    Uuid::initialise();
+
     let code = match try_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(code) => code,
@@ -75,9 +79,6 @@ macro_rules! map_err {
 }
 
 fn try_main() -> Result<(), ExitCode> {
-    // Make the generated `Uuid`s random.
-    Uuid::initialise();
-
     let config_path = parse_args()?;
     let config = Config::from_file(&config_path)
         .map_err(map_err!("error reading configuration file: {}"))?;

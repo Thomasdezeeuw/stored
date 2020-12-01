@@ -101,7 +101,7 @@
 // can only be applied to the correct `Storage`? Important when the database
 // actor is restarted.
 
-// TODO: use the invalid bit in `Datetime.subsec_nanos` to indicate that the
+// TODO: use the invalid bit in `DateTime.subsec_nanos` to indicate that the
 // storing the blob was aborted? That would make it easier for the cleanup.
 
 // TODO: if an index entry is detected, or if the index file length is incorrect
@@ -496,12 +496,7 @@ impl Storage {
                 res
             }
         } else {
-            let entry = Entry {
-                key,
-                offset: 0,
-                length: 0,
-                time: ModifiedTime::Removed(removed_at).into(),
-            };
+            let entry = Entry::new(key, 0, 0, ModifiedTime::Removed(removed_at));
             self.index.add_entry(&entry).map(|entry_index| {
                 self.blobs
                     .insert(entry.key, (entry_index, BlobEntry::Removed(removed_at)));
@@ -1573,7 +1568,7 @@ impl DateTime {
         self
     }
 
-    /// Convert a slice of bytes of into `Datetime`.
+    /// Convert a slice of bytes of into `DateTime`.
     ///
     /// Returns `None` is not of length `size_of::<DateTime>()` or if the bytes
     /// are invalid.
