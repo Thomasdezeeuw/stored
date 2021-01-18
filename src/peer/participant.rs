@@ -111,7 +111,6 @@ pub mod dispatcher {
     use std::time::SystemTime;
 
     use futures_util::future::{select, Either};
-    use futures_util::io::AsyncWriteExt;
     use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
@@ -202,7 +201,7 @@ pub mod dispatcher {
                             write_response(&mut ctx, &mut stream, &mut buf, msg).await?;
                         }
                         return stream
-                            .write_all(EXIT_PARTICIPANT)
+                            .send_all(EXIT_PARTICIPANT)
                             .await
                             .map_err(|err| err.describe("writing exit message"));
                     }
@@ -270,7 +269,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(addresses.len() * (45 + 2 + 1) + 2).1;
         serde_json::to_writer(&mut wbuf, &addresses)
             .map_err(|err| io::Error::from(err).describe("serializing peers addresses"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing known peers")),
         }
@@ -287,7 +286,7 @@ pub mod dispatcher {
         let mut wbuf = buf.split_write(MAX_RES_SIZE).1;
         serde_json::to_writer(&mut wbuf, &response)
             .map_err(|err| io::Error::from(err).describe("serializing response"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice())).await {
             Ok(()) => Ok(()),
             Err(err) => Err(err.describe("writing response")),
         }
@@ -949,7 +948,7 @@ pub mod consensus {
             .map_err(|err| err.describe("connecting to peer server"))?;
 
         trace!("writing connection magic: request_id=\"{}\"", passport.id());
-        let write = stream.write_all(COORDINATOR_MAGIC);
+        let write = stream.send_all(COORDINATOR_MAGIC);
         match Deadline::timeout(ctx, timeout::PEER_WRITE, write).await {
             Ok(()) => {}
             Err(err) => return Err(err.describe("writing connection magic")),

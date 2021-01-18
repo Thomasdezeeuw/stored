@@ -14,7 +14,6 @@ pub mod relay {
     use std::time::SystemTime;
 
     use futures_util::future::{select, Either};
-    use futures_util::io::AsyncWriteExt;
     use fxhash::FxBuildHasher;
     use heph::actor::context::ThreadSafe;
     use heph::actor_ref::{ActorRef, RpcMessage, RpcResponse, SendError};
@@ -182,7 +181,7 @@ pub mod relay {
                     if relay_responses(&mut responses, &mut buf)? {
                         // Participant closed connection.
                         return stream
-                            .write_all(EXIT_COORDINATOR)
+                            .send_all(EXIT_COORDINATOR)
                             .await
                             .map_err(|err| err.describe("writing exit message"));
                     }
@@ -419,7 +418,7 @@ pub mod relay {
         );
 
         stream
-            .write_all(PARTICIPANT_MAGIC)
+            .send_all(PARTICIPANT_MAGIC)
             .await
             .map_err(|err| err.describe("failed to write participant magic"))?;
 
@@ -437,7 +436,7 @@ pub mod relay {
             "coordinator relay writing setup to peer participant: remote_address=\"{}\"",
             remote,
         );
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(wbuf.as_slice())).await {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(wbuf.as_slice())).await {
             Ok(()) => {
                 buf.reset();
                 Ok(stream)
@@ -558,8 +557,7 @@ pub mod relay {
         );
         serde_json::to_writer(&mut wbuf, &request)
             .map_err(|err| io::Error::from(err).describe("serializing request"))?;
-        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.write_all(&wbuf.as_slice())).await
-        {
+        match Deadline::timeout(ctx, timeout::PEER_WRITE, stream.send_all(&wbuf.as_slice())).await {
             Ok(()) => {
                 if let Some(response) = response {
                     responses.insert(id, response);
@@ -635,7 +633,6 @@ pub mod sync {
     use std::net::SocketAddr;
     use std::time::{Duration, SystemTime};
 
-    use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
     use heph::{actor, restart_supervisor, ActorRef};
     use log::{debug, error};
@@ -682,7 +679,7 @@ pub mod sync {
         }
 
         stream
-            .write_all(COORDINATOR_MAGIC)
+            .send_all(COORDINATOR_MAGIC)
             .await
             .map_err(|err| err.describe("writing magic bytes"))?;
 

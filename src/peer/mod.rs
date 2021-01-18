@@ -827,7 +827,6 @@ pub mod switcher {
     use std::io;
     use std::net::SocketAddr;
 
-    use futures_util::io::AsyncWriteExt;
     use heph::actor::context::ThreadSafe;
     use heph::net::TcpStream;
     use heph::timer::Deadline;
@@ -866,7 +865,7 @@ pub mod switcher {
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
-                if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
+                if let Err(err) = stream.send(MAGIC_ERROR_MSG).await {
                     warn!(
                         "error writing error response: {}: remote_address=\"{}\"",
                         err, remote
@@ -901,7 +900,7 @@ pub mod switcher {
                 );
                 // We don't really care if we didn't write all the bytes here,
                 // the connection is invalid anyway.
-                if let Err(err) = stream.write(MAGIC_ERROR_MSG).await {
+                if let Err(err) = stream.send(MAGIC_ERROR_MSG).await {
                     warn!(
                         "error writing error response: {}: remote_address=\"{}\"",
                         err, remote

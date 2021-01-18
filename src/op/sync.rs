@@ -434,7 +434,7 @@ where
     }
 
     stream
-        .write_all(COORDINATOR_MAGIC)
+        .send_all(COORDINATOR_MAGIC)
         .await
         .map_err(|err| err.describe("writing magic bytes"))?;
 
@@ -530,7 +530,7 @@ where
     actor::Context<M, K>: rt::Access,
 {
     stream
-        .write_all(slice::from_ref(&REQUEST_KEYS))
+        .send_all(slice::from_ref(&REQUEST_KEYS))
         .await
         .map_err(|err| err.describe("writing known keys request"))?;
 
