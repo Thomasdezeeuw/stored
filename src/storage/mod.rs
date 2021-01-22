@@ -1783,7 +1783,12 @@ impl MmapAreaControl {
             length
         );
         let fd = file.as_raw_fd();
+
         mmap(ptr::null_mut(), length, protection, flags, fd, offset).map(|mmap_address| {
+            if let Err(err) = madvise(mmap_address.as_ptr(), length, libc::MADV_RANDOM) {
+                warn!("madvise failed on the data file, continuing: {}", err);
+            }
+
             let area = Box::new(MmapArea {
                 mmap_address,
                 mmap_length: AtomicUsize::new(length),
@@ -1841,6 +1846,10 @@ impl MmapAreaControl {
             fd,
             area.mmap_offset,
         )?;
+
+        if let Err(err) = madvise(new_address.as_ptr(), new_length, libc::MADV_RANDOM) {
+            warn!("madvise failed on the data file, continuing: {}", err);
+        }
 
         // Address and offset should remain unchanged.
         assert_eq!(
