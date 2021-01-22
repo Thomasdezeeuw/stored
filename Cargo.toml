@@ -17,9 +17,7 @@ heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "0064
 libc              = { version = "0.2.74", default-features = false }
 log               = { version = "0.4.11", default-features = false, features = ["release_max_level_info"] }
 num_cpus          = { version = "1.13.0", default-features = false }
-# The "dev_urandom_fallback" feature is required on FreeBSD: see
-# https://github.com/briansmith/ring/issues/1048.
-ring              = { version = "0.16.15", default-features = false, features = ["std", "dev_urandom_fallback"] }
+ring              = { version = "0.16.19", default-features = false, features = ["std"] }
 # Need the `std` feature as it implements `Error` for `httparse::Error`.
 httparse          = { version = "1.3.4", default-features = false, features = ["std"] }
 human-size        = { version = "0.4.1", default-features = false, features = ["enable-serde"] }
