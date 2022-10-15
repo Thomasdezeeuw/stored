@@ -10,9 +10,12 @@ pub trait Blob {
 }
 
 /// Write access to the storage.
-pub trait Write: Read {
+pub trait Write {
+    /// Error used by the storage, often this will be [`std::io::Error`].
+    type Error: fmt::Display;
+
     /// Add `blob` to the storage.
-    fn add_blob(&mut self, blob: &[u8]) -> Result<(), AddError<Self::Error>>;
+    fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>>;
 
     /// Remove the blob with `key` from storage.
     ///
