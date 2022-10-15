@@ -1,3 +1,7 @@
+//! Simple in-memory storage implementation.
+//!
+//! Nothing special, simply a `HashMap` with `Arc<[u8]>` as blob.
+
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
 
