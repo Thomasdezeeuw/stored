@@ -4,6 +4,9 @@ use std::fmt;
 
 use crate::key::Key;
 
+pub mod mem;
+pub use mem::new as new_in_memory;
+
 /// Trait to represent a BLOB (Binary Large OBject).
 pub trait Blob {
     /// Length of the blob in bytes.
