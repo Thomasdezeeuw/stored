@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 
 use criterion::measurement::Measurement;
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkGroup, Criterion};
-use stored::Key;
+use stored::key::{Key, KeyHasher};
 
 /// Empty key, all zeros.
 const EMPTY_KEY: Key = Key::new([0; 64]);
@@ -21,6 +21,7 @@ fn group1(c: &mut Criterion) {
     let mut group = c.benchmark_group("Hash Key/group1");
     // FxHash is literally on a different time scale.
     fxhash(&mut group);
+    keyhash(&mut group);
     group.finish();
 }
 
@@ -91,6 +92,11 @@ pub fn seahash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
     use seahash::SeaHasher;
     group.bench_function("SeaHasher/empty", |b| b.iter(|| bench_empty::<SeaHasher>()));
     group.bench_function("SeaHasher/hello", |b| b.iter(|| bench_hello::<SeaHasher>()));
+}
+
+pub fn keyhash<M: Measurement>(group: &mut BenchmarkGroup<M>) {
+    group.bench_function("KeyHasher/empty", |b| b.iter(|| bench_empty::<KeyHasher>()));
+    group.bench_function("KeyHasher/hello", |b| b.iter(|| bench_hello::<KeyHasher>()));
 }
 
 macro_rules! make_bench {
