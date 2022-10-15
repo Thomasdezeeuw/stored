@@ -60,8 +60,7 @@ impl Key {
     /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
     /// blob, while streaming its contents.
     ///
-    /// It can be used while [`Reading`] or [`Writing`], and even asynchronously
-    /// with [`AsyncRead`] or [`AsyncWrite`].
+    /// It can be used while [`Reading`] or [`Writing`].
     ///
     /// [`Reading`]: std::io::Read
     /// [`Writing`]: std::io::Write
