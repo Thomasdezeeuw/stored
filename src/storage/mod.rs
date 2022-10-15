@@ -6,7 +6,8 @@ use crate::key::Key;
 
 /// Trait to represent a BLOB (Binary Large OBject).
 pub trait Blob {
-    // TODO.
+    /// Length of the blob in bytes.
+    fn len(&self) -> usize;
 }
 
 /// Write access to the storage.
