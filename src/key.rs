@@ -1,11 +1,12 @@
 //! Key of a blob.
 
 use std::error::Error;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, IoSlice, IoSliceMut, Read, Write};
+use std::ops::BitXor;
 use std::ops::Deref;
 use std::str::FromStr;
+use std::{fmt, slice};
 
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 use serde::ser::SerializeTuple;
@@ -258,11 +259,12 @@ impl fmt::Debug for Key {
 }
 
 impl Hash for Key {
+    #[inline]
     fn hash<H>(&self, state: &mut H)
     where
         H: Hasher,
     {
-        Hash::hash(&self.bytes[..], state)
+        state.write(&self.bytes[..])
     }
 }
 
@@ -419,13 +421,43 @@ where
     }
 }
 
+/// [`Hasher`] implementation for [`Key`].
+pub struct KeyHasher {
+    state: u64,
+}
+
+impl Default for KeyHasher {
+    #[inline]
+    fn default() -> KeyHasher {
+        KeyHasher { state: 0 }
+    }
+}
+
+impl Hasher for KeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.state
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        debug_assert!(bytes.len() == Key::LENGTH);
+        // SAFETY: u64 and u8 have compatible layouts.
+        let parts = unsafe { slice::from_raw_parts(bytes.as_ptr().cast(), Key::LENGTH / 8) };
+        for p in parts {
+            self.state = self.state.bitxor(p);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::hash::{Hash, Hasher};
     use std::io::{self, Read};
 
     use serde_test::{assert_tokens, Configure, Token};
 
-    use crate::key::{InvalidKeyStr, Key};
+    use crate::key::{InvalidKeyStr, Key, KeyHasher};
 
     #[test]
     fn to_owned() {
@@ -544,5 +576,30 @@ mod tests {
         assert_eq!(calc.read(&mut buf).unwrap(), 7);
         assert_eq!(&buf, b"o world");
         assert_eq!(calc.finish(), want);
+    }
+
+    #[test]
+    fn key_hashing() {
+        let keys = [
+            Key::for_blob(b"Hello world"),
+            Key::for_blob(b"Hello world1"),
+            Key::for_blob(b"Hello world2"),
+            Key::for_blob(b"Hello world3"),
+        ];
+
+        for keys in keys.windows(2) {
+            let result1 = hash_key(&keys[0]);
+            let result2 = hash_key(&keys[1]);
+            let result2b = hash_key(&keys[1]);
+
+            assert_ne!(result1, result2);
+            assert_eq!(result2, result2b);
+        }
+
+        fn hash_key(key: &Key) -> u64 {
+            let mut hasher = KeyHasher::default();
+            key.hash(&mut hasher);
+            hasher.finish()
+        }
     }
 }
