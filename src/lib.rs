@@ -1,2 +1,4 @@
+#![feature(never_type)]
+
 pub mod key;
-mod storage;
+pub mod storage;
