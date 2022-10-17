@@ -10,6 +10,9 @@ ring              = { version = "0.16.20", default-features = false, features = 
 serde             = { version = "1.0.145", default-features = false, features = ["derive"] }
 toml              = { version = "0.5.9", default-features = false }
 
+# TODO: use released version.
+hashmap = { version = "0.1.0", default-features = false, git = "https://github.com/Thomasdezeeuw/left-right", rev = "132427c88e203f35126716f5b17b927f48eb371b" }
+
 [dev-dependencies]
 http        = { version = "0.2.1", default-features = false }
 lazy_static = { version = "1.4.0", default-features = false }
