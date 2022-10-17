@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::time::Duration;
 
 use crate::key::Key;
 use crate::storage::Blob;
@@ -11,7 +12,7 @@ pub trait Protocol {
     type Error: fmt::Display;
 
     /// Read the next request.
-    fn next_request<'a>(&'a mut self) -> Self::NextRequest<'a>;
+    fn next_request<'a>(&'a mut self, timeout: Duration) -> Self::NextRequest<'a>;
 
     /// [`Future`] behind [`Protocol::next_request`].
     type NextRequest<'a>: Future<Output = Result<Option<Request<'a>>, Self::Error>> + 'a
@@ -19,7 +20,7 @@ pub trait Protocol {
         Self: 'a;
 
     /// Reply to a request with `response`.
-    fn reply<'a, B>(&'a mut self, response: Response<B>) -> Self::Reply<'a>
+    fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a>
     where
         B: Blob;
 

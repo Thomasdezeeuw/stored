@@ -2,7 +2,7 @@
 //! store.
 
 use std::fmt;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use log::{as_debug, as_display, debug, info};
 
@@ -11,6 +11,11 @@ use crate::{storage, Describe, Error};
 
 /// Controller configuration.
 pub trait Config {
+    /// Read timeout, passed to [`Protocol::next_request`].
+    fn read_timeout(&self) -> Duration;
+
+    /// Write timeout, passed to [`Protocol::reply`].
+    fn write_timeout(&self) -> Duration;
 }
 
 /// Actor that controls a user connected using `protocol` trying to access
@@ -34,7 +39,7 @@ where
     debug!(source = as_display!(source); "accepted connection");
 
     while let Some(request) = protocol
-        .next_request()
+        .next_request(config.read_timeout())
         .await
         .describe("reading next request")?
     {
@@ -66,7 +71,7 @@ where
             "processed request");
 
         protocol
-            .reply(response)
+            .reply(response, config.write_timeout())
             .await
             .describe("writing response")?;
     }
