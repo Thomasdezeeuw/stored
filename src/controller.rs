@@ -9,12 +9,22 @@ use log::{as_debug, as_display, debug, info};
 use crate::protocol::{Protocol, Request, Response};
 use crate::{storage, Describe, Error};
 
+/// Controller configuration.
+pub trait Config {
+}
+
 /// Actor that controls a user connected using `protocol` trying to access
 /// `storage`.
 ///
 /// `source` is used in logging and should be socket address or similar.
-pub async fn actor<P, S, I, E>(mut protocol: P, storage: S, source: I) -> Result<(), Error<E>>
+pub async fn actor<C, P, S, I, E>(
+    config: C,
+    mut protocol: P,
+    storage: S,
+    source: I,
+) -> Result<(), Error<E>>
 where
+    C: Config,
     P: Protocol<Error = E>,
     S: storage::Read<Error = E>,
     S::Blob: fmt::Debug, // Needed for logging of response (for now).
