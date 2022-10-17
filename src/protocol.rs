@@ -30,6 +30,7 @@ pub trait Protocol {
 }
 
 /// Request read by a [`Protocol`] implementation.
+#[derive(Debug)]
 pub enum Request<'a> {
     /// Add a blob to the storage.
     AddBlob(&'a [u8]),
@@ -42,6 +43,7 @@ pub enum Request<'a> {
 }
 
 /// Response to a [`Request`], generic over the blob type `B`.
+#[derive(Debug)]
 pub enum Response<B: Blob> {
     /// Blob has been added.
     Added,
