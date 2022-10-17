@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+pub mod controller;
 pub mod key;
 pub mod protocol;
 pub mod storage;
