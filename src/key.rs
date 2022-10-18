@@ -44,6 +44,22 @@ impl Key {
         unsafe { &*(bytes.as_ptr().cast()) }
     }
 
+    /// Same as the [`FromStr::from_str`] implementation, but uses `&[u8]`
+    /// instead of a string.
+    pub fn from_byte_str(s: &[u8]) -> Result<Self, InvalidKeyStr> {
+        if s.len() != Key::LENGTH * 2 {
+            return Err(InvalidKeyStr);
+        }
+
+        let mut bytes = [0; Key::LENGTH];
+        for (i, digits) in s.chunks_exact(2).enumerate() {
+            let high = from_hex_digit(digits[0])?;
+            let low = from_hex_digit(digits[1])?;
+            bytes[i] = (high * 16) | low;
+        }
+        Ok(Key::new(bytes))
+    }
+
     /// Calculate the `Key` for the provided `blob`.
     pub fn for_blob<'a>(blob: &'a [u8]) -> Key {
         let result = digest(&SHA512, blob);
@@ -136,17 +152,7 @@ impl FromStr for Key {
     type Err = InvalidKeyStr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() != Key::LENGTH * 2 {
-            return Err(InvalidKeyStr);
-        }
-
-        let mut bytes = [0; Key::LENGTH];
-        for (i, digits) in s.as_bytes().chunks_exact(2).enumerate() {
-            let high = from_hex_digit(digits[0])?;
-            let low = from_hex_digit(digits[1])?;
-            bytes[i] = (high * 16) | low;
-        }
-        Ok(Key::new(bytes))
+        Key::from_byte_str(s.as_bytes())
     }
 }
 
