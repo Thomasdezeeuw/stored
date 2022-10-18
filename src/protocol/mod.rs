@@ -46,7 +46,7 @@ pub enum Request<'a> {
 
 /// Response to a [`Request`], generic over the blob type `B`.
 #[derive(Debug)]
-pub enum Response<B: Blob> {
+pub enum Response<B> {
     /// Blob has been added.
     Added,
     /// Blob has been removed.
