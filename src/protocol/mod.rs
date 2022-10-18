@@ -20,14 +20,15 @@ pub trait Protocol {
         Self: 'a;
 
     /// Reply to a request with `response`.
-    fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a>
+    fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a, B>
     where
-        B: Blob;
+        B: Blob + 'a;
 
     /// [`Future`] behind [`Protocol::reply`].
-    type Reply<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    type Reply<'a, B>: Future<Output = Result<(), Self::Error>> + 'a
     where
-        Self: 'a;
+        Self: 'a,
+        B: Blob + 'a;
 }
 
 /// Request read by a [`Protocol`] implementation.
