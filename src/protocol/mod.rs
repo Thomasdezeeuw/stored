@@ -7,6 +7,8 @@ use std::{fmt, io};
 use crate::key::Key;
 use crate::storage::Blob;
 
+pub mod resp;
+
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
     /// Read the next request.
