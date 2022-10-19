@@ -9,15 +9,24 @@ use crate::storage::Blob;
 
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
-    type Error: fmt::Display;
-
     /// Read the next request.
+    ///
+    /// # Errors
+    ///
+    /// If this return an error it will be passed to
+    /// [`Protocol::reply_to_error`]. If the error is [fatal] processing will
+    /// stop.
+    ///
+    /// [fatal]: IsFatal::is_fatal
     fn next_request<'a>(&'a mut self, timeout: Duration) -> Self::NextRequest<'a>;
 
     /// [`Future`] behind [`Protocol::next_request`].
-    type NextRequest<'a>: Future<Output = Result<Option<Request<'a>>, Self::Error>> + 'a
+    type NextRequest<'a>: Future<Output = Result<Option<Request<'a>>, Self::RequestError>> + 'a
     where
         Self: 'a;
+
+    /// Error returned by [`Protocol::next_request`].
+    type RequestError: IsFatal + fmt::Display;
 
     /// Reply to a request with `response`.
     fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a, B>
@@ -25,10 +34,27 @@ pub trait Protocol {
         B: Blob + 'a;
 
     /// [`Future`] behind [`Protocol::reply`].
-    type Reply<'a, B>: Future<Output = Result<(), Self::Error>> + 'a
+    type Reply<'a, B>: Future<Output = Result<(), Self::ResponseError>> + 'a
     where
         Self: 'a,
         B: Blob + 'a;
+
+    /// Reply to a (broken) request with `error`.
+    fn reply_to_error<'a>(
+        &'a mut self,
+        error: Self::RequestError,
+        timeout: Duration,
+    ) -> Self::ReplyWithError<'a>;
+
+    /// [`Future`] behind [`Protocol::reply`].
+    type ReplyWithError<'a>: Future<Output = Result<(), Self::ResponseError>> + 'a
+    where
+        Self: 'a;
+
+    /// Error returned by [`Protocol::reply`] and [`Protocol::reply_to_error`].
+    /// This error is considered fatal for the connection and will stop further
+    /// processing.
+    type ResponseError: fmt::Display;
 }
 
 /// Request read by a [`Protocol`] implementation.
@@ -60,4 +86,11 @@ pub enum Response<B> {
     /// Server error occured, no detail is specified, but an error is logged.
     /// This is not an error from normal processing, something bad happened.
     Error,
+}
+
+/// Whether or not an error is fatal.
+pub trait IsFatal {
+    /// If this returns true the connection is considered broken and will no
+    /// longer be used after [`Protocol::reply_to_error`] is called.
+    fn is_fatal(&self) -> bool;
 }
