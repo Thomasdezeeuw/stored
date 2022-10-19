@@ -1,8 +1,8 @@
 //! Define how to interact with connected clients.
 
-use std::fmt;
 use std::future::Future;
 use std::time::Duration;
+use std::{fmt, io};
 
 use crate::key::Key;
 use crate::storage::Blob;
@@ -93,4 +93,11 @@ pub trait IsFatal {
     /// If this returns true the connection is considered broken and will no
     /// longer be used after [`Protocol::reply_to_error`] is called.
     fn is_fatal(&self) -> bool;
+}
+
+/// Connection abstraction.
+// FIXME: make this async.
+pub trait Connection {
+    /// Read data into `buf`.
+    fn read_into(&mut self, buf: Vec<u8>, timeout: Duration) -> io::Result<Vec<u8>>;
 }
