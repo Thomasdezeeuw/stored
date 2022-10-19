@@ -99,11 +99,11 @@ impl Read for Reader {
         self.data_size()
     }
 
-    fn lookup(&self, key: &Key) -> Option<Self::Blob> {
-        self.inner.get(key)
+    fn lookup(&self, key: &Key) -> Result<Option<Self::Blob>, Self::Error> {
+        Ok(self.inner.get(key))
     }
 
-    fn contains(&self, key: &Key) -> bool {
-        self.inner.contains_key(key)
+    fn contains(&self, key: &Key) -> Result<bool, Self::Error> {
+        Ok(self.inner.contains_key(key))
     }
 }

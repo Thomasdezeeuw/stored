@@ -1,7 +1,5 @@
 //! Storage implementations.
 
-use std::fmt;
-
 use crate::key::Key;
 
 pub mod mem;
@@ -16,7 +14,7 @@ pub trait Blob {
 /// Write access to the storage.
 pub trait Write {
     /// Error used by the storage, often this will be [`std::io::Error`].
-    type Error: fmt::Display;
+    type Error;
 
     /// Add `blob` to the storage.
     fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>>;
@@ -42,7 +40,7 @@ pub trait Read {
     type Blob: Blob;
 
     /// Error used by the storage, often this will be [`std::io::Error`].
-    type Error: fmt::Display;
+    type Error;
 
     /// Returns the number of blobs stored.
     fn len(&self) -> usize;
@@ -59,9 +57,9 @@ pub trait Read {
     fn total_size(&self) -> u64;
 
     /// Returns the [`Blob`] corresponding to `key`, if stored.
-    fn lookup(&self, key: &Key) -> Option<Self::Blob>;
+    fn lookup(&self, key: &Key) -> Result<Option<Self::Blob>, Self::Error>;
 
     /// Returns `true` if the storage contains a blob corresponding to `key`,
     /// `false` otherwise.
-    fn contains(&self, key: &Key) -> bool;
+    fn contains(&self, key: &Key) -> Result<bool, Self::Error>;
 }
