@@ -54,3 +54,10 @@ where
         write!(f, "{}: {}", self.description, self.source)
     }
 }
+
+/// Whether or not an error is fatal.
+pub trait IsFatal {
+    /// If this returns true the component is considered broken and will no
+    /// longer be used.
+    fn is_fatal(&self) -> bool;
+}

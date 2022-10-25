@@ -6,6 +6,7 @@ use std::{fmt, io};
 
 use crate::key::Key;
 use crate::storage::Blob;
+use crate::IsFatal;
 
 pub mod resp;
 
@@ -28,6 +29,10 @@ pub trait Protocol {
         Self: 'a;
 
     /// Error returned by [`Protocol::next_request`].
+    ///
+    /// If the [`IsFatal`] implementation of this error returns true the
+    /// connection is considered broken and will no longer be used after
+    /// [`Protocol::reply_to_error`] is called.
     type RequestError: IsFatal + fmt::Display;
 
     /// Reply to a request with `response`.
@@ -104,13 +109,6 @@ impl<B> fmt::Display for Response<B> {
             Response::Error => f.write_str("server error"),
         }
     }
-}
-
-/// Whether or not an error is fatal.
-pub trait IsFatal {
-    /// If this returns true the connection is considered broken and will no
-    /// longer be used after [`Protocol::reply_to_error`] is called.
-    fn is_fatal(&self) -> bool;
 }
 
 /// Connection abstraction.
