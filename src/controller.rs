@@ -4,10 +4,11 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use log::{as_debug, as_display, debug, info, warn};
+use log::{as_debug, as_display, debug, error, info, warn};
 
+use crate::key::Key;
 use crate::protocol::{IsFatal, Protocol, Request, Response};
-use crate::storage;
+use crate::storage::{AddError, Storage};
 
 /// Controller configuration.
 pub trait Config {
@@ -26,13 +27,14 @@ pub trait Config {
 pub async fn actor<C, P, S, I>(
     config: C,
     mut protocol: P,
-    storage: S,
+    mut storage: S,
     source: I,
 ) -> Result<(), Error<S::Error, P::ResponseError>>
 where
     C: Config,
     P: Protocol,
-    S: storage::Read,
+    S: Storage,
+    S::Error: fmt::Display,
     S::Blob: fmt::Debug, // Needed for logging of response (for now).
     I: fmt::Display,
 {
@@ -61,20 +63,39 @@ where
         };
 
         let start = Instant::now();
-        let response = match &request {
-            Request::AddBlob(..) => {
-                todo!("AddBlob: need storage::Write access");
-            }
-            Request::RemoveBlob(..) => {
-                todo!("RemoveBlob: need storage::Write access");
-            }
-            Request::GetBlob(key) => match storage.lookup(key) {
-                Some(blob) => Response::Blob(blob),
-                None => Response::BlobNotFound,
+        let request_info = RequestInfo::from(&request);
+        let response = match request {
+            Request::AddBlob(blob) => match storage.add_blob(blob).await {
+                Ok(key) => Response::Added(key),
+                Err(AddError::AlreadyStored(key)) => Response::AlreadyStored(key),
+                Err(AddError::Err(err)) => {
+                    error!("failed to store blob: {err}");
+                    Response::Error
+                }
             },
-            Request::CointainsBlob(key) => match storage.contains(key) {
-                true => Response::ContainsBlob,
-                false => Response::BlobNotFound,
+            Request::RemoveBlob(key) => match storage.remove_blob(key).await {
+                Ok(true) => Response::BlobRemoved,
+                Ok(false) => Response::BlobNotFound,
+                Err(err) => {
+                    error!("failed to remove blob: {err}");
+                    Response::Error
+                }
+            },
+            Request::GetBlob(key) => match storage.lookup(key).await {
+                Ok(Some(blob)) => Response::Blob(blob),
+                Ok(None) => Response::BlobNotFound,
+                Err(err) => {
+                    error!("failed to retrieve blob: {err}");
+                    Response::Error
+                }
+            },
+            Request::CointainsBlob(key) => match storage.contains(key).await {
+                Ok(true) => Response::ContainsBlob,
+                Ok(false) => Response::BlobNotFound,
+                Err(err) => {
+                    error!("failed to check if storage contains blob: {err}");
+                    Response::Error
+                }
             },
         };
 
@@ -82,8 +103,8 @@ where
         let elapsed = start.elapsed();
         info!(target: "request",
             source = as_display!(source),
-            request = as_debug!(request),
-            response = as_debug!(response),
+            request = as_display!(request_info),
+            response = as_display!(response),
             elapsed = as_debug!(elapsed);
             "processed request");
 
@@ -102,6 +123,38 @@ where
     let elapsed = accepted.elapsed();
     debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping connection");
     Ok(())
+}
+
+/// Information logged about requests.
+///
+/// See [`Request`].
+enum RequestInfo {
+    AddBlob,
+    RemoveBlob(Key),
+    GetBlob(Key),
+    CointainsBlob(Key),
+}
+
+impl From<&Request<'_>> for RequestInfo {
+    fn from(request: &Request) -> RequestInfo {
+        match request {
+            Request::AddBlob(..) => RequestInfo::AddBlob,
+            Request::RemoveBlob(key) => RequestInfo::RemoveBlob(key.clone()),
+            Request::GetBlob(key) => RequestInfo::GetBlob(key.clone()),
+            Request::CointainsBlob(key) => RequestInfo::CointainsBlob(key.clone()),
+        }
+    }
+}
+
+impl fmt::Display for RequestInfo {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            RequestInfo::AddBlob => f.write_str("add blob"),
+            RequestInfo::RemoveBlob(key) => write!(f, "remove {key}"),
+            RequestInfo::GetBlob(key) => write!(f, "get {key}"),
+            RequestInfo::CointainsBlob(key) => write!(f, "contains {key}"),
+        }
+    }
 }
 
 /// Error returned by [`actor`].

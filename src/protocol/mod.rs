@@ -76,7 +76,9 @@ pub enum Request<'a> {
 #[derive(Debug)]
 pub enum Response<B> {
     /// Blob has been added.
-    Added,
+    Added(Key),
+    /// Blob is already stored.
+    AlreadyStored(Key),
     /// Blob has been removed.
     BlobRemoved,
     /// Blob was retrieved.
