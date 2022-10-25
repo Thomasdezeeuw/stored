@@ -7,8 +7,9 @@ use std::time::{Duration, Instant};
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
-use crate::protocol::{IsFatal, Protocol, Request, Response};
+use crate::protocol::{Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
+use crate::IsFatal;
 
 /// Controller configuration.
 pub trait Config {
