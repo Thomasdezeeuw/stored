@@ -9,7 +9,7 @@ use log::{as_debug, as_display, debug, error, info, warn};
 use crate::key::Key;
 use crate::protocol::{Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
-use crate::IsFatal;
+use crate::{Error, IsFatal};
 
 /// Controller configuration.
 pub trait Config {
@@ -30,13 +30,12 @@ pub async fn actor<C, P, S, I>(
     mut protocol: P,
     mut storage: S,
     source: I,
-) -> Result<(), Error<S::Error, P::ResponseError>>
+) -> Result<(), Error<P::ResponseError>>
 where
     C: Config,
     P: Protocol,
     S: Storage,
     S::Error: fmt::Display,
-    S::Blob: fmt::Debug, // Needed for logging of response (for now).
     I: fmt::Display,
 {
     let accepted = Instant::now();
@@ -56,7 +55,7 @@ where
                     Err(err) => {
                         return Err(Error {
                             description: "writing error response",
-                            kind: ErrorKind::Protocol(err),
+                            source: err,
                         })
                     }
                 }
@@ -100,7 +99,6 @@ where
             },
         };
 
-        // TODO: improve logging of request and response.
         let elapsed = start.elapsed();
         info!(target: "request",
             source = as_display!(source),
@@ -114,19 +112,18 @@ where
             Err(err) => {
                 return Err(Error {
                     description: "writing response",
-                    kind: ErrorKind::Protocol(err),
+                    source: err,
                 })
             }
         }
     }
 
-    // No more requests.
     let elapsed = accepted.elapsed();
     debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping connection");
     Ok(())
 }
 
-/// Information logged about requests.
+/// Information logged about a request.
 ///
 /// See [`Request`].
 enum RequestInfo {
@@ -154,49 +151,6 @@ impl fmt::Display for RequestInfo {
             RequestInfo::RemoveBlob(key) => write!(f, "remove {key}"),
             RequestInfo::GetBlob(key) => write!(f, "get {key}"),
             RequestInfo::CointainsBlob(key) => write!(f, "contains {key}"),
-        }
-    }
-}
-
-/// Error returned by [`actor`].
-#[derive(Debug)]
-pub struct Error<SE, PE> {
-    /// Description of the operation that returned the error.
-    description: &'static str,
-    kind: ErrorKind<SE, PE>,
-}
-
-/// Error kind for [`Error`].
-#[derive(Debug)]
-enum ErrorKind<SE, PE> {
-    /// Storage error.
-    Storage(SE),
-    /// Protocol error.
-    Protocol(PE),
-}
-
-impl<SE, PE> std::error::Error for Error<SE, PE>
-where
-    SE: std::error::Error + 'static,
-    PE: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            ErrorKind::Storage(err) => Some(err),
-            ErrorKind::Protocol(err) => Some(err),
-        }
-    }
-}
-
-impl<SE, PE> fmt::Display for Error<SE, PE>
-where
-    SE: fmt::Display,
-    PE: fmt::Display,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.kind {
-            ErrorKind::Storage(err) => write!(f, "{}: {}", self.description, err),
-            ErrorKind::Protocol(err) => write!(f, "{}: {}", self.description, err),
         }
     }
 }
