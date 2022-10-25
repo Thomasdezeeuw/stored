@@ -92,6 +92,20 @@ pub enum Response<B> {
     Error,
 }
 
+impl<B> fmt::Display for Response<B> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Response::Added(key) => write!(f, "added {key}"),
+            Response::AlreadyStored(key) => write!(f, "already stored {key}"),
+            Response::BlobRemoved => f.write_str("blob removed"),
+            Response::Blob(..) => f.write_str("found blob"),
+            Response::ContainsBlob => f.write_str("contains blob"),
+            Response::BlobNotFound => f.write_str("blob not found"),
+            Response::Error => f.write_str("server error"),
+        }
+    }
+}
+
 /// Whether or not an error is fatal.
 pub trait IsFatal {
     /// If this returns true the connection is considered broken and will no
