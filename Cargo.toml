@@ -6,6 +6,7 @@ edition = "2018"
 publish = false
 
 [dependencies]
+heph              = { version = "0.4.0",   default-features = false }
 log               = { version = "0.4.17",  default-features = false, features = ["kv_unstable_std", "release_max_level_info"] }
 ring              = { version = "0.16.20", default-features = false, features = ["std"] }
 serde             = { version = "1.0.145", default-features = false, features = ["derive"] }
