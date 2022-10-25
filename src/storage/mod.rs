@@ -13,7 +13,7 @@ pub trait Blob {
     fn len(&self) -> usize;
 }
 
-/// Write access to the storage.
+/// Storage implementation.
 pub trait Storage {
     /// Blob type returned.
     type Blob: Blob;
@@ -36,34 +36,42 @@ pub trait Storage {
     fn total_size(&self) -> u64;
 
     /// Returns the [`Blob`] corresponding to `key`, if stored.
-    fn lookup(&self, key: Key) -> Self::Lookup;
+    fn lookup<'a>(&'a self, key: Key) -> Self::Lookup<'a>;
 
     /// [`Future`] behind [`Storage::lookup`].
-    type Lookup: Future<Output = Result<Option<Self::Blob>, Self::Error>>;
+    type Lookup<'a>: Future<Output = Result<Option<Self::Blob>, Self::Error>> + 'a
+    where
+        Self: 'a;
 
     /// Returns `true` if the storage contains a blob corresponding to `key`,
     /// `false` otherwise.
-    fn contains(&self, key: Key) -> Self::Contains;
+    fn contains<'a>(&'a self, key: Key) -> Self::Contains<'a>;
 
     /// [`Future`] behind [`Storage::contains`].
-    type Contains: Future<Output = Result<bool, Self::Error>>;
+    type Contains<'a>: Future<Output = Result<bool, Self::Error>> + 'a
+    where
+        Self: 'a;
 
     /// Add `blob` to the storage.
-    fn add_blob(&mut self, blob: &[u8]) -> Self::AddBlob;
+    fn add_blob<'a>(&'a mut self, blob: &[u8]) -> Self::AddBlob<'a>;
 
     /// [`Future`] behind [`Storage::add_blob`].
-    type AddBlob: Future<Output = Result<Key, AddError<Self::Error>>>;
+    type AddBlob<'a>: Future<Output = Result<Key, AddError<Self::Error>>> + 'a
+    where
+        Self: 'a;
 
     /// Remove the blob with `key` from storage.
     ///
     /// Returns `true` if the blob was previously stored, `false` otherwise.
-    fn remove_blob(&mut self, key: Key) -> Self::RemoveBlob;
+    fn remove_blob<'a>(&'a mut self, key: Key) -> Self::RemoveBlob<'a>;
 
     /// [`Future`] behind [`Storage::remove_blob`].
-    type RemoveBlob: Future<Output = Result<bool, Self::Error>>;
+    type RemoveBlob<'a>: Future<Output = Result<bool, Self::Error>> + 'a
+    where
+        Self: 'a;
 }
 
-/// Error returned by [`Write::add_blob`].
+/// Error returned by [`Storage::add_blob`].
 #[derive(Debug)]
 pub enum AddError<E> {
     /// Blob is already stored.
