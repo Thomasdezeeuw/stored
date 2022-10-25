@@ -1,6 +1,10 @@
 //! Simple in-memory storage implementation.
 //!
 //! Nothing special, simply a `HashMap` with `Arc<[u8]>` as blob.
+//!
+//! A new in-memory storage can be created using [`new`]. It returns a
+//! [`Handle`], which can be converted into [`Storage`] on the thread that needs
+//! it.
 
 use std::future::{ready, Future, Ready};
 use std::hash::BuildHasherDefault;
@@ -19,8 +23,9 @@ use crate::storage::{self, AddError};
 
 /// Create a new in-memory storage.
 ///
-/// Returns a [`Future`] that handle the write requests to the storage. It must
-/// be run otherwise write requests will never be processed.
+/// Returns a [`Future`] that handles the write requests to the storage. It must
+/// be run otherwise write requests will never be processed and will stall for
+/// ever.
 pub fn new() -> (Handle, impl Future) {
     let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
     let (future, writer) = ActorFuture::new(
@@ -96,7 +101,9 @@ impl Writer {
     }
 }
 
-/// Handle to the storage that can be send across thread bounds.
+/// Handle to the [`Storage`] that can be send across thread bounds.
+///
+/// Can be be converted into `Storage` using `Storage::from(handle)`.
 #[derive(Clone)]
 pub struct Handle {
     writer: ActorRef<WriteRequest>,
@@ -169,6 +176,7 @@ impl storage::Storage for Storage {
     type RemoveBlob<'a> = RemoveBlob<'a>;
 }
 
+/// [`Future`] returned by `Storage::add_blob`.
 pub struct AddBlob<'a>(Rpc<'a, WriteRequest, Result<Key, Key>>);
 
 impl<'a> Future for AddBlob<'a> {
@@ -184,6 +192,7 @@ impl<'a> Future for AddBlob<'a> {
     }
 }
 
+/// [`Future`] returned by `Storage::remove_blob`.
 pub struct RemoveBlob<'a>(Rpc<'a, WriteRequest, bool>);
 
 impl<'a> Future for RemoveBlob<'a> {
