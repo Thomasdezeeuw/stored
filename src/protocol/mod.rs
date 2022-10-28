@@ -81,19 +81,41 @@ pub enum Request<'a> {
 #[derive(Debug)]
 pub enum Response<B> {
     /// Blob has been added.
+    ///
+    /// Response to [`Request::AddBlob`].
     Added(Key),
     /// Blob is already stored.
+    ///
+    /// Response to [`Request::AddBlob`].
     AlreadyStored(Key),
     /// Blob has been removed.
+    ///
+    /// Response to [`Request::RemoveBlob`].
     BlobRemoved,
+    /// Blob was **not** removed, as it's not stored.
+    ///
+    /// Response to [`Request::RemoveBlob`].
+    BlobNotRemoved,
     /// Blob was retrieved.
+    ///
+    /// Response to [`Request::GetBlob`].
     Blob(B),
-    /// Store contains the blob.
-    ContainsBlob,
     /// Blob is not found, e.g. when removing or getting it.
+    ///
+    /// Response to [`Request::GetBlob`].
     BlobNotFound,
+    /// Store contains the blob.
+    ///
+    /// Response to [`Request::CointainsBlob`].
+    ContainsBlob,
+    /// Store does **not** contain the blob.
+    ///
+    /// Response to [`Request::CointainsBlob`].
+    NotContainBlob,
     /// Server error occurred, no detail is specified, but an error is logged.
     /// This is not an error from normal processing, something bad happened.
+    ///
+    /// Can be in response to any request.
     Error,
 }
 
@@ -103,8 +125,10 @@ impl<B> fmt::Display for Response<B> {
             Response::Added(key) => write!(f, "added {key}"),
             Response::AlreadyStored(key) => write!(f, "already stored {key}"),
             Response::BlobRemoved => f.write_str("blob removed"),
+            Response::BlobNotRemoved => f.write_str("blob not removed"),
             Response::Blob(..) => f.write_str("found blob"),
             Response::ContainsBlob => f.write_str("contains blob"),
+            Response::NotContainBlob => f.write_str("does not contain blob"),
             Response::BlobNotFound => f.write_str("blob not found"),
             Response::Error => f.write_str("server error"),
         }

@@ -75,7 +75,7 @@ where
             },
             Request::RemoveBlob(key) => match storage.remove_blob(key).await {
                 Ok(true) => Response::BlobRemoved,
-                Ok(false) => Response::BlobNotFound,
+                Ok(false) => Response::BlobNotRemoved,
                 Err(err) => {
                     error!("failed to remove blob: {err}");
                     Response::Error
@@ -91,7 +91,7 @@ where
             },
             Request::CointainsBlob(key) => match storage.contains(key).await {
                 Ok(true) => Response::ContainsBlob,
-                Ok(false) => Response::BlobNotFound,
+                Ok(false) => Response::NotContainBlob,
                 Err(err) => {
                     error!("failed to check if storage contains blob: {err}");
                     Response::Error
