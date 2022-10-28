@@ -92,7 +92,7 @@ pub enum Response<B> {
     ContainsBlob,
     /// Blob is not found, e.g. when removing or getting it.
     BlobNotFound,
-    /// Server error occured, no detail is specified, but an error is logged.
+    /// Server error occurred, no detail is specified, but an error is logged.
     /// This is not an error from normal processing, something bad happened.
     Error,
 }
