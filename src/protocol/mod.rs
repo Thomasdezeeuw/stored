@@ -1,8 +1,8 @@
 //! Define how to interact with connected clients.
 
+use std::fmt;
 use std::future::Future;
 use std::time::Duration;
-use std::{fmt, io};
 
 use crate::key::Key;
 use crate::storage::Blob;
@@ -112,8 +112,17 @@ impl<B> fmt::Display for Response<B> {
 }
 
 /// Connection abstraction.
-// FIXME: make this async.
 pub trait Connection {
+    /// I/O error, usually [`std::io::Error`].
+    ///
+    /// This error is always considered fatal.
+    type Error: fmt::Display;
+
     /// Read data into `buf`.
-    fn read_into(&mut self, buf: Vec<u8>, timeout: Duration) -> io::Result<Vec<u8>>;
+    fn read_into<'a>(&'a mut self, buf: Vec<u8>, timeout: Duration) -> Self::Read<'a>;
+
+    /// [`Future`] behind [`Connection::read_into`].
+    type Read<'a>: Future<Output = Result<Vec<u8>, Self::Error>> + 'a
+    where
+        Self: 'a;
 }
