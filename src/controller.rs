@@ -5,6 +5,7 @@ use std::fmt;
 use std::time::{Duration, Instant};
 
 use heph::actor;
+use heph::supervisor::SupervisorStrategy;
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
@@ -132,6 +133,17 @@ where
     let elapsed = accepted.elapsed();
     debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping connection");
     Ok(())
+}
+
+/// [`Supervisor`] for [`actor`] that logs the error and stops the actor.
+///
+/// [`Supervisor`]: heph::supervisor::Supervisor
+pub fn supervisor<A, E>(err: Error<E>) -> SupervisorStrategy<A>
+where
+    E: fmt::Display,
+{
+    error!("error handling connection: {err}");
+    SupervisorStrategy::Stop
 }
 
 /// Information logged about a request.
