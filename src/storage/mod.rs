@@ -1,8 +1,10 @@
 //! Storage implementations.
 
 use std::future::Future;
+use std::time::Duration;
 
 use crate::key::Key;
+use crate::protocol::Connection;
 
 pub mod mem;
 pub use mem::new as new_in_memory;
@@ -11,6 +13,24 @@ pub use mem::new as new_in_memory;
 pub trait Blob {
     /// Length of the blob in bytes.
     fn len(&self) -> usize;
+
+    /// Write the blob with `header` and `trailer` to `connection`.
+    fn write<'a, C>(
+        &'a self,
+        header: &[u8],
+        trailer: &[u8],
+        connection: C,
+        timeout: Duration,
+    ) -> Self::Write<'a, C::Error>
+    where
+        C: Connection,
+        C::Error: 'static;
+
+    /// [`Future`] behind [`Blob::write`].
+    type Write<'a, E>: Future<Output = Result<(), E>> + 'a
+    where
+        Self: 'a,
+        E: 'static;
 }
 
 /// Storage implementation.
