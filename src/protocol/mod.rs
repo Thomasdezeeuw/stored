@@ -171,3 +171,39 @@ pub trait Connection {
     where
         Self: 'a;
 }
+
+impl<C> Connection for &mut C
+where
+    C: Connection,
+{
+    type Error = C::Error;
+
+    fn read_into<'a>(&'a mut self, buf: Vec<u8>, timeout: Duration) -> Self::Read<'a> {
+        (&mut **self).read_into(buf, timeout)
+    }
+
+    type Read<'a> = C::Read<'a>
+    where
+        Self: 'a;
+
+    fn write<'a>(&'a mut self, buf: &[u8], timeout: Duration) -> Self::Write<'a> {
+        (&mut **self).write(buf, timeout)
+    }
+
+    type Write<'a> = C::Write<'a>
+    where
+        Self: 'a;
+
+    fn write_vectored<'a>(
+        &'a mut self,
+        bufs: &mut [IoSlice<'_>],
+
+        timeout: Duration,
+    ) -> Self::WriteVectored<'a> {
+        (&mut **self).write_vectored(bufs, timeout)
+    }
+
+    type WriteVectored<'a> = C::WriteVectored<'a>
+    where
+        Self: 'a;
+}
