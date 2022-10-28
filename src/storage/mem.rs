@@ -29,7 +29,7 @@ use crate::storage::{self, AddError};
 /// Returns a [`Future`] that handles the write requests to the storage. It must
 /// be run otherwise write requests will never be processed and will stall for
 /// ever.
-pub fn new() -> (Handle, impl Future) {
+pub fn new() -> (Handle, impl Future<Output = ()>) {
     let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
     let (future, writer) = ActorFuture::new(
         NoSupervisor,
@@ -139,6 +139,7 @@ pub struct Handle {
 }
 
 /// In-memory storage, pinned to a thread.
+#[derive(Clone)]
 pub struct Storage {
     writer: ActorRef<WriteRequest>,
     reader: hashmap::Reader<Key, Blob, BuildHasherDefault<KeyHasher>>,
