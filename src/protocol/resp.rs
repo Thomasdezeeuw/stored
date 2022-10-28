@@ -27,6 +27,18 @@ pub struct Resp<C> {
     processed: usize,
 }
 
+impl<C> Resp<C> {
+    /// Preparse the buffer, removing all processed bytes.
+    fn prepare_buf(&mut self) {
+        match replace(&mut self.processed, 0) {
+            // Entire buffer is processed, we can clear it.
+            n if self.buf.len() == n => self.buf.clear(),
+            // Still have some unprocessed bytes.
+            _ => drop(self.buf.drain(0..self.processed)),
+        }
+    }
+}
+
 impl<C> Protocol for Resp<C>
 where
     C: Connection + 'static,
@@ -318,6 +330,7 @@ where
     }
 }
 
+/// Reading methods.
 impl<C> Resp<C>
 where
     C: Connection,
@@ -413,10 +426,7 @@ where
     /// Set the state to reading.
     fn start_read(&mut self, next_state: NextRequestState) {
         debug_assert!(!self.resp.read_all);
-        match replace(&mut self.resp.processed, 0) {
-            n if self.resp.buf.len() == n => self.resp.buf.clear(),
-            _ => drop(self.resp.buf.drain(0..self.resp.processed)),
-        }
+        self.resp.prepare_buf();
         let buf = replace(&mut self.resp.buf, Vec::new());
         let before_length = buf.len();
         let future = self.resp.conn.read_into(buf, self.timeout);
