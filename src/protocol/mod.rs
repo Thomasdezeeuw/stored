@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::io::IoSlice;
 use std::time::Duration;
 
 use crate::key::Key;
@@ -147,6 +148,26 @@ pub trait Connection {
 
     /// [`Future`] behind [`Connection::read_into`].
     type Read<'a>: Future<Output = Result<Vec<u8>, Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    /// Write data from `buf`.
+    fn write<'a>(&'a mut self, buf: &[u8], timeout: Duration) -> Self::Write<'a>;
+
+    /// [`Future`] behind [`Connection::write`].
+    type Write<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    /// Write data from `buf`.
+    fn write_vectored<'a, 'b>(
+        &'a mut self,
+        bufs: &mut [IoSlice<'_>],
+        timeout: Duration,
+    ) -> Self::WriteVectored<'a>;
+
+    /// [`Future`] behind [`Connection::write`].
+    type WriteVectored<'a>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a;
 }
