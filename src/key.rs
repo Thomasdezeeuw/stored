@@ -26,6 +26,9 @@ impl Key {
     /// Length of the key in bytes.
     pub const LENGTH: usize = SHA512_OUTPUT_LEN;
 
+    /// Length of the key formatted as string (using hex).
+    pub const STR_LENGTH: usize = Self::LENGTH * 2;
+
     /// Create a new `Key` from the provided `bytes`.
     pub const fn new(bytes: [u8; Key::LENGTH]) -> Key {
         Key { bytes }
