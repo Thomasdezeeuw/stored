@@ -65,12 +65,14 @@ impl storage::Blob for Blob {
     where
         C: Connection + 'a,
     {
-        let mut bufs = [
-            IoSlice::new(header),
-            IoSlice::new(&*self.0),
-            IoSlice::new(trailer),
-        ];
-        async move { conn.write_vectored(&mut bufs, timeout).await }
+        async move {
+            let mut bufs = [
+                IoSlice::new(header),
+                IoSlice::new(&*self.0),
+                IoSlice::new(trailer),
+            ];
+            conn.write_vectored(&mut bufs, timeout).await
+        }
     }
 
     type Write<'a, C> = impl Future<Output = Result<(), C::Error>> + 'a

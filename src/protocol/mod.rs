@@ -1,9 +1,11 @@
 //! Define how to interact with connected clients.
 
-use std::fmt;
 use std::future::Future;
 use std::io::IoSlice;
 use std::time::Duration;
+use std::{fmt, io};
+
+use heph_rt::net::TcpStream;
 
 use crate::key::Key;
 use crate::storage::Blob;
@@ -152,7 +154,7 @@ pub trait Connection {
         Self: 'a;
 
     /// Write data from `buf`.
-    fn write<'a>(&'a mut self, buf: &[u8], timeout: Duration) -> Self::Write<'a>;
+    fn write<'a>(&'a mut self, buf: &'a [u8], timeout: Duration) -> Self::Write<'a>;
 
     /// [`Future`] behind [`Connection::write`].
     type Write<'a>: Future<Output = Result<(), Self::Error>> + 'a
@@ -160,9 +162,9 @@ pub trait Connection {
         Self: 'a;
 
     /// Write data from `buf`.
-    fn write_vectored<'a, 'b>(
+    fn write_vectored<'a>(
         &'a mut self,
-        bufs: &mut [IoSlice<'_>],
+        bufs: &'a mut [IoSlice<'a>],
         timeout: Duration,
     ) -> Self::WriteVectored<'a>;
 
@@ -186,7 +188,7 @@ where
     where
         Self: 'a;
 
-    fn write<'a>(&'a mut self, buf: &[u8], timeout: Duration) -> Self::Write<'a> {
+    fn write<'a>(&'a mut self, buf: &'a [u8], timeout: Duration) -> Self::Write<'a> {
         (&mut **self).write(buf, timeout)
     }
 
@@ -196,14 +198,48 @@ where
 
     fn write_vectored<'a>(
         &'a mut self,
-        bufs: &mut [IoSlice<'_>],
-
+        bufs: &'a mut [IoSlice<'a>],
         timeout: Duration,
     ) -> Self::WriteVectored<'a> {
         (&mut **self).write_vectored(bufs, timeout)
     }
 
     type WriteVectored<'a> = C::WriteVectored<'a>
+    where
+        Self: 'a;
+}
+
+impl Connection for TcpStream {
+    type Error = io::Error;
+
+    fn read_into<'a>(&'a mut self, mut buf: Vec<u8>, timeout: Duration) -> Self::Read<'a> {
+        // FIXME: add timeout.
+        async move { self.recv(&mut buf).await.map(|_| buf) }
+    }
+
+    type Read<'a> = impl Future<Output = Result<Vec<u8>, Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn write<'a>(&'a mut self, buf: &'a [u8], timeout: Duration) -> Self::Write<'a> {
+        // FIXME: add timeout.
+        async move { self.send_all(buf).await }
+    }
+
+    type Write<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn write_vectored<'a>(
+        &'a mut self,
+        bufs: &'a mut [IoSlice<'a>],
+        timeout: Duration,
+    ) -> Self::WriteVectored<'a> {
+        // FIXME: add timeout.
+        async move { self.send_vectored_all(bufs).await }
+    }
+
+    type WriteVectored<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a;
 }
