@@ -12,6 +12,7 @@ use crate::storage::Blob;
 use crate::IsFatal;
 
 pub mod resp;
+pub use resp::Resp;
 
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
