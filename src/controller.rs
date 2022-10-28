@@ -4,6 +4,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
+use heph::actor;
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
@@ -38,7 +39,8 @@ impl Config for DefaultConfig {
 /// `storage`.
 ///
 /// `source` is used in logging and should be socket address or similar.
-pub async fn actor<C, P, S, I>(
+pub async fn actor<C, P, S, I, RT>(
+    _: actor::Context<!, RT>,
     config: C,
     mut protocol: P,
     mut storage: S,
