@@ -5,7 +5,7 @@
 
 use std::fmt;
 use std::future::Future;
-use std::io::{self, IoSlice};
+use std::io::IoSlice;
 use std::mem::replace;
 use std::ops::Range;
 use std::pin::Pin;
@@ -17,7 +17,6 @@ use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
 const NIL: &str = "$-1\r\n";
-const OK: &str = "+OK\r\n";
 const CRLF: &str = "\r\n";
 
 /// Redis Protocol specification (RESP) like implementation of [`Protocol`].
@@ -155,13 +154,14 @@ where
 
     fn reply_to_error<'a>(
         &'a mut self,
-        error: Self::RequestError,
+        err: Self::RequestError,
         timeout: Duration,
     ) -> Self::ReplyWithError<'a> {
-        ReplyWithError {
-            resp: self,
-            error,
-            timeout,
+        async move {
+            match err {
+                RequestError::User(err, ..) => self.conn.write(err.as_bytes(), timeout).await,
+                RequestError::Conn(..) => Ok(()),
+            }
         }
     }
 }
@@ -516,27 +516,6 @@ where
             before_length,
             next_state,
         };
-    }
-}
-
-/// [`Future`] for replying to a request for [`Resp`] with an error.
-pub struct ReplyWithError<'a, C>
-where
-    C: Connection,
-{
-    resp: &'a mut Resp<C>,
-    error: RequestError<C::Error>,
-    timeout: Duration,
-}
-
-impl<'a, C> Future for ReplyWithError<'a, C>
-where
-    C: Connection,
-{
-    type Output = Result<(), C::Error>;
-
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        todo!("TODO: RESP::reply_to_error")
     }
 }
 
