@@ -3,17 +3,22 @@
 //!
 //! The implementation starts with [`Resp`].
 
+use std::fmt;
 use std::future::Future;
+use std::io::{self, IoSlice};
 use std::mem::replace;
 use std::ops::Range;
 use std::pin::Pin;
-use std::task::{self, ready, Poll};
+use std::task::{self, Poll};
 use std::time::Duration;
-use std::{fmt, io};
 
 use crate::key::{InvalidKeyStr, Key};
 use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
+
+const NIL: &str = "$-1\r\n";
+const OK: &str = "+OK\r\n";
+const CRLF: &str = "\r\n";
 
 /// Redis Protocol specification (RESP) like implementation of [`Protocol`].
 pub struct Resp<C> {
@@ -45,14 +50,14 @@ where
 {
     type NextRequest<'a> = NextRequest<'a, C>;
     type RequestError = RequestError<C::Error>;
-    type Reply<'a, B: Blob> = Reply<'a, B, C>
+    type Reply<'a, B: Blob> = impl Future<Output = Result<(), Self::ResponseError>> + 'a
     where
         Self: 'a,
         B: Blob + 'a;
-    type ReplyWithError<'a> = ReplyWithError<'a, C>
+    type ReplyWithError<'a> = impl Future<Output = Result<(), Self::ResponseError>> + 'a
     where
         Self: 'a;
-    type ResponseError = io::Error;
+    type ResponseError = C::Error;
 
     fn next_request<'a>(&'a mut self, timeout: Duration) -> Self::NextRequest<'a> {
         NextRequest {
@@ -66,10 +71,85 @@ where
     where
         B: Blob + 'a,
     {
-        Reply {
-            resp: self,
-            response,
-            timeout,
+        // TODO: only prepare buf if we need the additional space.
+        self.prepare_buf();
+
+        async move {
+            match response {
+                // Responses to GET.
+                // Returns the `key` as bulk string.
+                Response::Added(key) | Response::AlreadyStored(key) => {
+                    let start_idx = self.buf.len();
+                    {
+                        use std::io::Write; // Don't want to use this anywhere else.
+                        write!(&mut self.buf, "{}", key).unwrap();
+                    }
+                    encode::length(&mut self.buf, Key::STR_LENGTH);
+                    let key = &self.buf[start_idx..start_idx + Key::STR_LENGTH];
+                    let header = &self.buf[start_idx + Key::STR_LENGTH..];
+                    let mut bufs = [
+                        IoSlice::new(header),
+                        IoSlice::new(key),
+                        IoSlice::new(CRLF.as_bytes()),
+                    ];
+                    let res = self.conn.write_vectored(&mut bufs, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+
+                // Responses to DEL.
+                // Returns 1 as integer.
+                Response::BlobRemoved => {
+                    let (value, start_idx) = encode::integer(&mut self.buf, 1);
+                    let res = self.conn.write(value, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+                // Returns 0 as integer.
+                Response::BlobNotRemoved => {
+                    let (value, start_idx) = encode::integer(&mut self.buf, 0);
+                    let res = self.conn.write(value, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+
+                // Responses to GET.
+                // Returns the `blob` as bulk string.
+                Response::Blob(blob) => {
+                    let (header, start_idx) = encode::length(&mut self.buf, blob.len());
+                    let res = blob
+                        .write(header, CRLF.as_bytes(), &mut self.conn, timeout)
+                        .await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+                // Returns the `NIL` string as simple string.
+                Response::BlobNotFound => self.conn.write(NIL.as_bytes(), timeout).await,
+
+                // Responses to EXISTS.
+                // Returns 1 as integer.
+                Response::ContainsBlob => {
+                    let (value, start_idx) = encode::integer(&mut self.buf, 1);
+                    let res = self.conn.write(value, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+                // Returns 0 as integer.
+                Response::NotContainBlob => {
+                    let (value, start_idx) = encode::integer(&mut self.buf, 0);
+                    let res = self.conn.write(value, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+
+                // Generic server error.
+                // Returns a server error as simple string.
+                Response::Error => {
+                    self.conn
+                        .write(Error::SERVER_ERROR.as_bytes(), timeout)
+                        .await
+                }
+            }
         }
     }
 
@@ -439,24 +519,6 @@ where
     }
 }
 
-/// [`Future`] for replying to a request for [`Resp`].
-pub struct Reply<'a, B, C> {
-    resp: &'a mut Resp<C>,
-    response: Response<B>,
-    timeout: Duration,
-}
-
-impl<'a, B, C> Future for Reply<'a, B, C>
-where
-    B: Blob,
-{
-    type Output = Result<(), io::Error>;
-
-    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        todo!("TODO: RESP::reply")
-    }
-}
-
 /// [`Future`] for replying to a request for [`Resp`] with an error.
 pub struct ReplyWithError<'a, C>
 where
@@ -471,7 +533,7 @@ impl<'a, C> Future for ReplyWithError<'a, C>
 where
     C: Connection,
 {
-    type Output = Result<(), io::Error>;
+    type Output = Result<(), C::Error>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
         todo!("TODO: RESP::reply_to_error")
@@ -559,15 +621,23 @@ impl Error {
     const PARSE_INT_INVALID_BYTE: Error = user_error!("unable to parse number: invalid byte");
     const UNKNOWN_COMMAND: Error = user_error!("unknown command");
     const INVALID_KEY: Error = user_error!("invalid key");
-    // Not really user errors.
+    // Server errors.
     const UNIMPLEMENTED_INLINE_COMMANDS: Error =
         user_error!("inline commands (simple protocol) not implemented");
+    const SERVER_ERROR: Error = user_error!("internal server error");
 
     /// Returns the message of this error.
     fn message(&self) -> &'static str {
         debug_assert_eq!(self.0.as_bytes()[0], b'-');
         debug_assert_eq!(&self.0[self.0.len() - 2..], "\r\n");
         &self.0[1..self.0.len() - 2]
+    }
+
+    /// Returns the error as error response.
+    fn as_bytes(&self) -> &'static [u8] {
+        debug_assert_eq!(self.0.as_bytes()[0], b'-');
+        debug_assert_eq!(&self.0[self.0.len() - 2..], "\r\n");
+        self.0.as_bytes()
     }
 }
 
@@ -728,5 +798,47 @@ mod parse {
             end += 1;
         }
         Ok(None)
+    }
+}
+
+mod encode {
+    //! Module that encodes following the Redis Protocol (RESP2).
+    //!
+    //! <https://redis.io/topics/protocol>.
+
+    /// Encode `length` onto `buf` (without changing it's current contents),
+    /// returns the bytes with the length line and the index to which to
+    /// truncate the buffer to restore it.
+    pub(super) fn length<'a>(buf: &'a mut Vec<u8>, length: usize) -> (&'a [u8], usize) {
+        let start_idx = length_idx(buf, length);
+        (&buf[start_idx..], start_idx)
+    }
+
+    /// Encodes `length` onto `buf` (without changing it's current contents),
+    /// returns the index at which the encoded length starts (end at the end of
+    /// the buffer).
+    pub(super) fn length_idx<'a>(buf: &'a mut Vec<u8>, length: usize) -> usize {
+        int(buf, b'$', length)
+    }
+
+    /// Encode `value` onto `buf` (without changing it's current contents),
+    /// returns the bytes with the length line and the index to which to
+    /// truncate the buffer to restore it.
+    pub(super) fn integer<'a>(buf: &'a mut Vec<u8>, value: usize) -> (&'a [u8], usize) {
+        let start_idx = int(buf, b':', value);
+        (&buf[start_idx..], start_idx)
+    }
+
+    /// Encode an integer with `prefix`.
+    fn int<'a>(buf: &'a mut Vec<u8>, prefix: u8, value: usize) -> usize {
+        let start_idx = buf.len();
+        let mut buffer = itoa::Buffer::new();
+        let int_bytes = buffer.format(value).as_bytes();
+        buf.reserve(int_bytes.len() + 3); // 3 = prefix + CRLF.
+        buf.push(prefix);
+        buf.extend_from_slice(int_bytes);
+        buf.push(b'\r');
+        buf.push(b'\n');
+        start_idx
     }
 }

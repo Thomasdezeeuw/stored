@@ -1,4 +1,4 @@
-#![feature(never_type)]
+#![feature(never_type, type_alias_impl_trait)]
 
 use std::fmt;
 
