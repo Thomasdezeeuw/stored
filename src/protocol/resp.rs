@@ -16,8 +16,9 @@ use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
 /// Redis Protocol specification (RESP) like implementation of [`Protocol`].
-pub struct Resp<IO> {
-    io: IO,
+pub struct Resp<C> {
+    /// Underlying connection.
+    conn: C,
     /// Read everything from `io`, i.e. it returned 0 at some point.
     read_all: bool,
     /// I/O buffer.
@@ -26,17 +27,17 @@ pub struct Resp<IO> {
     processed: usize,
 }
 
-impl<IO> Protocol for Resp<IO>
+impl<C> Protocol for Resp<C>
 where
-    IO: Connection + 'static,
+    C: Connection + 'static,
 {
-    type NextRequest<'a> = NextRequest<'a, IO>;
-    type RequestError = RequestError;
-    type Reply<'a, B: Blob> = Reply<'a, B, IO>
+    type NextRequest<'a> = NextRequest<'a, C>;
+    type RequestError = RequestError<C::Error>;
+    type Reply<'a, B: Blob> = Reply<'a, B, C>
     where
         Self: 'a,
         B: Blob + 'a;
-    type ReplyWithError<'a> = ReplyWithError<'a, IO>
+    type ReplyWithError<'a> = ReplyWithError<'a, C>
     where
         Self: 'a;
     type ResponseError = io::Error;
@@ -45,7 +46,7 @@ where
         NextRequest {
             resp: self,
             timeout,
-            state: RequestState::Reading,
+            state: RequestState::Parsing,
         }
     }
 
@@ -73,209 +74,258 @@ where
     }
 }
 
-pub struct NextRequest<'a, IO> {
-    resp: &'a mut Resp<IO>,
+/// [`Future`] for reading the next request from [`Resp`].
+pub struct NextRequest<'a, C>
+where
+    C: Connection,
+{
+    resp: &'a mut Resp<C>,
     timeout: Duration,
-    state: RequestState,
+    state: RequestState<C::Read<'a>>,
 }
 
-#[derive(Copy, Clone)]
-enum RequestState {
-    /// Reading the next request.
-    Reading,
+/// State of [`NextRequest`]
+enum RequestState<Fut> {
+    /// Parsing the next argument.
+    Parsing,
     /// Need to read more bytes to read the next request.
-    NeedRead,
+    NeedRead {
+        future: Fut,
+        before_length: usize,
+        /// State to restore after reading.
+        next_state: NextRequestState,
+    },
     /// Trying to recover from a protocol error.
     Recovery { error: Error, arguments_left: usize },
 }
 
-impl<'a, IO> Future for NextRequest<'a, IO>
-where
-    IO: Connection,
-{
-    type Output = Result<Option<Request<'a>>, RequestError>;
+/// State to transfer to after reading more bytes.
+enum NextRequestState {
+    /// Continue parsing arguments.
+    Parsing,
+    /// Trying to recover from a protocol error.
+    Recovery { error: Error, arguments_left: usize },
+}
 
-    fn poll(mut self: Pin<&mut Self>, _: &mut task::Context<'_>) -> Poll<Self::Output> {
+impl<'a, C> Future for NextRequest<'a, C>
+where
+    C: Connection,
+{
+    type Output = Result<Option<Request<'a>>, RequestError<C::Error>>;
+
+    fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: not moving `self` or `this`.
+        let this = unsafe { Pin::into_inner_unchecked(self) };
         loop {
-            match self.state {
-                RequestState::Reading => {
-                    match self.resp.read_argument()? {
-                        Some(Value::Array(Some(length))) => {
-                            if length != 2 {
-                                // All commands (currently) expect a single
-                                // argument (+1 for the command itself).
-                                self.state = RequestState::Recovery {
-                                    error: if length == 0 {
-                                        Error::MISSING_COMMAND
-                                    } else {
-                                        Error::INVALID_ARGUMENTS
-                                    },
-                                    arguments_left: length,
+            // Bytes already fully processed, used to recover from partial
+            // reads.
+            let init_processed = this.resp.processed;
+            match &mut this.state {
+                RequestState::Parsing => match this.resp.parse_argument() {
+                    Ok(Some(Value::Array(Some(length)))) => {
+                        if length != 2 {
+                            // All commands (currently) expect a single argument
+                            // (+1 for the command itself).
+                            this.state = RequestState::Recovery {
+                                error: if length == 0 {
+                                    Error::MISSING_COMMAND
+                                } else {
+                                    Error::INVALID_ARGUMENTS
+                                },
+                                arguments_left: length,
+                            };
+                            // Continue with recovery in the next iteration.
+                            continue;
+                        }
+
+                        let cmd = match this.resp.parse_argument() {
+                            Ok(Some(Value::String(Some(idx)))) => &this.resp.buf[idx],
+                            Ok(Some(_)) => {
+                                this.state = RequestState::Recovery {
+                                    error: Error::INVALID_COMMAND_TYPE,
+                                    // Already read command.
+                                    arguments_left: length - 1,
                                 };
-                                // Continue with recovery in the next iteration.
                                 continue;
                             }
+                            Ok(None) => {
+                                // Restore the argument(s) marked as processed.
+                                this.resp.processed = init_processed;
+                                this.start_read(NextRequestState::Parsing);
+                                continue;
+                            }
+                            // Fatal error reading the argument.
+                            Err(err) => return Poll::Ready(Err(RequestError::User(err, true))),
+                        };
 
-                            let cmd = match self.resp.read_argument() {
-                                Ok(Some(Value::String(Some(idx)))) => &self.resp.buf[idx],
-                                Ok(Some(_)) => {
-                                    self.state = RequestState::Recovery {
-                                        error: Error::INVALID_COMMAND_TYPE,
-                                        // Already read command.
-                                        arguments_left: length - 1,
-                                    };
-                                    continue;
+                        // Already read command.
+                        let arguments_left = length - 1;
+                        // TODO: DRY this.
+                        match cmd {
+                            b"GET" => match this.resp.parse_key() {
+                                Ok(Some(key)) => {
+                                    return Poll::Ready(Ok(Some(Request::GetBlob(key))))
                                 }
                                 Ok(None) => {
-                                    todo!("FIXME: need to read more, but also restore the initial array.");
+                                    // Restore the argument(s) marked as processed.
+                                    this.resp.processed = init_processed;
+                                    this.start_read(NextRequestState::Parsing);
                                 }
                                 Err(error) => {
-                                    self.state = RequestState::Recovery {
+                                    this.state = RequestState::Recovery {
                                         error,
-                                        arguments_left: length,
-                                    };
-                                    continue;
-                                }
-                            };
-
-                            // Already read command.
-                            let arguments_left = length - 1;
-                            // TODO: DRY this.
-                            match cmd {
-                                b"GET" => match self.resp.read_key() {
-                                    Ok(Some(key)) => {
-                                        return Poll::Ready(Ok(Some(Request::GetBlob(key))))
-                                    }
-                                    Ok(None) => {
-                                        todo!("FIXME: need to read more, but also restore the initial array.");
-                                    }
-                                    Err(error) => {
-                                        self.state = RequestState::Recovery {
-                                            error,
-                                            arguments_left,
-                                        };
-                                        continue;
-                                    }
-                                },
-                                // NOTE: `ADD` is not a Redis command.
-                                b"SET" | b"ADD" => match self.resp.read_string() {
-                                    Ok(Some(blob)) => {
-                                        // FIXME: remove this lifetime workaround.
-                                        let blob = unsafe { std::mem::transmute(blob) };
-                                        return Poll::Ready(Ok(Some(Request::AddBlob(blob))));
-                                    }
-                                    Ok(None) => {
-                                        todo!("FIXME: need to read more, but also restore the initial array.");
-                                    }
-                                    Err(error) => {
-                                        self.state = RequestState::Recovery {
-                                            error,
-                                            arguments_left,
-                                        };
-                                        continue;
-                                    }
-                                },
-                                b"EXISTS" => match self.resp.read_key() {
-                                    Ok(Some(key)) => {
-                                        return Poll::Ready(Ok(Some(Request::CointainsBlob(key))));
-                                    }
-                                    Ok(None) => {
-                                        todo!("FIXME: need to read more, but also restore the initial array.");
-                                    }
-                                    Err(error) => {
-                                        self.state = RequestState::Recovery {
-                                            error,
-                                            arguments_left,
-                                        };
-                                        continue;
-                                    }
-                                },
-                                b"DEL" => match self.resp.read_key() {
-                                    Ok(Some(key)) => {
-                                        return Poll::Ready(Ok(Some(Request::RemoveBlob(key))));
-                                    }
-                                    Ok(None) => {
-                                        todo!("FIXME: need to read more, but also restore the initial array.");
-                                    }
-                                    Err(error) => {
-                                        self.state = RequestState::Recovery {
-                                            error,
-                                            arguments_left,
-                                        };
-                                        continue;
-                                    }
-                                },
-                                _ => {
-                                    self.state = RequestState::Recovery {
-                                        error: Error::UNKNOWN_COMMAND,
                                         arguments_left,
                                     };
-                                    continue;
+                                }
+                            },
+                            // NOTE: `ADD` is not a Redis command.
+                            b"SET" | b"ADD" => match this.resp.parse_string() {
+                                Ok(Some(blob)) => {
+                                    // FIXME: remove this lifetime workaround.
+                                    let blob = unsafe { std::mem::transmute(blob) };
+                                    return Poll::Ready(Ok(Some(Request::AddBlob(blob))));
+                                }
+                                Ok(None) => {
+                                    // Restore the argument(s) marked as processed.
+                                    this.resp.processed = init_processed;
+                                    this.start_read(NextRequestState::Parsing);
+                                }
+                                Err(error) => {
+                                    this.state = RequestState::Recovery {
+                                        error,
+                                        arguments_left,
+                                    };
+                                }
+                            },
+                            b"EXISTS" => match this.resp.parse_key() {
+                                Ok(Some(key)) => {
+                                    return Poll::Ready(Ok(Some(Request::CointainsBlob(key))));
+                                }
+                                Ok(None) => {
+                                    // Restore the argument(s) marked as processed.
+                                    this.resp.processed = init_processed;
+                                    this.start_read(NextRequestState::Parsing);
+                                }
+                                Err(error) => {
+                                    this.state = RequestState::Recovery {
+                                        error,
+                                        arguments_left,
+                                    };
+                                }
+                            },
+                            b"DEL" => match this.resp.parse_key() {
+                                Ok(Some(key)) => {
+                                    return Poll::Ready(Ok(Some(Request::RemoveBlob(key))))
+                                }
+                                Ok(None) => {
+                                    // Restore the argument(s) marked as processed.
+                                    this.resp.processed = init_processed;
+                                    this.start_read(NextRequestState::Parsing);
+                                }
+                                Err(error) => {
+                                    this.state = RequestState::Recovery {
+                                        error,
+                                        arguments_left,
+                                    };
+                                }
+                            },
+                            _ => {
+                                this.state = RequestState::Recovery {
+                                    error: Error::UNKNOWN_COMMAND,
+                                    arguments_left,
+                                };
+                            }
+                        }
+                    }
+                    // Unexpected argument.
+                    Ok(Some(_)) => {
+                        // We'll consider this a fatal error because we can't
+                        // (reliably) determine where the next request starts.
+                        // TODO: attempt to the above any way.
+                        return Poll::Ready(Err(RequestError::User(Error::INVALID_FORMAT, true)));
+                    }
+                    // Can't read another argument, need to read some more
+                    // bytes.
+                    Ok(None) => this.start_read(NextRequestState::Parsing),
+                    // Can't recover from this protocol error.
+                    Err(err) => return Poll::Ready(Err(RequestError::User(err, true))),
+                },
+                // We're in need of bytes! Try reading some more.
+                RequestState::NeedRead {
+                    future,
+                    before_length,
+                    next_state,
+                } => match unsafe { Pin::new_unchecked(&mut *future).poll(ctx) } {
+                    Poll::Ready(Ok(buf)) => {
+                        if buf.len() == *before_length {
+                            // Read 0 bytes.
+                            this.resp.read_all = true;
+                            return match next_state {
+                                // No more requests and no more bytes to read.
+                                // Job well done.
+                                NextRequestState::Parsing => Poll::Ready(Ok(None)),
+                                // Couldn't recover from the error, so we'll
+                                // return it and mark it as fatal.
+                                NextRequestState::Recovery { error, .. } => {
+                                    Poll::Ready(Err(RequestError::User(*error, true)))
+                                }
+                            };
+                        }
+                        this.resp.buf = buf;
+                        match next_state {
+                            NextRequestState::Parsing => this.state = RequestState::Parsing,
+                            NextRequestState::Recovery {
+                                error,
+                                arguments_left,
+                            } => {
+                                this.state = RequestState::Recovery {
+                                    error: *error,
+                                    arguments_left: *arguments_left,
                                 }
                             }
                         }
-                        // Unexpected argument.
-                        Some(_) => {
-                            // We'll consider this a fatal error because we
-                            // can't (reliably) determine where the next request
-                            // starts.
-                            // TODO: attempt to the above any way.
-                            return Poll::Ready(Err(RequestError::User(
-                                Error::INVALID_FORMAT,
-                                true,
-                            )));
-                        }
-                        // No more requests and no more bytes to read. Job well
-                        // done.
-                        None if self.resp.read_all => return Poll::Ready(Ok(None)),
-                        // Can't read another argument, need to read some more
-                        // bytes.
-                        None => self.state = RequestState::NeedRead,
                     }
-                }
-                // We're in need of bytes! Try reading some more.
-                RequestState::NeedRead => {
-                    let timeout = self.timeout;
-                    ready!(self.resp.read(timeout))?;
-                    // Try reading commands again.
-                    self.state = RequestState::Reading;
-                }
+                    Poll::Ready(Err(err)) => return Poll::Ready(Err(RequestError::Conn(err))),
+                    Poll::Pending => return Poll::Pending,
+                },
                 // We're trying to recover from user error.
                 RequestState::Recovery {
                     error,
                     arguments_left,
-                } => match self.resp.recover(arguments_left) {
-                    // Success! Let's try reading again.
-                    Ok(0) => self.state = RequestState::Reading,
+                } => match this.resp.recover(*arguments_left) {
+                    // Success! We'll return an error to the user, but won't
+                    // mark it as fatal.
+                    Ok(0) => return Poll::Ready(Err(RequestError::User(*error, false))),
                     // Need to ignore more arguments, but we read all bytes from
                     // the connection. We'll return the original error and make
                     // it fatal.
-                    Ok(_) if self.resp.read_all => {
-                        return Poll::Ready(Err(RequestError::User(error, true)));
+                    Ok(_) if this.resp.read_all => {
+                        return Poll::Ready(Err(RequestError::User(*error, true)));
                     }
                     // Didn't recover fully (yet), try reading.
                     Ok(arguments_left) => {
-                        self.state = RequestState::Recovery {
+                        let error = *error;
+                        this.start_read(NextRequestState::Recovery {
                             error,
                             arguments_left,
-                        };
-                        let timeout = self.timeout;
-                        ready!(self.resp.read(timeout))?;
+                        });
                     }
                     // Failed to recover, return the original error as fatal.
-                    Err(()) => return Poll::Ready(Err(RequestError::User(error, true))),
+                    Err(()) => return Poll::Ready(Err(RequestError::User(*error, true))),
                 },
             }
         }
     }
 }
 
-impl<IO> Resp<IO>
+impl<C> Resp<C>
 where
-    IO: Connection,
+    C: Connection,
 {
-    /// Read a single argument from the connection.
-    fn read_argument(&mut self) -> Result<Option<Value>, Error> {
+    /// Parse a single argument from the connection.
+    ///
+    /// Returns `None` if no complete argument is in the current buffer.
+    fn parse_argument(&mut self) -> Result<Option<Value>, Error> {
         match parse::argument(self.buf())? {
             Some((mut arg, processed)) => {
                 if let Value::String(Some(idx)) | Value::Error(idx) = &mut arg {
@@ -290,10 +340,12 @@ where
         }
     }
 
-    /// Read an argument from the connection, expecting it to be a `Key`. If the
-    /// argument is not a valid key it will return an [`Error`].
-    fn read_key(&mut self) -> Result<Option<Key>, Error> {
-        match self.read_string_idx() {
+    /// Parse an argument from the connection, expecting it to be a `Key`. If
+    /// the argument is not a valid key it will return an [`Error`].
+    ///
+    /// Returns `None` if no complete argument is in the current buffer.
+    fn parse_key(&mut self) -> Result<Option<Key>, Error> {
+        match self.parse_string_idx() {
             Ok(Some(idx)) => match Key::from_byte_str(&self.buf[idx]) {
                 Ok(key) => Ok(Some(key)),
                 Err(InvalidKeyStr) => Err(Error::INVALID_KEY),
@@ -303,20 +355,22 @@ where
         }
     }
 
-    /// Read an argument from the connection, expecting it to be a (not nil)
+    /// Parse an argument from the connection, expecting it to be a (not nil)
     /// string. If the argument is not a string it will return an [`Error`].
-    fn read_string(&mut self) -> Result<Option<&[u8]>, Error> {
-        match self.read_string_idx() {
+    ///
+    /// Returns `None` if the no complete argument is in the current buffer.
+    fn parse_string(&mut self) -> Result<Option<&[u8]>, Error> {
+        match self.parse_string_idx() {
             Ok(Some(idx)) => Ok(Some(&self.buf[idx])),
             Ok(None) => Ok(None),
             Err(err) => Err(err),
         }
     }
 
-    /// Same as [`Connection::read_string`] but returns the index range instead
-    /// of the actual string.
-    fn read_string_idx(&mut self) -> Result<Option<Range<usize>>, Error> {
-        match self.read_argument()? {
+    /// Same as [`Resp::parse_string`] but returns the index range instead of
+    /// the actual string.
+    fn parse_string_idx(&mut self) -> Result<Option<Range<usize>>, Error> {
+        match self.parse_argument()? {
             Some(Value::String(Some(idx))) => Ok(Some(idx)),
             Some(_) => Err(Error::INVALID_ARG_TYPE_EXP_STR),
             None => Ok(None),
@@ -328,44 +382,23 @@ where
         &self.buf[self.processed..]
     }
 
-    /// Read some bytes from the connection into `self.buf`.
-    fn read(&mut self, timeout: Duration) -> Poll<Result<(), io::Error>> {
-        debug_assert!(!self.read_all);
-        match replace(&mut self.processed, 0) {
-            n if self.buf.len() == n => self.buf.clear(),
-            _ => drop(self.buf.drain(0..self.processed)),
-        }
-        let buf = replace(&mut self.buf, Vec::new());
-        let before = buf.len();
-        match self.io.read_into(buf, timeout) {
-            Ok(buf) => {
-                if buf.len() == before {
-                    self.read_all = true;
-                }
-                self.buf = buf;
-                Poll::Ready(Ok(()))
-            }
-            Err(err) => {
-                self.read_all = true;
-                Poll::Ready(Err(err))
-            }
-        }
-    }
-
-    /// Attampt to recover from a protocol error, removes `arguments`
-    /// arguments from the incoming message queue.
+    /// Attempt to recover from a protocol error, removes `arguments` arguments
+    /// from the incoming message queue.
     ///
-    /// Returns a boolean indicating whether or not recovery was successful,
-    /// i.e. whether or not the arguments were removed.
+    /// If this returns `Ok(0)` it means all argument where succesfully removed
+    /// from the incoming queue. If this returns `Ok(n)`, where n >= 1, it means
+    /// that `n` arguments still have to be removed from the queue. Finally, if
+    /// this returns `Err(())` we failed to remove the arguments from the queue
+    /// and it should be considered broken.
     fn recover(&mut self, arguments: usize) -> Result<usize, ()> {
         let mut iter = 0..arguments;
         while iter.next().is_some() {
-            match self.read_argument() {
+            match self.parse_argument() {
                 Ok(Some(Value::Array(Some(n)))) => iter.end += n, // Great, more stuff to ignore.
                 Ok(Some(_)) => continue,
                 // Need to read more.
                 Ok(None) => return Ok(iter.end - iter.start),
-                // Unexpected user error
+                // Unexpected user error.
                 Err(_) => return Err(()),
             }
         }
@@ -373,34 +406,65 @@ where
     }
 }
 
-pub struct Reply<'a, B, IO> {
-    resp: &'a mut Resp<IO>,
+impl<'a, C> NextRequest<'a, C>
+where
+    C: Connection,
+{
+    /// Set the state to reading.
+    fn start_read(&mut self, next_state: NextRequestState) {
+        debug_assert!(!self.resp.read_all);
+        match replace(&mut self.resp.processed, 0) {
+            n if self.resp.buf.len() == n => self.resp.buf.clear(),
+            _ => drop(self.resp.buf.drain(0..self.resp.processed)),
+        }
+        let buf = replace(&mut self.resp.buf, Vec::new());
+        let before_length = buf.len();
+        let future = self.resp.conn.read_into(buf, self.timeout);
+        let future = unsafe { std::mem::transmute(future) }; // FIXME: work around for lifetime.
+        self.state = RequestState::NeedRead {
+            future,
+            before_length,
+            next_state,
+        };
+    }
+}
+
+/// [`Future`] for replying to a request for [`Resp`].
+pub struct Reply<'a, B, C> {
+    resp: &'a mut Resp<C>,
     response: Response<B>,
     timeout: Duration,
 }
 
-impl<'a, B, IO> Future for Reply<'a, B, IO>
+impl<'a, B, C> Future for Reply<'a, B, C>
 where
     B: Blob,
 {
     type Output = Result<(), io::Error>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        todo!()
+        todo!("TODO: RESP::reply")
     }
 }
 
-pub struct ReplyWithError<'a, IO> {
-    resp: &'a mut Resp<IO>,
-    error: RequestError,
+/// [`Future`] for replying to a request for [`Resp`] with an error.
+pub struct ReplyWithError<'a, C>
+where
+    C: Connection,
+{
+    resp: &'a mut Resp<C>,
+    error: RequestError<C::Error>,
     timeout: Duration,
 }
 
-impl<'a, IO> Future for ReplyWithError<'a, IO> {
+impl<'a, C> Future for ReplyWithError<'a, C>
+where
+    C: Connection,
+{
     type Output = Result<(), io::Error>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        todo!()
+        todo!("TODO: RESP::reply_to_error")
     }
 }
 
@@ -421,39 +485,30 @@ enum Value {
 
 /// Error reading request.
 #[derive(Debug)]
-pub enum RequestError {
+pub enum RequestError<E> {
     /// User error, e.g. protocol violation or incorrect argument(s).
     User(Error, bool),
-    /// I/O error.
-    IO(io::Error),
+    /// Connection error.
+    Conn(E),
 }
 
-impl From<Error> for RequestError {
-    fn from(err: Error) -> RequestError {
-        RequestError::User(err, false)
-    }
-}
-
-impl From<io::Error> for RequestError {
-    fn from(err: io::Error) -> RequestError {
-        RequestError::IO(err)
-    }
-}
-
-impl IsFatal for RequestError {
+impl<E> IsFatal for RequestError<E> {
     fn is_fatal(&self) -> bool {
         match self {
             RequestError::User(_, fatal) => *fatal,
-            RequestError::IO(..) => true,
+            RequestError::Conn(..) => true,
         }
     }
 }
 
-impl fmt::Display for RequestError {
+impl<E> fmt::Display for RequestError<E>
+where
+    E: fmt::Display,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RequestError::User(err, ..) => err.message().fmt(f),
-            RequestError::IO(err) => err.fmt(f),
+            RequestError::Conn(err) => err.fmt(f),
         }
     }
 }
