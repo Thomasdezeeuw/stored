@@ -21,6 +21,19 @@ pub trait Config {
     fn write_timeout(&self) -> Duration;
 }
 
+/// Default implementation for [`Config`].
+pub struct DefaultConfig;
+
+impl Config for DefaultConfig {
+    fn read_timeout(&self) -> Duration {
+        Duration::from_secs(60)
+    }
+
+    fn write_timeout(&self) -> Duration {
+        Duration::from_secs(30)
+    }
+}
+
 /// Actor that controls a user connected using `protocol` trying to access
 /// `storage`.
 ///
