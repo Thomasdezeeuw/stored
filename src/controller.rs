@@ -135,7 +135,7 @@ where
     Ok(())
 }
 
-/// [`Supervisor`] for [`actor`] that logs the error and stops the actor.
+/// [`Supervisor`] for [`actor()`] that logs the error and stops the actor.
 ///
 /// [`Supervisor`]: heph::supervisor::Supervisor
 pub fn supervisor<A, E>(err: Error<E>) -> SupervisorStrategy<A>
