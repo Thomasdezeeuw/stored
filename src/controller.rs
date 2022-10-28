@@ -100,15 +100,11 @@ where
         };
 
         let elapsed = start.elapsed();
-        info!(target: "request",
-            source = as_display!(source),
-            request = as_display!(request_info),
-            response = as_display!(response),
-            elapsed = as_debug!(elapsed);
-            "processed request");
+        info!(target: "request", source = as_display!(source), request = as_display!(request_info),
+            response = as_display!(response), elapsed = as_debug!(elapsed); "processed request");
 
         match protocol.reply(response, config.write_timeout()).await {
-            Ok(()) => {}
+            Ok(()) => {} // On to the next request.
             Err(err) => {
                 return Err(Error {
                     description: "writing response",
