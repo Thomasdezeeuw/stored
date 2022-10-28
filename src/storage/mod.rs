@@ -17,20 +17,19 @@ pub trait Blob {
     /// Write the blob with `header` and `trailer` to `connection`.
     fn write<'a, C>(
         &'a self,
-        header: &[u8],
-        trailer: &[u8],
+        header: &'a [u8],
+        trailer: &'a [u8],
         connection: C,
         timeout: Duration,
-    ) -> Self::Write<'a, C::Error>
+    ) -> Self::Write<'a, C>
     where
-        C: Connection,
-        C::Error: 'static;
+        C: Connection + 'a;
 
     /// [`Future`] behind [`Blob::write`].
-    type Write<'a, E>: Future<Output = Result<(), E>> + 'a
+    type Write<'a, C>: Future<Output = Result<(), C::Error>> + 'a
     where
         Self: 'a,
-        E: 'static;
+        C: Connection + 'a;
 }
 
 /// Storage implementation.
