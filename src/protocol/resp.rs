@@ -32,6 +32,16 @@ pub struct Resp<C> {
 }
 
 impl<C> Resp<C> {
+    /// Create a new RESP [`Protocol`].
+    pub fn new(conn: C) -> Resp<C> {
+        Resp {
+            conn,
+            read_all: false,
+            buf: Vec::with_capacity(4096),
+            processed: 0,
+        }
+    }
+
     /// Preparse the buffer, removing all processed bytes.
     fn prepare_buf(&mut self) {
         match replace(&mut self.processed, 0) {
