@@ -238,8 +238,7 @@ where
                                 Err(err) => Err(err),
                             }
                         }
-                        // NOTE: `ADD` is not a Redis command.
-                        b"SET" | b"ADD" => {
+                        b"SET" => {
                             self.ensure_arguments(length, 1, timeout).await?;
                             match self.read_string(timeout).await {
                                 Ok(blob) => Ok(Some(Request::AddBlob(blob))),
