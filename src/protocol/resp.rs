@@ -261,7 +261,7 @@ where
                             }
                         }
                         _ => {
-                            let fatal = self.recover(length, timeout).await.is_err();
+                            let fatal = self.recover(length - 1, timeout).await.is_err();
                             Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
                         }
                     }
@@ -276,9 +276,7 @@ where
                 // No more requests and no more bytes to read. Job well done.
                 Ok(None) => Ok(None),
                 // Can't recover from this protocol error.
-                Err(err) => match err {
-                    _ => todo!("User error fatal?"),
-                },
+                Err(err) => Err(err),
             }
         }
     }
