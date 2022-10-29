@@ -270,6 +270,10 @@ where
                                 Ok(None)
                             }
                         }
+                        b"DBSIZE" => {
+                            self.ensure_arguments(length, 0, timeout).await?;
+                            Ok(Some(Request::BlobStored))
+                        }
                         _ => {
                             let fatal = self.recover(length - 1, timeout).await.is_err();
                             Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
@@ -361,6 +365,15 @@ where
                 // Returns 0 as integer.
                 Response::NotContainBlob => {
                     let (value, start_idx) = encode::integer(&mut self.buf, 0);
+                    let res = self.conn.write(value, timeout).await;
+                    self.buf.truncate(start_idx);
+                    res
+                }
+
+                // Response to DBSIZE.
+                // Returns the `amount` as integer.
+                Response::ContainsBlobs(amount) => {
+                    let (value, start_idx) = encode::integer(&mut self.buf, amount);
                     let res = self.conn.write(value, timeout).await;
                     self.buf.truncate(start_idx);
                     res
