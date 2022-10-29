@@ -105,7 +105,7 @@ where
                     Response::Error
                 }
             },
-            Request::CointainsBlob(key) => match storage.contains(key).await {
+            Request::ContainsBlob(key) => match storage.contains(key).await {
                 Ok(true) => Response::ContainsBlob,
                 Ok(false) => Response::NotContainBlob,
                 Err(err) => {
@@ -154,7 +154,7 @@ enum RequestInfo {
     AddBlob,
     RemoveBlob(Key),
     GetBlob(Key),
-    CointainsBlob(Key),
+    ContainsBlob(Key),
     BlobStored,
 }
 
@@ -164,7 +164,7 @@ impl From<&Request<'_>> for RequestInfo {
             Request::AddBlob(..) => RequestInfo::AddBlob,
             Request::RemoveBlob(key) => RequestInfo::RemoveBlob(key.clone()),
             Request::GetBlob(key) => RequestInfo::GetBlob(key.clone()),
-            Request::CointainsBlob(key) => RequestInfo::CointainsBlob(key.clone()),
+            Request::ContainsBlob(key) => RequestInfo::ContainsBlob(key.clone()),
             Request::BlobStored => RequestInfo::BlobStored,
         }
     }
@@ -176,7 +176,7 @@ impl fmt::Display for RequestInfo {
             RequestInfo::AddBlob => f.write_str("add blob"),
             RequestInfo::RemoveBlob(key) => write!(f, "remove {key}"),
             RequestInfo::GetBlob(key) => write!(f, "get {key}"),
-            RequestInfo::CointainsBlob(key) => write!(f, "contains {key}"),
+            RequestInfo::ContainsBlob(key) => write!(f, "contains {key}"),
             RequestInfo::BlobStored => f.write_str("amount of blobs stored"),
         }
     }

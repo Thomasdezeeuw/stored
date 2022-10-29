@@ -250,7 +250,7 @@ where
                         b"EXISTS" => {
                             self.ensure_arguments(length, 1, timeout).await?;
                             match self.read_key(timeout).await {
-                                Ok(key) => Ok(Some(Request::CointainsBlob(key))),
+                                Ok(key) => Ok(Some(Request::ContainsBlob(key))),
                                 Err(err) => Err(err),
                             }
                         }

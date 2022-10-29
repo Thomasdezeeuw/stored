@@ -78,7 +78,7 @@ pub enum Request<'a> {
     /// Get blob with key.
     GetBlob(Key),
     /// Check if a blob with key exists.
-    CointainsBlob(Key),
+    ContainsBlob(Key),
     /// Check the number of blobs stored.
     BlobStored,
 }
@@ -112,11 +112,11 @@ pub enum Response<B> {
     BlobNotFound,
     /// Store contains the blob.
     ///
-    /// Response to [`Request::CointainsBlob`].
+    /// Response to [`Request::ContainsBlob`].
     ContainsBlob,
     /// Store does **not** contain the blob.
     ///
-    /// Response to [`Request::CointainsBlob`].
+    /// Response to [`Request::ContainsBlob`].
     NotContainBlob,
     /// The amount of blobs stored.
     ///
