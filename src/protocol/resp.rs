@@ -15,6 +15,7 @@ use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
 const NIL: &str = "$-1\r\n";
+const OK: &str = "+OK\r\n";
 const CRLF: &str = "\r\n";
 
 /// Redis Protocol specification (RESP) like implementation of [`Protocol`].
@@ -258,6 +259,15 @@ where
                             match self.read_key(timeout).await {
                                 Ok(key) => Ok(Some(Request::RemoveBlob(key))),
                                 Err(err) => Err(err),
+                            }
+                        }
+                        b"QUIT" => {
+                            self.ensure_arguments(length, 0, timeout).await?;
+                            if let Err(err) = self.conn.write(OK.as_bytes(), timeout).await {
+                                Err(RequestError::Conn(err))
+                            } else {
+                                // Don't read any more requests.
+                                Ok(None)
                             }
                         }
                         _ => {
