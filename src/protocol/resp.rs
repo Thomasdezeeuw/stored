@@ -123,6 +123,23 @@ where
         }
     }
 
+    /// Ensure we `expected` number of arguments in the request array, that is
+    /// `length == expected + 1`. If not this will attempt to recover from the
+    /// error and return [`Error::INVALID_ARGUMENTS`].
+    async fn ensure_arguments(
+        &mut self,
+        length: usize,
+        expected: usize,
+        timeout: Duration,
+    ) -> Result<(), RequestError<C::Error>> {
+        if length == expected + 1 {
+            Ok(())
+        } else {
+            let fatal = self.recover(length, timeout).await.is_err();
+            Err(RequestError::User(Error::INVALID_ARGUMENTS, fatal))
+        }
+    }
+
     /// Attempt to recover from a protocol error, removes `arguments` arguments
     /// from the connection.
     ///
@@ -195,49 +212,54 @@ where
         async move {
             match self.read_argument(timeout).await {
                 Ok(Some(Value::Array(Some(length)))) => {
-                    if length != 2 {
-                        // All commands (currently) expect a single argument (+1
-                        // for the command itself).
+                    if length == 0 {
                         let fatal = self.recover(length, timeout).await.is_err();
-                        let err = if length == 0 {
-                            Error::MISSING_COMMAND
-                        } else {
-                            Error::INVALID_ARGUMENTS
-                        };
-                        return Err(RequestError::User(err, fatal));
+                        return Err(RequestError::User(Error::MISSING_COMMAND, fatal));
                     }
 
                     let cmd = match self.read_argument(timeout).await {
                         Ok(Some(Value::String(Some(idx)))) => &self.buf[idx],
                         // Unexpected argument type.
                         Ok(Some(_)) => {
-                            let fatal = self.recover(length, timeout).await.is_err();
+                            let fatal = self.recover(length - 1, timeout).await.is_err();
                             return Err(RequestError::User(Error::INVALID_COMMAND_TYPE, fatal));
                         }
                         // Missing command.
-                        Ok(None) => return Err(RequestError::User(Error::INCOMPLETE, true)),
+                        Ok(None) => return Err(RequestError::User(Error::MISSING_COMMAND, true)),
                         // Fatal error reading the argument.
                         Err(err) => return Err(err),
                     };
 
                     match cmd {
-                        b"GET" => match self.read_key(timeout).await {
-                            Ok(key) => Ok(Some(Request::GetBlob(key))),
-                            Err(err) => Err(err),
-                        },
+                        b"GET" => {
+                            self.ensure_arguments(length, 1, timeout).await?;
+                            match self.read_key(timeout).await {
+                                Ok(key) => Ok(Some(Request::GetBlob(key))),
+                                Err(err) => Err(err),
+                            }
+                        }
                         // NOTE: `ADD` is not a Redis command.
-                        b"SET" | b"ADD" => match self.read_string(timeout).await {
-                            Ok(blob) => Ok(Some(Request::AddBlob(blob))),
-                            Err(err) => Err(err),
-                        },
-                        b"EXISTS" => match self.read_key(timeout).await {
-                            Ok(key) => Ok(Some(Request::CointainsBlob(key))),
-                            Err(err) => Err(err),
-                        },
-                        b"DEL" => match self.read_key(timeout).await {
-                            Ok(key) => Ok(Some(Request::RemoveBlob(key))),
-                            Err(err) => Err(err),
-                        },
+                        b"SET" | b"ADD" => {
+                            self.ensure_arguments(length, 1, timeout).await?;
+                            match self.read_string(timeout).await {
+                                Ok(blob) => Ok(Some(Request::AddBlob(blob))),
+                                Err(err) => Err(err),
+                            }
+                        }
+                        b"EXISTS" => {
+                            self.ensure_arguments(length, 1, timeout).await?;
+                            match self.read_key(timeout).await {
+                                Ok(key) => Ok(Some(Request::CointainsBlob(key))),
+                                Err(err) => Err(err),
+                            }
+                        }
+                        b"DEL" => {
+                            self.ensure_arguments(length, 1, timeout).await?;
+                            match self.read_key(timeout).await {
+                                Ok(key) => Ok(Some(Request::RemoveBlob(key))),
+                                Err(err) => Err(err),
+                            }
+                        }
                         _ => {
                             let fatal = self.recover(length, timeout).await.is_err();
                             Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
