@@ -113,6 +113,7 @@ where
                     Response::Error
                 }
             },
+            Request::BlobStored => Response::ContainsBlobs(storage.len()),
         };
 
         let elapsed = start.elapsed();
@@ -154,6 +155,7 @@ enum RequestInfo {
     RemoveBlob(Key),
     GetBlob(Key),
     CointainsBlob(Key),
+    BlobStored,
 }
 
 impl From<&Request<'_>> for RequestInfo {
@@ -163,6 +165,7 @@ impl From<&Request<'_>> for RequestInfo {
             Request::RemoveBlob(key) => RequestInfo::RemoveBlob(key.clone()),
             Request::GetBlob(key) => RequestInfo::GetBlob(key.clone()),
             Request::CointainsBlob(key) => RequestInfo::CointainsBlob(key.clone()),
+            Request::BlobStored => RequestInfo::BlobStored,
         }
     }
 }
@@ -174,6 +177,7 @@ impl fmt::Display for RequestInfo {
             RequestInfo::RemoveBlob(key) => write!(f, "remove {key}"),
             RequestInfo::GetBlob(key) => write!(f, "get {key}"),
             RequestInfo::CointainsBlob(key) => write!(f, "contains {key}"),
+            RequestInfo::BlobStored => f.write_str("amount of blobs stored"),
         }
     }
 }

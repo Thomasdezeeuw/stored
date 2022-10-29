@@ -79,6 +79,8 @@ pub enum Request<'a> {
     GetBlob(Key),
     /// Check if a blob with key exists.
     CointainsBlob(Key),
+    /// Check the number of blobs stored.
+    BlobStored,
 }
 
 /// Response to a [`Request`], generic over the blob type `B`.
@@ -116,6 +118,10 @@ pub enum Response<B> {
     ///
     /// Response to [`Request::CointainsBlob`].
     NotContainBlob,
+    /// The amount of blobs stored.
+    ///
+    /// Response to [`Request::BlobStored`].
+    ContainsBlobs(usize),
     /// Server error occurred, no detail is specified, but an error is logged.
     /// This is not an error from normal processing, something bad happened.
     ///
@@ -135,6 +141,7 @@ impl<B> fmt::Display for Response<B> {
             Response::NotContainBlob => f.write_str("does not contain blob"),
             Response::BlobNotFound => f.write_str("blob not found"),
             Response::Error => f.write_str("server error"),
+            Response::ContainsBlobs(amount) => write!(f, "stored {amount} blobs"),
         }
     }
 }
