@@ -15,7 +15,6 @@ use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
 const NIL: &str = "$-1\r\n";
-const OK: &str = "+OK\r\n";
 const CRLF: &str = "\r\n";
 
 /// Redis Protocol specification (RESP) like implementation of [`Protocol`].
@@ -50,7 +49,7 @@ where
     ) -> Result<Option<Value>, RequestError<C::Error>> {
         loop {
             match parse::argument(self.buf()) {
-                // Sucessfully parsed an argument.
+                // Successfully parsed an argument.
                 Ok(Some((mut arg, processed))) => {
                     if let Value::String(Some(idx)) | Value::Error(idx) = &mut arg {
                         // Indices are based on the unprocessed bytes.
@@ -144,16 +143,17 @@ where
     /// Attempt to recover from a protocol error, removes `arguments` arguments
     /// from the connection.
     ///
-    /// If this returns `Ok(())` it means all argument where succesfully removed
-    /// from the connection. If this returns `Err(())` we failed to remove the
-    /// arguments from the connection and it should be considered broken.
+    /// If this returns `Ok(())` it means all argument where successfully
+    /// removed from the connection. If this returns `Err(())` we failed to
+    /// remove the arguments from the connection and it should be considered
+    /// broken.
     async fn recover(&mut self, arguments: usize, timeout: Duration) -> Result<(), ()> {
         let mut iter = 0..arguments;
         while iter.next().is_some() {
             match self.read_argument(timeout).await {
                 Ok(Some(Value::Array(Some(n)))) => iter.end += n, // Great, more stuff to ignore.
                 Ok(Some(_)) => continue,
-                // Couldn't delete all arguments from the connction, we'll
+                // Couldn't delete all arguments from the connection, we'll
                 // consider it fatal.
                 Ok(None) => return Err(()),
                 // Unexpected user error.
@@ -166,8 +166,7 @@ where
     /// Read some bytes into the buffer.
     ///
     /// Returns `Ok(true)` if at least 1 byte was read, `Ok(false)` if we read 0
-    /// bytes (thus read all bytes in the the connection) and an error
-    /// otherwise.
+    /// bytes (thus read all bytes in the connection) and an error otherwise.
     async fn read(&mut self, timeout: Duration) -> Result<bool, C::Error> {
         self.prepare_buf();
         let buf = replace(&mut self.buf, Vec::new());
@@ -259,15 +258,6 @@ where
                             match self.read_key(timeout).await {
                                 Ok(key) => Ok(Some(Request::RemoveBlob(key))),
                                 Err(err) => Err(err),
-                            }
-                        }
-                        b"QUIT" => {
-                            self.ensure_arguments(length, 0, timeout).await?;
-                            if let Err(err) = self.conn.write(OK.as_bytes(), timeout).await {
-                                Err(RequestError::Conn(err))
-                            } else {
-                                // Don't read any more requests.
-                                Ok(None)
                             }
                         }
                         b"DBSIZE" => {
@@ -462,9 +452,6 @@ macro_rules! user_error {
 }
 
 impl Error {
-    // TODO: add Error Prefix to errors, see
-    // <https://redis.io/topics/protocol#resp-errors>.
-
     const INVALID_FORMAT: Error = user_error!("request has an invalid format");
     const INCOMPLETE: Error = user_error!("request is incomplete");
     const MISSING_COMMAND: Error = user_error!("request is missing a command");
