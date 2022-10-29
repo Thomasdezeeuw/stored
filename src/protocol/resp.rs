@@ -135,7 +135,7 @@ where
         if length == expected + 1 {
             Ok(())
         } else {
-            let fatal = self.recover(length, timeout).await.is_err();
+            let fatal = self.recover(length - 1, timeout).await.is_err();
             Err(RequestError::User(Error::INVALID_ARGUMENTS, fatal))
         }
     }
