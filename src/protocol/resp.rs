@@ -44,7 +44,7 @@ where
     /// Returns `None` if no more arguments can be read from the connection.
     async fn read_argument(&mut self) -> Result<Option<Value>, RequestError> {
         loop {
-            match parse::argument(self.buf()) {
+            match decode::argument(self.buf()) {
                 // Successfully parsed an argument.
                 Ok(Some((mut arg, processed))) => {
                     if let Value::String(Some(idx)) | Value::Error(idx) = &mut arg {
@@ -454,8 +454,8 @@ impl Error {
     }
 }
 
-mod parse {
-    //! Module that can parse the Redis Protocol (RESP2).
+mod decode {
+    //! Module that can decode the Redis Protocol (RESP2).
     //!
     //! <https://redis.io/topics/protocol>.
 
