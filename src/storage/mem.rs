@@ -46,18 +46,13 @@ impl storage::Blob for Blob {
         self.0.len()
     }
 
-    async fn write<'a, H, T, C>(
-        &'a self,
-        header: H,
-        trailer: T,
-        mut conn: C,
-    ) -> Result<(H, T), io::Error>
+    async fn write<H, T, C>(self, header: H, trailer: T, mut conn: C) -> Result<(H, T), io::Error>
     where
         H: Buf,
         T: Buf,
-        C: Write + 'a,
+        C: Write,
     {
-        let bufs = (header, self.0.clone(), trailer);
+        let bufs = (header, self.0, trailer);
         let bufs = conn.write_vectored_all(bufs).await?;
         Ok((bufs.0, bufs.2))
     }
