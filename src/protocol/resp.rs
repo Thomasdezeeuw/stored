@@ -177,13 +177,14 @@ where
         }
     }
 
-    /// Write integer `value` response.
+    /// Write `value` as integer  response.
     async fn write_integer(&mut self, value: usize) -> Result<(), io::Error> {
         let start = self.buf.len();
         encode::integer(&mut self.buf, value);
         self.write_part_buf(start).await
     }
 
+    /// Write `key` as bulk string response.
     async fn write_key(&mut self, key: &Key) -> Result<(), io::Error> {
         let start = self.buf.len();
         encode::length(&mut self.buf, Key::STR_LENGTH);
@@ -193,6 +194,27 @@ where
         }
         self.buf.extend_from_slice(CRLF.as_bytes());
         self.write_part_buf(start).await
+    }
+
+    /// Write `blob` as bulk string response.
+    async fn write_blob<B: Blob>(&mut self, blob: B) -> Result<(), io::Error> {
+        let (header, start_idx) = encode::length(&mut self.buf, blob.len());
+        let res = blob.write(header, CRLF.as_bytes(), &mut self.conn).await;
+        self.buf.truncate(start_idx);
+        res?;
+        Ok(())
+    }
+
+    /// Write a nill string response.
+    async fn write_nil_string(&mut self) -> Result<(), io::Error> {
+        self.conn.write_all(NIL).await?;
+        Ok(())
+    }
+
+    /// Write `error` as error response.
+    async fn write_err(&mut self, err: Error) -> Result<(), io::Error> {
+        self.conn.write_all(err.as_bytes()).await?;
+        Ok(())
     }
 
     /// Write `self.buf[start..]` as response.
@@ -304,19 +326,8 @@ where
             Response::BlobNotRemoved => self.write_integer(0).await,
 
             // Responses to GET.
-            // Returns the `blob` as bulk string.
-            Response::Blob(blob) => {
-                let (header, start_idx) = encode::length(&mut self.buf, blob.len());
-                let res = blob.write(header, CRLF.as_bytes(), &mut self.conn).await;
-                self.buf.truncate(start_idx);
-                res?;
-                Ok(())
-            }
-            // Returns the `NIL` string as simple string.
-            Response::BlobNotFound => {
-                self.conn.write_all(NIL).await?;
-                Ok(())
-            }
+            Response::Blob(blob) => self.write_blob(blob).await,
+            Response::BlobNotFound => self.write_nil_string().await,
 
             // Responses to EXISTS.
             Response::ContainsBlob => self.write_integer(1).await,
@@ -326,10 +337,7 @@ where
             Response::ContainsBlobs(amount) => self.write_integer(amount).await,
 
             // Generic server error.
-            Response::Error => {
-                self.conn.write_all(Error::SERVER_ERROR.as_bytes()).await?;
-                Ok(())
-            }
+            Response::Error => self.write_err(Error::SERVER_ERROR).await,
         }
     }
 
@@ -338,10 +346,7 @@ where
         err: Self::RequestError,
     ) -> Result<(), Self::ResponseError> {
         match err {
-            RequestError::User(err, ..) => {
-                self.conn.write_all(err.as_bytes()).await?;
-                Ok(())
-            }
+            RequestError::User(err, ..) => self.write_err(err).await,
             RequestError::Conn(..) => Ok(()),
         }
     }
