@@ -25,6 +25,18 @@ pub use resp::Resp;
 
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
+    /// Return the source of the client.
+    ///
+    /// # Errors
+    ///
+    /// The Error is considered fatal.
+    fn source(&mut self) -> impl Future<Output = Result<Self::Source, Self::ResponseError>>;
+
+    /// Source of the client.
+    ///
+    /// For TCP connections this will be the IP address.
+    type Source: fmt::Display;
+
     /// Read the next request.
     ///
     /// # Errors

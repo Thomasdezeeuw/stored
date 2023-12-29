@@ -8,9 +8,25 @@ use heph_rt::net::TcpStream;
 
 /// Connection abstraction.
 pub trait Connection: Read + Write {
+    /// Return the source of the client.
+    ///
+    /// # Errors
+    ///
+    /// The Error is considered fatal.
+    fn source(&mut self) -> impl Future<Output = Result<Self::Source, io::Error>>;
+
+    /// Source of the client.
+    ///
+    /// For TCP connections this will be the IP address.
+    type Source: fmt::Display;
 }
 
 impl Connection for TcpStream {
+    async fn source(&mut self) -> Result<Self::Source, io::Error> {
+        self.local_addr()
+    }
+
+    type Source = std::net::SocketAddr;
 }
 
 /// Helper type to reuse read buffer.
