@@ -198,10 +198,14 @@ where
 
     /// Write `blob` as bulk string response.
     async fn write_blob<B: Blob>(&mut self, blob: B) -> Result<(), io::Error> {
-        let (header, start_idx) = encode::length(&mut self.buf, blob.len());
-        let res = blob.write(header, CRLF.as_bytes(), &mut self.conn).await;
-        self.buf.truncate(start_idx);
-        res?;
+        let start = self.buf.len();
+        encode::length(&mut self.buf, blob.len());
+        let header = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
+        self.buf = blob
+            .write(header, CRLF.as_bytes(), &mut self.conn)
+            .await?
+            .0
+            .reset();
         Ok(())
     }
 

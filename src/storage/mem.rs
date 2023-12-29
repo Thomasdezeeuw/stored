@@ -17,7 +17,7 @@ use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message, ActorFuture};
-use heph_rt::io::Write;
+use heph_rt::io::{Buf, Write};
 
 use crate::key::{Key, KeyHasher};
 use crate::storage::{self, AddError};
@@ -48,20 +48,20 @@ impl storage::Blob for Blob {
         self.0.len()
     }
 
-    fn write<'a, C>(
+    async fn write<'a, H, T, C>(
         &'a self,
-        header: &'a [u8],
-        trailer: &'static [u8],
+        header: H,
+        trailer: T,
         mut conn: C,
-    ) -> impl Future<Output = Result<(), io::Error>> + 'a
+    ) -> Result<(H, T), io::Error>
     where
+        H: Buf,
+        T: Buf,
         C: Write + 'a,
     {
-        async move {
-            // FIXME: remove allocations.
-            let bufs = (Vec::from(header), self.0.clone(), trailer);
-            conn.write_vectored(bufs).await.map(|_| ())
-        }
+        let bufs = (header, self.0.clone(), trailer);
+        let bufs = conn.write_vectored_all(bufs).await?;
+        Ok((bufs.0, bufs.2))
     }
 }
 
