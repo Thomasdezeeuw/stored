@@ -22,6 +22,9 @@ use crate::storage::Blob;
 pub mod resp;
 pub use resp::Resp;
 
+pub mod http;
+pub use http::Http;
+
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
     /// Return the source of the client.
