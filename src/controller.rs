@@ -60,12 +60,7 @@ where
     let accepted = Instant::now();
     let source = match protocol.source().await {
         Ok(source) => source,
-        Err(err) => {
-            return Err(Error {
-                description: "getting source of client",
-                source: err,
-            })
-        }
+        Err(err) => return Err(Error::new("getting source of client", err)),
     };
     debug!(source = as_display!(source); "accepted connection");
 
@@ -82,12 +77,7 @@ where
                 match either(protocol.reply_to_error(err), timer).await {
                     Ok(Ok(())) if is_fatal => break,
                     Ok(Ok(())) => continue,
-                    Ok(Err(err)) => {
-                        return Err(Error {
-                            description: "writing error response",
-                            source: err,
-                        })
-                    }
+                    Ok(Err(err)) => return Err(Error::new("writing error response", err)),
                     Err(DeadlinePassed) => {
                         warn!(source = as_display!(source); "timed out writing error response");
                         break;
@@ -145,12 +135,7 @@ where
         let timer = Timer::after(ctx.runtime_ref().clone(), config.write_timeout());
         match either(protocol.reply(response), timer).await {
             Ok(Ok(())) => {} // On to the next request.
-            Ok(Err(err)) => {
-                return Err(Error {
-                    description: "writing response",
-                    source: err,
-                })
-            }
+            Ok(Err(err)) => return Err(Error::new("writing response", err)),
             Err(DeadlinePassed) => {
                 warn!(source = as_display!(source); "timed out writing response");
                 break;
@@ -170,6 +155,15 @@ pub struct Error<E> {
     description: &'static str,
     /// Underlying protocol error.
     source: E,
+}
+
+impl<E> Error<E> {
+    const fn new(description: &'static str, source: E) -> Error<E> {
+        Error {
+            description,
+            source,
+        }
+    }
 }
 
 impl<E> fmt::Display for Error<E>
