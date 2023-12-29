@@ -6,15 +6,13 @@
 //! [`Handle`], which can be converted into [`Storage`] on the thread that needs
 //! it.
 
-use std::future::{ready, Future, Ready};
+use std::future::Future;
 use std::hash::BuildHasherDefault;
 use std::io;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{self, Poll};
 
 use heph::actor_ref::rpc::RpcError;
-use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
+use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message, ActorFuture};
 use heph_rt::io::{Buf, Write};
@@ -163,55 +161,23 @@ impl storage::Storage for Storage {
         self.data_size()
     }
 
-    fn lookup<'a>(&'a self, key: Key) -> Self::Lookup<'a> {
-        ready(Ok(self.reader.get(&key)))
+    async fn lookup(&self, key: Key) -> Result<Option<Self::Blob>, Self::Error> {
+        Ok(self.reader.get(&key))
     }
 
-    type Lookup<'a> = Ready<Result<Option<Self::Blob>, Self::Error>>;
-
-    fn contains<'a>(&'a self, key: Key) -> Self::Contains<'a> {
-        ready(Ok(self.reader.contains_key(&key)))
+    async fn contains(&self, key: Key) -> Result<bool, Self::Error> {
+        Ok(self.reader.contains_key(&key))
     }
 
-    type Contains<'a> = Ready<Result<bool, Self::Error>>;
-
-    fn add_blob<'a>(&'a mut self, blob: &[u8]) -> Self::AddBlob<'a> {
-        let blob = Blob(blob.into());
-        AddBlob(self.writer.rpc(blob))
-    }
-
-    type AddBlob<'a> = AddBlob<'a>;
-
-    fn remove_blob<'a>(&'a mut self, key: Key) -> Self::RemoveBlob<'a> {
-        RemoveBlob(self.writer.rpc(key))
-    }
-
-    type RemoveBlob<'a> = RemoveBlob<'a>;
-}
-
-/// [`Future`] returned by `Storage::add_blob`.
-pub struct AddBlob<'a>(Rpc<'a, WriteRequest, Result<Key, Key>>);
-
-impl<'a> Future for AddBlob<'a> {
-    type Output = Result<Key, AddError<RpcError>>;
-
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        match Pin::new(&mut self.0).poll(ctx) {
-            Poll::Ready(Ok(Ok(key))) => Poll::Ready(Ok(key)),
-            Poll::Ready(Ok(Err(key))) => Poll::Ready(Err(AddError::AlreadyStored(key))),
-            Poll::Ready(Err(err)) => Poll::Ready(Err(AddError::Err(err))),
-            Poll::Pending => Poll::Pending,
+    async fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>> {
+        match self.writer.rpc(Blob(blob.into())).await {
+            Ok(Ok(key)) => Ok(key),
+            Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
+            Err(err) => Err(AddError::Err(err)),
         }
     }
-}
 
-/// [`Future`] returned by `Storage::remove_blob`.
-pub struct RemoveBlob<'a>(Rpc<'a, WriteRequest, bool>);
-
-impl<'a> Future for RemoveBlob<'a> {
-    type Output = Result<bool, RpcError>;
-
-    fn poll(mut self: Pin<&mut Self>, ctx: &mut task::Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.0).poll(ctx)
+    async fn remove_blob(&mut self, key: Key) -> Result<bool, Self::Error> {
+        self.writer.rpc(key).await
     }
 }
