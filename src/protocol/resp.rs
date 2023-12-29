@@ -7,9 +7,7 @@ use std::mem::replace;
 use std::ops::Range;
 use std::{fmt, io};
 
-use heph_rt::io::{Read, Write};
-
-use crate::io::WriteBuf;
+use crate::io::{Connection, WriteBuf};
 use crate::key::{InvalidKeyStr, Key};
 use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
@@ -29,7 +27,7 @@ pub struct Resp<C> {
 
 impl<C> Resp<C>
 where
-    C: Read + Write,
+    C: Connection,
 {
     /// Create a new RESP [`Protocol`].
     pub fn new(conn: C) -> Resp<C> {
@@ -233,7 +231,7 @@ where
 
 impl<C> Protocol for Resp<C>
 where
-    C: Read + Write + 'static,
+    C: Connection,
 {
     async fn next_request<'a>(&'a mut self) -> Result<Option<Request<'a>>, Self::RequestError> {
         match self.read_argument().await {

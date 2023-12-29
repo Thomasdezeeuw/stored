@@ -1,6 +1,17 @@
 //! I/O helper types.
 
-use heph_rt::io::Buf;
+use std::future::Future;
+use std::{fmt, io};
+
+use heph_rt::io::{Buf, Read, Write};
+use heph_rt::net::TcpStream;
+
+/// Connection abstraction.
+pub trait Connection: Read + Write {
+}
+
+impl Connection for TcpStream {
+}
 
 /// Helper type to reuse read buffer.
 pub(crate) struct WriteBuf {
