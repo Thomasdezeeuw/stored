@@ -19,7 +19,7 @@ pub trait Blob {
     fn write<'a, C>(
         &'a self,
         header: &'a [u8],
-        trailer: &'a [u8],
+        trailer: &'static [u8],
         connection: C,
     ) -> impl Future<Output = Result<(), io::Error>> + 'a
     where

@@ -51,7 +51,7 @@ impl storage::Blob for Blob {
     fn write<'a, C>(
         &'a self,
         header: &'a [u8],
-        trailer: &'a [u8],
+        trailer: &'static [u8],
         mut conn: C,
     ) -> impl Future<Output = Result<(), io::Error>> + 'a
     where
@@ -59,7 +59,7 @@ impl storage::Blob for Blob {
     {
         async move {
             // FIXME: remove allocations.
-            let bufs = (Vec::from(header), self.0.clone(), Vec::from(trailer));
+            let bufs = (Vec::from(header), self.0.clone(), trailer);
             conn.write_vectored(bufs).await.map(|_| ())
         }
     }
