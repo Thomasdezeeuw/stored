@@ -52,17 +52,6 @@ pub trait Storage {
     /// Returns the number of blobs stored.
     fn len(&self) -> usize;
 
-    /// Returns the number of bytes of data stored.
-    fn data_size(&self) -> u64;
-
-    /// Returns the total size of the storage file(s).
-    ///
-    /// # Notes
-    ///
-    /// This may **not** match the file size of the data file as data may be
-    /// preallocated.
-    fn total_size(&self) -> u64;
-
     /// Returns the [`Blob`] corresponding to `key`, if stored.
     fn lookup(&self, key: Key) -> impl Future<Output = Result<Option<Self::Blob>, Self::Error>>;
 

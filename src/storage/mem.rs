@@ -141,21 +141,6 @@ impl storage::Storage for Storage {
         self.reader.len()
     }
 
-    fn data_size(&self) -> u64 {
-        // TODO: not ideal. Maybe add `Reader::for_each_value` method?
-        let mut total = 0;
-        for key in self.reader.keys() {
-            if let Some(blob) = self.reader.get(&key) {
-                total += blob.0.len() as u64;
-            }
-        }
-        total
-    }
-
-    fn total_size(&self) -> u64 {
-        self.data_size()
-    }
-
     async fn lookup(&self, key: Key) -> Result<Option<Self::Blob>, Self::Error> {
         Ok(self.reader.get(&key))
     }
