@@ -6,6 +6,8 @@ use std::time::{Duration, Instant};
 
 use heph::actor;
 use heph::supervisor::SupervisorStrategy;
+use heph_rt::timer::{DeadlinePassed, Timer};
+use heph_rt::util::either;
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
@@ -41,7 +43,7 @@ impl Config for DefaultConfig {
 ///
 /// `source` is used in logging and should be socket address or similar.
 pub async fn actor<C, P, S, RT>(
-    _: actor::Context<!, RT>,
+    ctx: actor::Context<!, RT>,
     config: C,
     mut protocol: P,
     mut storage: S,
@@ -51,32 +53,40 @@ where
     P: Protocol,
     S: Storage,
     S::Error: fmt::Display,
+    RT: heph_rt::Access + Clone,
 {
-    let source = "TODO"; // TODO: get from protocol.
-
     let accepted = Instant::now();
+    let source = "TODO";
     debug!(source = as_display!(source); "accepted connection");
 
     loop {
-        // TODO: add timeout.
-        let request = match protocol.next_request().await {
-            Ok(Some(request)) => request,
-            Ok(None) => break, // Done.
-            Err(err) => {
+        let timer = Timer::after(ctx.runtime_ref().clone(), config.read_timeout());
+        let request = match either(protocol.next_request(), timer).await {
+            Ok(Ok(Some(request))) => request,
+            Ok(Ok(None)) => break, // Done.
+            Ok(Err(err)) => {
                 let is_fatal = err.is_fatal();
                 warn!(source = as_display!(source), fatal = as_display!(is_fatal);
                     "error reading next request: {err}");
-                // TODO: add timeout.
-                match protocol.reply_to_error(err).await {
-                    Ok(()) if is_fatal => break,
-                    Ok(()) => continue,
-                    Err(err) => {
+                let timer = Timer::after(ctx.runtime_ref().clone(), config.write_timeout());
+                match either(protocol.reply_to_error(err), timer).await {
+                    Ok(Ok(())) if is_fatal => break,
+                    Ok(Ok(())) => continue,
+                    Ok(Err(err)) => {
                         return Err(Error {
                             description: "writing error response",
                             source: err,
                         })
                     }
+                    Err(DeadlinePassed) => {
+                        warn!(source = as_display!(source); "timed out writing error response");
+                        break;
+                    }
                 }
+            }
+            Err(DeadlinePassed) => {
+                warn!(source = as_display!(source); "timed out reading next request");
+                break;
             }
         };
 
@@ -122,14 +132,18 @@ where
         info!(target: "request", source = as_display!(source), request = as_display!(request_info),
             response = as_display!(response), elapsed = as_debug!(elapsed); "processed request");
 
-        // TODO: add timeout.
-        match protocol.reply(response).await {
-            Ok(()) => {} // On to the next request.
-            Err(err) => {
+        let timer = Timer::after(ctx.runtime_ref().clone(), config.write_timeout());
+        match either(protocol.reply(response), timer).await {
+            Ok(Ok(())) => {} // On to the next request.
+            Ok(Err(err)) => {
                 return Err(Error {
                     description: "writing response",
                     source: err,
                 })
+            }
+            Err(DeadlinePassed) => {
+                warn!(source = as_display!(source); "timed out writing response");
+                break;
             }
         }
     }
