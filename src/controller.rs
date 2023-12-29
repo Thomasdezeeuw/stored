@@ -1,8 +1,9 @@
 //! Controller is the core of the store that controls users connected to the
 //! store.
 //!
-//! The controller runs as an [`actor`], which is generic over the [`Protocol`]
-//! and [`Storage`]. The controller can be configured using [`Config`].
+//! The controller runs as an [`actor`](actor()), which is generic over the
+//! [`Protocol`] and [`Storage`]. The controller can be configured using
+//! [`Config`].
 
 use std::fmt;
 use std::time::{Duration, Instant};
@@ -175,7 +176,8 @@ where
     }
 }
 
-/// [`Supervisor`] for [`actor()`] that logs the error and stops the actor.
+/// [`Supervisor`] for the controller [`actor`](actor()) that logs the error and
+/// stops the actor.
 ///
 /// [`Supervisor`]: heph::supervisor::Supervisor
 pub fn supervisor<A, E>(err: Error<E>) -> SupervisorStrategy<A>
