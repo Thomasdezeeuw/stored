@@ -1,4 +1,4 @@
-#![feature(never_type, type_alias_impl_trait)]
+#![feature(never_type, type_alias_impl_trait, impl_trait_in_assoc_type)]
 
 use std::fmt;
 

@@ -2,7 +2,7 @@ use std::io;
 use std::process::ExitCode;
 
 use heph::actor::NewActor;
-use heph_rt::net::tcp::server::TcpServer;
+use heph_rt::net::tcp;
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::Runtime;
 
@@ -40,19 +40,18 @@ fn try_main() -> Result<(), heph_rt::Error> {
 
     runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
         let storage = mem::Storage::from(storage_handle);
-        let new_actor =
-            (controller::actor as fn(_, _, _, _, _) -> _).map_arg(move |(stream, address)| {
-                let config = controller::DefaultConfig;
-                let protocol = Resp::new(stream);
-                (config, protocol, storage.clone(), address)
-            });
+        let new_actor = (controller::actor as fn(_, _, _, _) -> _).map_arg(move |stream| {
+            let config = controller::DefaultConfig;
+            let protocol = Resp::new(stream);
+            (config, protocol, storage.clone())
+        });
         let supervisor = controller::supervisor;
         let options = ActorOptions::default();
-        let server = TcpServer::setup(address, supervisor, new_actor, options)?;
+        let server = tcp::server::setup(address, supervisor, new_actor, options)?;
 
         let supervisor = ServerSupervisor::new();
         let options = ActorOptions::default().with_priority(Priority::LOW);
-        let actor_ref = runtime_ref.try_spawn_local(supervisor, server, (), options)?;
+        let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
         runtime_ref.receive_signals(actor_ref.try_map());
         Ok(())
     })?;
@@ -61,4 +60,4 @@ fn try_main() -> Result<(), heph_rt::Error> {
     runtime.start()
 }
 
-heph::restart_supervisor!(ServerSupervisor, "TCP server", ());
+heph::restart_supervisor!(ServerSupervisor, "TCP server");
