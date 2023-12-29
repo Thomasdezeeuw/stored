@@ -16,6 +16,7 @@ use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message, ActorFuture};
 use heph_rt::io::{Buf, Write};
+use left_right::hashmap;
 
 use crate::key::{Key, KeyHasher};
 use crate::storage::{self, AddError};
@@ -61,9 +62,16 @@ impl storage::Blob for Blob {
 /// Actor that handles write access to the storage.
 async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: Writer) {
     while let Ok(request) = ctx.receive_next().await {
+        // Don't care about about whether or not the other end got the response.
         let _ = match request {
-            WriteRequest::Add(msg) => msg.handle(|blob| writer.add_blob(blob)),
-            WriteRequest::Remove(msg) => msg.handle(|key| writer.remove_blob(key)),
+            WriteRequest::Add(msg) => {
+                msg.handle(|blob| async { writer.add_blob(blob).await })
+                    .await
+            }
+            WriteRequest::Remove(msg) => {
+                msg.handle(|key| async { writer.remove_blob(key).await })
+                    .await
+            }
         };
     }
 }
@@ -87,21 +95,21 @@ struct Writer {
 
 impl Writer {
     /// Add `blob` to storage.
-    fn add_blob(&mut self, blob: Blob) -> Result<Key, Key> {
+    async fn add_blob(&mut self, blob: Blob) -> Result<Key, Key> {
         let key = Key::for_blob(&blob.0);
         if self.inner.contains_key(&key) {
             Err(key)
         } else {
             self.inner.insert(key.clone(), blob);
-            self.inner.flush();
+            self.inner.flush().await;
             Ok(key)
         }
     }
 
     /// Remove blob with `key`.
-    fn remove_blob(&mut self, key: Key) -> bool {
+    async fn remove_blob(&mut self, key: Key) -> bool {
         let existed = self.inner.remove(key).is_some();
-        self.inner.flush();
+        self.inner.flush().await;
         existed
     }
 }
@@ -142,7 +150,7 @@ impl storage::Storage for Storage {
     }
 
     async fn lookup(&self, key: Key) -> Result<Option<Self::Blob>, Self::Error> {
-        Ok(self.reader.get(&key))
+        Ok(self.reader.get_cloned(&key))
     }
 
     async fn contains(&self, key: Key) -> Result<bool, Self::Error> {
