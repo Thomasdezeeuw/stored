@@ -220,18 +220,19 @@ where
 impl Connection for TcpStream {
     type Error = io::Error;
 
-    fn read_into<'a>(&'a mut self, mut buf: Vec<u8>, timeout: Duration) -> Self::Read<'a> {
+    fn read_into<'a>(&'a mut self, buf: Vec<u8>, _timeout: Duration) -> Self::Read<'a> {
         // FIXME: add timeout.
-        async move { self.recv(&mut buf).await.map(|_| buf) }
+        async move { self.recv(buf).await }
     }
 
     type Read<'a> = impl Future<Output = Result<Vec<u8>, Self::Error>> + 'a
     where
         Self: 'a;
 
-    fn write<'a>(&'a mut self, buf: &'a [u8], timeout: Duration) -> Self::Write<'a> {
+    fn write<'a>(&'a mut self, buf: &'a [u8], _timeout: Duration) -> Self::Write<'a> {
         // FIXME: add timeout.
-        async move { self.send_all(buf).await }
+        // FIXME: remove allocation.
+        async move { self.send_all(buf.to_owned()).await.map(|_| ()) }
     }
 
     type Write<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
@@ -241,10 +242,16 @@ impl Connection for TcpStream {
     fn write_vectored<'a>(
         &'a mut self,
         bufs: &'a mut [IoSlice<'a>],
-        timeout: Duration,
+        _timeout: Duration,
     ) -> Self::WriteVectored<'a> {
         // FIXME: add timeout.
-        async move { self.send_vectored_all(bufs).await }
+        // FIXME: remove allocations and use vectored I/O.
+        async move {
+            for buf in bufs {
+                self.send_all(Vec::from(&**buf)).await?;
+            }
+            Ok(())
+        }
     }
 
     type WriteVectored<'a> = impl Future<Output = Result<(), Self::Error>> + 'a

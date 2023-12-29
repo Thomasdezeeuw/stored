@@ -6,8 +6,9 @@ edition = "2018"
 publish = false
 
 [dependencies]
-heph              = { version = "0.4.0",   default-features = false }
-heph-rt           = { version = "0.4.1",   default-features = false }
+# TODO: replace with published crates.
+heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "c9dd1468dd22a47766b00a5973bab27e88d46916" }
+heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "c9dd1468dd22a47766b00a5973bab27e88d46916" }
 itoa              = { version = "1.0.4",   default-features = false }
 log               = { version = "0.4.17",  default-features = false, features = ["kv_unstable_std", "release_max_level_info"] }
 ring              = { version = "0.16.20", default-features = false, features = ["std"] }

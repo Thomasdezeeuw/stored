@@ -40,20 +40,20 @@ impl Config for DefaultConfig {
 /// `storage`.
 ///
 /// `source` is used in logging and should be socket address or similar.
-pub async fn actor<C, P, S, I, RT>(
+pub async fn actor<C, P, S, RT>(
     _: actor::Context<!, RT>,
     config: C,
     mut protocol: P,
     mut storage: S,
-    source: I,
 ) -> Result<(), Error<P::ResponseError>>
 where
     C: Config,
     P: Protocol,
     S: Storage,
     S::Error: fmt::Display,
-    I: fmt::Display,
 {
+    let source = "TODO"; // TODO: get from protocol.
+
     let accepted = Instant::now();
     debug!(source = as_display!(source); "accepted connection");
 

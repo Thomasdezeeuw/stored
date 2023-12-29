@@ -14,11 +14,10 @@ use std::sync::Arc;
 use std::task::{self, Poll};
 use std::time::Duration;
 
-use heph::actor::ActorFuture;
 use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::supervisor::NoSupervisor;
-use heph::{actor, from_message};
+use heph::{actor, from_message, ActorFuture};
 
 use crate::key::{Key, KeyHasher};
 use crate::protocol::Connection;
@@ -31,13 +30,8 @@ use crate::storage::{self, AddError};
 /// ever.
 pub fn new() -> (Handle, impl Future<Output = ()>) {
     let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
-    let (future, writer) = ActorFuture::new(
-        NoSupervisor,
-        writer as fn(_, _) -> _,
-        Writer { inner: w },
-        (),
-    )
-    .unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
+    let (future, writer) =
+        ActorFuture::new(NoSupervisor, writer as fn(_, _) -> _, Writer { inner: w }).unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
     (Handle { writer, handle }, future)
 }
 
