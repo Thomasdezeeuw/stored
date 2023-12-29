@@ -1,4 +1,14 @@
 //! Storage implementations.
+//!
+//! The [`Storage`] trait defines the behaviour of the storage. This is used by
+//! the [`controller`] to execute client requests.
+//!
+//! See the sub-modules for concrete implementations:
+//!  * [in-memory](mem).
+//!
+//! The [`Blob`] trait defines specialised behaviour for the type used a blob.
+//!
+//! [`controller`]: crate::controller
 
 use std::future::Future;
 use std::io;
