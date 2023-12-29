@@ -1,7 +1,6 @@
 //! Storage implementations.
 
 use std::future::Future;
-use std::time::Duration;
 
 use crate::key::Key;
 use crate::protocol::Connection;
@@ -20,7 +19,6 @@ pub trait Blob {
         header: &'a [u8],
         trailer: &'a [u8],
         connection: C,
-        timeout: Duration,
     ) -> Self::Write<'a, C>
     where
         C: Connection + 'a;
