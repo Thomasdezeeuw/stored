@@ -19,7 +19,7 @@
 //! [`Protocol`]: protocol::Protocol
 //! [`Storage`]: storage::Storage
 
-#![feature(never_type, type_alias_impl_trait, impl_trait_in_assoc_type)]
+#![feature(async_iter_from_iter, async_iterator, if_let_guard, never_type)]
 
 pub mod controller;
 mod io;
