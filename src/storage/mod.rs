@@ -21,14 +21,8 @@ pub trait Blob {
         header: &'a [u8],
         trailer: &'a [u8],
         connection: C,
-    ) -> Self::Write<'a, C>
+    ) -> impl Future<Output = Result<(), io::Error>> + 'a
     where
-        C: Write + 'a;
-
-    /// [`Future`] behind [`Blob::write`].
-    type Write<'a, C>: Future<Output = Result<(), io::Error>> + 'a
-    where
-        Self: 'a,
         C: Write + 'a;
 }
 

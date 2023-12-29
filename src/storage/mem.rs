@@ -53,7 +53,7 @@ impl storage::Blob for Blob {
         header: &'a [u8],
         trailer: &'a [u8],
         mut conn: C,
-    ) -> Self::Write<'a, C>
+    ) -> impl Future<Output = Result<(), io::Error>> + 'a
     where
         C: Write + 'a,
     {
@@ -63,11 +63,6 @@ impl storage::Blob for Blob {
             conn.write_vectored(bufs).await.map(|_| ())
         }
     }
-
-    type Write<'a, C> = impl Future<Output = Result<(), io::Error>> + 'a
-    where
-        Self: 'a,
-        C: Write + 'a;
 }
 
 /// Actor that handles write access to the storage.
