@@ -18,7 +18,6 @@ use std::future::Future;
 
 use crate::key::Key;
 use crate::storage::Blob;
-use crate::IsFatal;
 
 pub mod resp;
 pub use resp::Resp;
@@ -155,4 +154,11 @@ impl<B> fmt::Display for Response<B> {
             Response::ContainsBlobs(amount) => write!(f, "stored {amount} blobs"),
         }
     }
+}
+
+/// Whether or not an error is fatal.
+pub trait IsFatal {
+    /// If this returns true the component is considered broken and will no
+    /// longer be used.
+    fn is_fatal(&self) -> bool;
 }
