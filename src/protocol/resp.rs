@@ -9,8 +9,9 @@ use std::{fmt, io};
 
 use heph_rt::io::{Read, Write};
 
+use crate::io::WriteBuf;
 use crate::key::{InvalidKeyStr, Key};
-use crate::protocol::{IsFatal, Protocol, Request, Response, WriteBuf};
+use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
 const NIL: &str = "$-1\r\n";
