@@ -19,8 +19,6 @@
 use std::fmt;
 use std::future::Future;
 
-use heph_rt::io::Buf;
-
 use crate::key::Key;
 use crate::storage::Blob;
 use crate::IsFatal;
@@ -147,35 +145,5 @@ impl<B> fmt::Display for Response<B> {
             Response::Error => f.write_str("server error"),
             Response::ContainsBlobs(amount) => write!(f, "stored {amount} blobs"),
         }
-    }
-}
-
-/// Helper type to reuse read buffer.
-struct WriteBuf {
-    buf: Vec<u8>,
-    start: usize,
-}
-
-impl WriteBuf {
-    /// Create a new `WriteBuf`.
-    fn new(buf: Vec<u8>, start: usize) -> WriteBuf {
-        debug_assert!(buf.len() >= start);
-        WriteBuf { buf, start }
-    }
-
-    /// Reset the buffer to remove all written bytes, i.e. restoring the read
-    /// buffer.
-    fn reset(mut self) -> Vec<u8> {
-        self.buf.truncate(self.start);
-        self.buf
-    }
-}
-
-// SAFETY: `Vec<u8>` manages the allocation of the bytes, so as long as it's
-// alive, so is the slice of bytes.
-unsafe impl Buf for WriteBuf {
-    unsafe fn parts(&self) -> (*const u8, usize) {
-        let (ptr, len) = self.buf.parts();
-        (ptr.add(self.start), len - self.start)
     }
 }
