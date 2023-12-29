@@ -14,7 +14,7 @@ log               = { version = "0.4.17",  default-features = false, features = 
 ring              = { version = "0.17", default-features = false, features = ["std"] }
 serde             = { version = "1.0.145", default-features = false, features = ["derive"] }
 std-logger        = { version = "0.5",   default-features = false, features = ["timestamp", "log-panic", "nightly"] }
-toml              = { version = "0.5.9",   default-features = false }
+toml              = { version = "0.8",   default-features = false }
 
 # TODO: use released version.
 hashmap = { version = "0.1.0", default-features = false, git = "https://github.com/Thomasdezeeuw/left-right", rev = "132427c88e203f35126716f5b17b927f48eb371b" }
