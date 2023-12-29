@@ -3,13 +3,14 @@
 //!
 //! The implementation starts with [`Resp`].
 
-use std::fmt;
-use std::io::IoSlice;
 use std::mem::replace;
 use std::ops::Range;
+use std::{fmt, io};
+
+use heph_rt::io::{Read, Write};
 
 use crate::key::{InvalidKeyStr, Key};
-use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
+use crate::protocol::{IsFatal, Protocol, Request, Response, WriteBuf};
 use crate::storage::Blob;
 
 const NIL: &str = "$-1\r\n";
@@ -27,7 +28,7 @@ pub struct Resp<C> {
 
 impl<C> Resp<C>
 where
-    C: Connection,
+    C: Read + Write,
 {
     /// Create a new RESP [`Protocol`].
     pub fn new(conn: C) -> Resp<C> {
@@ -41,7 +42,7 @@ where
     /// Read a single argument from the connection.
     ///
     /// Returns `None` if no more arguments can be read from the connection.
-    async fn read_argument(&mut self) -> Result<Option<Value>, RequestError<C::Error>> {
+    async fn read_argument(&mut self) -> Result<Option<Value>, RequestError> {
         loop {
             match parse::argument(self.buf()) {
                 // Successfully parsed an argument.
@@ -82,7 +83,7 @@ where
     ///
     /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
     /// from the connection.
-    async fn read_key(&mut self) -> Result<Key, RequestError<C::Error>> {
+    async fn read_key(&mut self) -> Result<Key, RequestError> {
         match self.read_string_idx().await {
             Ok(idx) => match Key::from_byte_str(&self.buf[idx]) {
                 Ok(key) => Ok(key),
@@ -97,7 +98,7 @@ where
     ///
     /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
     /// from the connection.
-    async fn read_string(&mut self) -> Result<&[u8], RequestError<C::Error>> {
+    async fn read_string(&mut self) -> Result<&[u8], RequestError> {
         match self.read_string_idx().await {
             Ok(idx) => Ok(&self.buf[idx]),
             Err(err) => Err(err),
@@ -106,7 +107,7 @@ where
 
     /// Same as [`Resp::parse_string`] but returns the index range instead of
     /// the actual string.
-    async fn read_string_idx(&mut self) -> Result<Range<usize>, RequestError<C::Error>> {
+    async fn read_string_idx(&mut self) -> Result<Range<usize>, RequestError> {
         match self.read_argument().await {
             Ok(Some(Value::String(Some(idx)))) => Ok(idx),
             Ok(Some(_)) => Err(RequestError::User(Error::INVALID_ARG_TYPE_EXP_STR, false)),
@@ -122,7 +123,7 @@ where
         &mut self,
         length: usize,
         expected: usize,
-    ) -> Result<(), RequestError<C::Error>> {
+    ) -> Result<(), RequestError> {
         if length == expected + 1 {
             Ok(())
         } else {
@@ -158,11 +159,11 @@ where
     ///
     /// Returns `Ok(true)` if at least 1 byte was read, `Ok(false)` if we read 0
     /// bytes (thus read all bytes in the connection) and an error otherwise.
-    async fn read(&mut self) -> Result<bool, C::Error> {
+    async fn read(&mut self) -> Result<bool, io::Error> {
         self.prepare_buf();
         let buf = replace(&mut self.buf, Vec::new());
         let before_length = buf.len();
-        self.buf = self.conn.read_into(buf).await?;
+        self.buf = self.conn.read(buf).await?;
         Ok(before_length != self.buf.len())
     }
 
@@ -176,6 +177,31 @@ where
         }
     }
 
+    /// Write integer `value` response.
+    async fn write_integer(&mut self, value: usize) -> Result<(), io::Error> {
+        let start = self.buf.len();
+        encode::integer(&mut self.buf, value);
+        self.write_part_buf(start).await
+    }
+
+    async fn write_key(&mut self, key: &Key) -> Result<(), io::Error> {
+        let start = self.buf.len();
+        encode::length(&mut self.buf, Key::STR_LENGTH);
+        {
+            use std::io::Write; // Don't want to use this anywhere else.
+            write!(&mut self.buf, "{}", key).unwrap();
+        }
+        self.buf.extend_from_slice(CRLF.as_bytes());
+        self.write_part_buf(start).await
+    }
+
+    /// Write `self.buf[start..]` as response.
+    async fn write_part_buf(&mut self, start: usize) -> Result<(), io::Error> {
+        let buf = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
+        self.buf = self.conn.write_all(buf).await?.reset();
+        Ok(())
+    }
+
     /// Returns the unprocessed bytes in the buffer.
     fn buf(&self) -> &[u8] {
         &self.buf[self.processed..]
@@ -184,7 +210,7 @@ where
 
 impl<C> Protocol for Resp<C>
 where
-    C: Connection + 'static,
+    C: Read + Write + 'static,
 {
     async fn next_request<'a>(&'a mut self) -> Result<Option<Request<'a>>, Self::RequestError> {
         match self.read_argument().await {
@@ -260,7 +286,7 @@ where
         }
     }
 
-    type RequestError = RequestError<C::Error>;
+    type RequestError = RequestError;
 
     async fn reply<B>(&mut self, response: Response<B>) -> Result<(), Self::ResponseError>
     where
@@ -270,42 +296,12 @@ where
         self.prepare_buf();
 
         match response {
-            // Responses to GET.
-            // Returns the `key` as bulk string.
-            Response::Added(key) | Response::AlreadyStored(key) => {
-                let start_idx = self.buf.len();
-                {
-                    use std::io::Write; // Don't want to use this anywhere else.
-                    write!(&mut self.buf, "{}", key).unwrap();
-                }
-                encode::length(&mut self.buf, Key::STR_LENGTH);
-                let key = &self.buf[start_idx..start_idx + Key::STR_LENGTH];
-                let header = &self.buf[start_idx + Key::STR_LENGTH..];
-                let mut bufs = [
-                    IoSlice::new(header),
-                    IoSlice::new(key),
-                    IoSlice::new(CRLF.as_bytes()),
-                ];
-                let res = self.conn.write_vectored(&mut bufs).await;
-                self.buf.truncate(start_idx);
-                res
-            }
+            // Responses to SET.
+            Response::Added(key) | Response::AlreadyStored(key) => self.write_key(&key).await,
 
             // Responses to DEL.
-            // Returns 1 as integer.
-            Response::BlobRemoved => {
-                let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                let res = self.conn.write(value).await;
-                self.buf.truncate(start_idx);
-                res
-            }
-            // Returns 0 as integer.
-            Response::BlobNotRemoved => {
-                let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                let res = self.conn.write(value).await;
-                self.buf.truncate(start_idx);
-                res
-            }
+            Response::BlobRemoved => self.write_integer(1).await,
+            Response::BlobNotRemoved => self.write_integer(0).await,
 
             // Responses to GET.
             // Returns the `blob` as bulk string.
@@ -313,39 +309,27 @@ where
                 let (header, start_idx) = encode::length(&mut self.buf, blob.len());
                 let res = blob.write(header, CRLF.as_bytes(), &mut self.conn).await;
                 self.buf.truncate(start_idx);
-                res
+                res?;
+                Ok(())
             }
             // Returns the `NIL` string as simple string.
-            Response::BlobNotFound => self.conn.write(NIL.as_bytes()).await,
+            Response::BlobNotFound => {
+                self.conn.write_all(NIL).await?;
+                Ok(())
+            }
 
             // Responses to EXISTS.
-            // Returns 1 as integer.
-            Response::ContainsBlob => {
-                let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                let res = self.conn.write(value).await;
-                self.buf.truncate(start_idx);
-                res
-            }
-            // Returns 0 as integer.
-            Response::NotContainBlob => {
-                let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                let res = self.conn.write(value).await;
-                self.buf.truncate(start_idx);
-                res
-            }
+            Response::ContainsBlob => self.write_integer(1).await,
+            Response::NotContainBlob => self.write_integer(0).await,
 
             // Response to DBSIZE.
-            // Returns the `amount` as integer.
-            Response::ContainsBlobs(amount) => {
-                let (value, start_idx) = encode::integer(&mut self.buf, amount);
-                let res = self.conn.write(value).await;
-                self.buf.truncate(start_idx);
-                res
-            }
+            Response::ContainsBlobs(amount) => self.write_integer(amount).await,
 
             // Generic server error.
-            // Returns a server error as simple string.
-            Response::Error => self.conn.write(Error::SERVER_ERROR.as_bytes()).await,
+            Response::Error => {
+                self.conn.write_all(Error::SERVER_ERROR.as_bytes()).await?;
+                Ok(())
+            }
         }
     }
 
@@ -354,12 +338,15 @@ where
         err: Self::RequestError,
     ) -> Result<(), Self::ResponseError> {
         match err {
-            RequestError::User(err, ..) => self.conn.write(err.as_bytes()).await,
+            RequestError::User(err, ..) => {
+                self.conn.write_all(err.as_bytes()).await?;
+                Ok(())
+            }
             RequestError::Conn(..) => Ok(()),
         }
     }
 
-    type ResponseError = C::Error;
+    type ResponseError = io::Error;
 }
 
 /// Value send by the client.
@@ -379,14 +366,14 @@ enum Value {
 
 /// Error reading request.
 #[derive(Debug)]
-pub enum RequestError<E> {
+pub enum RequestError {
     /// User error, e.g. protocol violation or incorrect argument(s).
     User(Error, bool),
     /// Connection error.
-    Conn(E),
+    Conn(io::Error),
 }
 
-impl<E> IsFatal for RequestError<E> {
+impl IsFatal for RequestError {
     fn is_fatal(&self) -> bool {
         match self {
             RequestError::User(_, fatal) => *fatal,
@@ -395,10 +382,7 @@ impl<E> IsFatal for RequestError<E> {
     }
 }
 
-impl<E> fmt::Display for RequestError<E>
-where
-    E: fmt::Display,
-{
+impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RequestError::User(err, ..) => err.message().fmt(f),
@@ -641,12 +625,9 @@ mod encode {
         int(buf, b'$', length)
     }
 
-    /// Encode `value` onto `buf` (without changing it's current contents),
-    /// returns the bytes with the length line and the index to which to
-    /// truncate the buffer to restore it.
-    pub(super) fn integer<'a>(buf: &'a mut Vec<u8>, value: usize) -> (&'a [u8], usize) {
-        let start_idx = int(buf, b':', value);
-        (&buf[start_idx..], start_idx)
+    /// Encode `value` onto `buf` (without changing it's current contents).
+    pub(super) fn integer<'a>(buf: &'a mut Vec<u8>, value: usize) {
+        int(buf, b':', value);
     }
 
     /// Encode an integer with `prefix`.

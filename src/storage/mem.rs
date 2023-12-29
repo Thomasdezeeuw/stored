@@ -8,7 +8,7 @@
 
 use std::future::{ready, Future, Ready};
 use std::hash::BuildHasherDefault;
-use std::io::IoSlice;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
@@ -17,9 +17,9 @@ use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message, ActorFuture};
+use heph_rt::io::Write;
 
 use crate::key::{Key, KeyHasher};
-use crate::protocol::Connection;
 use crate::storage::{self, AddError};
 
 /// Create a new in-memory storage.
@@ -55,22 +55,19 @@ impl storage::Blob for Blob {
         mut conn: C,
     ) -> Self::Write<'a, C>
     where
-        C: Connection + 'a,
+        C: Write + 'a,
     {
         async move {
-            let mut bufs = [
-                IoSlice::new(header),
-                IoSlice::new(&*self.0),
-                IoSlice::new(trailer),
-            ];
-            conn.write_vectored(&mut bufs).await
+            // FIXME: remove allocations.
+            let bufs = (Vec::from(header), self.0.clone(), Vec::from(trailer));
+            conn.write_vectored(bufs).await.map(|_| ())
         }
     }
 
-    type Write<'a, C> = impl Future<Output = Result<(), C::Error>> + 'a
+    type Write<'a, C> = impl Future<Output = Result<(), io::Error>> + 'a
     where
         Self: 'a,
-        C: Connection + 'a;
+        C: Write + 'a;
 }
 
 /// Actor that handles write access to the storage.

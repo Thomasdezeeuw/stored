@@ -16,11 +16,10 @@
 //!
 //! [`controller`]: crate::controller
 
+use std::fmt;
 use std::future::Future;
-use std::io::IoSlice;
-use std::{fmt, io};
 
-use heph_rt::net::TcpStream;
+use heph_rt::io::Buf;
 
 use crate::key::Key;
 use crate::storage::Blob;
@@ -151,100 +150,32 @@ impl<B> fmt::Display for Response<B> {
     }
 }
 
-/// Connection abstraction.
-pub trait Connection {
-    /// I/O error, usually [`std::io::Error`].
-    ///
-    /// This error is always considered fatal.
-    type Error: fmt::Display;
-
-    /// Read data into `buf`.
-    fn read_into<'a>(&'a mut self, buf: Vec<u8>) -> Self::Read<'a>;
-
-    /// [`Future`] behind [`Connection::read_into`].
-    type Read<'a>: Future<Output = Result<Vec<u8>, Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    /// Write data from `buf`.
-    fn write<'a>(&'a mut self, buf: &'a [u8]) -> Self::Write<'a>;
-
-    /// [`Future`] behind [`Connection::write`].
-    type Write<'a>: Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    /// Write data from `buf`.
-    fn write_vectored<'a>(&'a mut self, bufs: &'a mut [IoSlice<'a>]) -> Self::WriteVectored<'a>;
-
-    /// [`Future`] behind [`Connection::write`].
-    type WriteVectored<'a>: Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
+/// Helper type to reuse read buffer.
+struct WriteBuf {
+    buf: Vec<u8>,
+    start: usize,
 }
 
-impl<C> Connection for &mut C
-where
-    C: Connection,
-{
-    type Error = C::Error;
-
-    fn read_into<'a>(&'a mut self, buf: Vec<u8>) -> Self::Read<'a> {
-        (&mut **self).read_into(buf)
+impl WriteBuf {
+    /// Create a new `WriteBuf`.
+    fn new(buf: Vec<u8>, start: usize) -> WriteBuf {
+        debug_assert!(buf.len() >= start);
+        WriteBuf { buf, start }
     }
 
-    type Read<'a> = C::Read<'a>
-    where
-        Self: 'a;
-
-    fn write<'a>(&'a mut self, buf: &'a [u8]) -> Self::Write<'a> {
-        (&mut **self).write(buf)
+    /// Reset the buffer to remove all written bytes, i.e. restoring the read
+    /// buffer.
+    fn reset(mut self) -> Vec<u8> {
+        self.buf.truncate(self.start);
+        self.buf
     }
-
-    type Write<'a> = C::Write<'a>
-    where
-        Self: 'a;
-
-    fn write_vectored<'a>(&'a mut self, bufs: &'a mut [IoSlice<'a>]) -> Self::WriteVectored<'a> {
-        (&mut **self).write_vectored(bufs)
-    }
-
-    type WriteVectored<'a> = C::WriteVectored<'a>
-    where
-        Self: 'a;
 }
 
-impl Connection for TcpStream {
-    type Error = io::Error;
-
-    fn read_into<'a>(&'a mut self, buf: Vec<u8>) -> Self::Read<'a> {
-        async move { self.recv(buf).await }
+// SAFETY: `Vec<u8>` manages the allocation of the bytes, so as long as it's
+// alive, so is the slice of bytes.
+unsafe impl Buf for WriteBuf {
+    unsafe fn parts(&self) -> (*const u8, usize) {
+        let (ptr, len) = self.buf.parts();
+        (ptr.add(self.start), len - self.start)
     }
-
-    type Read<'a> = impl Future<Output = Result<Vec<u8>, Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    fn write<'a>(&'a mut self, buf: &'a [u8]) -> Self::Write<'a> {
-        // FIXME: remove allocation.
-        async move { self.send_all(buf.to_owned()).await.map(|_| ()) }
-    }
-
-    type Write<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
-
-    fn write_vectored<'a>(&'a mut self, bufs: &'a mut [IoSlice<'a>]) -> Self::WriteVectored<'a> {
-        // FIXME: remove allocations and use vectored I/O.
-        async move {
-            for buf in bufs {
-                self.send_all(Vec::from(&**buf)).await?;
-            }
-            Ok(())
-        }
-    }
-
-    type WriteVectored<'a> = impl Future<Output = Result<(), Self::Error>> + 'a
-    where
-        Self: 'a;
 }
