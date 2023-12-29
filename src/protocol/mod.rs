@@ -1,4 +1,20 @@
 //! Define how to interact with connected clients.
+//!
+//! The [`Protocol`] trait defines the interactions with the client via a
+//! certain protocol, e.g. HTTP or RESP. This is used by the [`controller`] to
+//! implement the client connection logic.
+//!
+//! The [`Request`] and [`Response`] type define the the incoming and outgoing
+//! messages respectively. Both can be received/send using the `Protocol`.
+//!
+//! See the sub-modules for concrete implementations:
+//!  * [HTTP](http).
+//!  * [RESP](resp).
+//!
+//! Finally there is [`Connection`] which is an abstraction around a concrete
+//! connection, e.g. a TCP connection.
+//!
+//! [`controller`]: crate::controller
 
 use std::future::Future;
 use std::io::IoSlice;
@@ -129,6 +145,7 @@ pub enum Response<B> {
     Error,
 }
 
+/// Used in logging.
 impl<B> fmt::Display for Response<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
