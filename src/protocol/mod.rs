@@ -28,7 +28,7 @@ pub trait Protocol {
     ///
     /// # Errors
     ///
-    /// The Error is considered fatal.
+    /// The error is considered fatal.
     fn source(&mut self) -> impl Future<Output = Result<Self::Source, Self::ResponseError>>;
 
     /// Source of the client.
@@ -64,7 +64,7 @@ pub trait Protocol {
     where
         B: Blob;
 
-    /// Reply to a (broken) request with `error`.
+    /// Reply to a erroneous request with `error`.
     fn reply_to_error(
         &mut self,
         error: Self::RequestError,
