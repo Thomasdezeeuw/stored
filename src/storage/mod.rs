@@ -1,9 +1,11 @@
 //! Storage implementations.
 
 use std::future::Future;
+use std::io;
+
+use heph_rt::io::Write;
 
 use crate::key::Key;
-use crate::protocol::Connection;
 
 pub mod mem;
 pub use mem::new as new_in_memory;
@@ -21,13 +23,13 @@ pub trait Blob {
         connection: C,
     ) -> Self::Write<'a, C>
     where
-        C: Connection + 'a;
+        C: Write + 'a;
 
     /// [`Future`] behind [`Blob::write`].
-    type Write<'a, C>: Future<Output = Result<(), C::Error>> + 'a
+    type Write<'a, C>: Future<Output = Result<(), io::Error>> + 'a
     where
         Self: 'a,
-        C: Connection + 'a;
+        C: Write + 'a;
 }
 
 /// Storage implementation.
