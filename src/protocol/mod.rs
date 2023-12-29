@@ -11,9 +11,6 @@
 //!  * [HTTP](http).
 //!  * [RESP](resp).
 //!
-//! Finally there is [`Connection`] which is an abstraction around a concrete
-//! connection, e.g. a TCP connection.
-//!
 //! [`controller`]: crate::controller
 
 use std::fmt;
