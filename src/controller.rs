@@ -13,7 +13,7 @@ use log::{as_debug, as_display, debug, error, info, warn};
 use crate::key::Key;
 use crate::protocol::{Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
-use crate::{Error, IsFatal};
+use crate::{Describe, Error, IsFatal};
 
 /// Controller configuration.
 pub trait Config {
@@ -56,7 +56,10 @@ where
     RT: heph_rt::Access + Clone,
 {
     let accepted = Instant::now();
-    let source = "TODO";
+    let source = protocol
+        .source()
+        .await
+        .describe("getting source of client")?;
     debug!(source = as_display!(source); "accepted connection");
 
     loop {

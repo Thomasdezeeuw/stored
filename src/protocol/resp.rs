@@ -233,6 +233,12 @@ impl<C> Protocol for Resp<C>
 where
     C: Connection,
 {
+    async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
+        self.conn.source().await
+    }
+
+    type Source = C::Source;
+
     async fn next_request<'a>(&'a mut self) -> Result<Option<Request<'a>>, Self::RequestError> {
         match self.read_argument().await {
             Ok(Some(Value::Array(Some(length)))) => {
