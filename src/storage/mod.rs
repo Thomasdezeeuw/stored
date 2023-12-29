@@ -43,10 +43,10 @@ pub trait Blob {
 
 /// Storage implementation.
 pub trait Storage {
-    /// Blob type returned.
+    /// Blob type used by the implementation.
     type Blob: Blob;
 
-    /// Error used by the storage, often this will be [`std::io::Error`].
+    /// Error used by the storage.
     type Error;
 
     /// Returns the number of blobs stored.
@@ -64,39 +64,20 @@ pub trait Storage {
     fn total_size(&self) -> u64;
 
     /// Returns the [`Blob`] corresponding to `key`, if stored.
-    fn lookup<'a>(&'a self, key: Key) -> Self::Lookup<'a>;
-
-    /// [`Future`] behind [`Storage::lookup`].
-    type Lookup<'a>: Future<Output = Result<Option<Self::Blob>, Self::Error>> + 'a
-    where
-        Self: 'a;
+    fn lookup(&self, key: Key) -> impl Future<Output = Result<Option<Self::Blob>, Self::Error>>;
 
     /// Returns `true` if the storage contains a blob corresponding to `key`,
     /// `false` otherwise.
-    fn contains<'a>(&'a self, key: Key) -> Self::Contains<'a>;
-
-    /// [`Future`] behind [`Storage::contains`].
-    type Contains<'a>: Future<Output = Result<bool, Self::Error>> + 'a
-    where
-        Self: 'a;
+    fn contains(&self, key: Key) -> impl Future<Output = Result<bool, Self::Error>>;
 
     /// Add `blob` to the storage.
-    fn add_blob<'a>(&'a mut self, blob: &[u8]) -> Self::AddBlob<'a>;
-
-    /// [`Future`] behind [`Storage::add_blob`].
-    type AddBlob<'a>: Future<Output = Result<Key, AddError<Self::Error>>> + 'a
-    where
-        Self: 'a;
+    fn add_blob(&mut self, blob: &[u8])
+        -> impl Future<Output = Result<Key, AddError<Self::Error>>>;
 
     /// Remove the blob with `key` from storage.
     ///
     /// Returns `true` if the blob was previously stored, `false` otherwise.
-    fn remove_blob<'a>(&'a mut self, key: Key) -> Self::RemoveBlob<'a>;
-
-    /// [`Future`] behind [`Storage::remove_blob`].
-    type RemoveBlob<'a>: Future<Output = Result<bool, Self::Error>> + 'a
-    where
-        Self: 'a;
+    fn remove_blob(&mut self, key: Key) -> impl Future<Output = Result<bool, Self::Error>>;
 }
 
 /// Error returned by [`Storage::add_blob`].
