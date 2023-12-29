@@ -40,6 +40,10 @@ impl Clone for Blob {
     fn clone(&self) -> Blob {
         Blob(self.0.clone())
     }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.0.clone_from(&source.0)
+    }
 }
 
 impl storage::Blob for Blob {
