@@ -29,16 +29,16 @@ pub trait Blob {
     ///
     /// The `write` call will attempt to use the most efficient I/O possible,
     /// ranging from `sendfile(2)` to vectored I/O.
-    fn write<'a, H, T, C>(
-        &'a self,
+    fn write<H, T, C>(
+        self,
         header: H,
         trailer: T,
         connection: C,
-    ) -> impl Future<Output = Result<(H, T), io::Error>> + 'a
+    ) -> impl Future<Output = Result<(H, T), io::Error>>
     where
         H: Buf,
         T: Buf,
-        C: Write + 'a;
+        C: Write;
 }
 
 /// Storage implementation.
