@@ -14,9 +14,8 @@ use heph_rt::util::either;
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
-use crate::protocol::{Protocol, Request, Response};
+use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
-use crate::{Describe, Error, IsFatal};
 
 /// Controller configuration.
 pub trait Config {
@@ -59,10 +58,15 @@ where
     RT: heph_rt::Access + Clone,
 {
     let accepted = Instant::now();
-    let source = protocol
-        .source()
-        .await
-        .describe("getting source of client")?;
+    let source = match protocol.source().await {
+        Ok(source) => source,
+        Err(err) => {
+            return Err(Error {
+                description: "getting source of client",
+                source: err,
+            })
+        }
+    };
     debug!(source = as_display!(source); "accepted connection");
 
     loop {
@@ -157,6 +161,24 @@ where
     let elapsed = accepted.elapsed();
     debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping connection");
     Ok(())
+}
+
+/// Controller error.
+#[derive(Debug)]
+pub struct Error<E> {
+    /// Description of the operation.
+    description: &'static str,
+    /// Underlying protocol error.
+    source: E,
+}
+
+impl<E> fmt::Display for Error<E>
+where
+    E: fmt::Display,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.description, self.source)
+    }
 }
 
 /// [`Supervisor`] for [`actor()`] that logs the error and stops the actor.
