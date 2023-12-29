@@ -4,7 +4,6 @@
 //! The implementation starts with [`Resp`].
 
 use std::fmt;
-use std::future::Future;
 use std::io::IoSlice;
 use std::mem::replace;
 use std::ops::Range;
@@ -195,202 +194,194 @@ impl<C> Protocol for Resp<C>
 where
     C: Connection + 'static,
 {
-    type NextRequest<'a> = impl Future<Output = Result<Option<Request<'a>>, Self::RequestError>> + 'a
-    where
-        Self: 'a;
-    type RequestError = RequestError<C::Error>;
-    type Reply<'a, B: Blob> = impl Future<Output = Result<(), Self::ResponseError>> + 'a
-    where
-        Self: 'a,
-        B: Blob + 'a;
-    type ReplyWithError<'a> = impl Future<Output = Result<(), Self::ResponseError>> + 'a
-    where
-        Self: 'a;
-    type ResponseError = C::Error;
+    async fn next_request<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> Result<Option<Request<'a>>, Self::RequestError> {
+        match self.read_argument(timeout).await {
+            Ok(Some(Value::Array(Some(length)))) => {
+                if length == 0 {
+                    let fatal = self.recover(length, timeout).await.is_err();
+                    return Err(RequestError::User(Error::MISSING_COMMAND, fatal));
+                }
 
-    fn next_request<'a>(&'a mut self, timeout: Duration) -> Self::NextRequest<'a> {
-        async move {
-            match self.read_argument(timeout).await {
-                Ok(Some(Value::Array(Some(length)))) => {
-                    if length == 0 {
-                        let fatal = self.recover(length, timeout).await.is_err();
-                        return Err(RequestError::User(Error::MISSING_COMMAND, fatal));
+                let cmd = match self.read_argument(timeout).await {
+                    Ok(Some(Value::String(Some(idx)))) => &self.buf[idx],
+                    // Unexpected argument type.
+                    Ok(Some(_)) => {
+                        let fatal = self.recover(length - 1, timeout).await.is_err();
+                        return Err(RequestError::User(Error::INVALID_COMMAND_TYPE, fatal));
                     }
+                    // Missing command.
+                    Ok(None) => return Err(RequestError::User(Error::MISSING_COMMAND, true)),
+                    // Fatal error reading the argument.
+                    Err(err) => return Err(err),
+                };
 
-                    let cmd = match self.read_argument(timeout).await {
-                        Ok(Some(Value::String(Some(idx)))) => &self.buf[idx],
-                        // Unexpected argument type.
-                        Ok(Some(_)) => {
-                            let fatal = self.recover(length - 1, timeout).await.is_err();
-                            return Err(RequestError::User(Error::INVALID_COMMAND_TYPE, fatal));
-                        }
-                        // Missing command.
-                        Ok(None) => return Err(RequestError::User(Error::MISSING_COMMAND, true)),
-                        // Fatal error reading the argument.
-                        Err(err) => return Err(err),
-                    };
-
-                    match cmd {
-                        b"GET" => {
-                            self.ensure_arguments(length, 1, timeout).await?;
-                            match self.read_key(timeout).await {
-                                Ok(key) => Ok(Some(Request::GetBlob(key))),
-                                Err(err) => Err(err),
-                            }
-                        }
-                        b"SET" => {
-                            self.ensure_arguments(length, 1, timeout).await?;
-                            match self.read_string(timeout).await {
-                                Ok(blob) => Ok(Some(Request::AddBlob(blob))),
-                                Err(err) => Err(err),
-                            }
-                        }
-                        b"EXISTS" => {
-                            self.ensure_arguments(length, 1, timeout).await?;
-                            match self.read_key(timeout).await {
-                                Ok(key) => Ok(Some(Request::ContainsBlob(key))),
-                                Err(err) => Err(err),
-                            }
-                        }
-                        b"DEL" => {
-                            self.ensure_arguments(length, 1, timeout).await?;
-                            match self.read_key(timeout).await {
-                                Ok(key) => Ok(Some(Request::RemoveBlob(key))),
-                                Err(err) => Err(err),
-                            }
-                        }
-                        b"DBSIZE" => {
-                            self.ensure_arguments(length, 0, timeout).await?;
-                            Ok(Some(Request::BlobStored))
-                        }
-                        _ => {
-                            let fatal = self.recover(length - 1, timeout).await.is_err();
-                            Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
+                match cmd {
+                    b"GET" => {
+                        self.ensure_arguments(length, 1, timeout).await?;
+                        match self.read_key(timeout).await {
+                            Ok(key) => Ok(Some(Request::GetBlob(key))),
+                            Err(err) => Err(err),
                         }
                     }
+                    b"SET" => {
+                        self.ensure_arguments(length, 1, timeout).await?;
+                        match self.read_string(timeout).await {
+                            Ok(blob) => Ok(Some(Request::AddBlob(blob))),
+                            Err(err) => Err(err),
+                        }
+                    }
+                    b"EXISTS" => {
+                        self.ensure_arguments(length, 1, timeout).await?;
+                        match self.read_key(timeout).await {
+                            Ok(key) => Ok(Some(Request::ContainsBlob(key))),
+                            Err(err) => Err(err),
+                        }
+                    }
+                    b"DEL" => {
+                        self.ensure_arguments(length, 1, timeout).await?;
+                        match self.read_key(timeout).await {
+                            Ok(key) => Ok(Some(Request::RemoveBlob(key))),
+                            Err(err) => Err(err),
+                        }
+                    }
+                    b"DBSIZE" => {
+                        self.ensure_arguments(length, 0, timeout).await?;
+                        Ok(Some(Request::BlobStored))
+                    }
+                    _ => {
+                        let fatal = self.recover(length - 1, timeout).await.is_err();
+                        Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
+                    }
                 }
-                // Unexpected argument.
-                Ok(Some(_)) => {
-                    // We'll consider this a fatal error because we can't
-                    // (reliably) determine where the next request starts.
-                    // TODO: attempt to the above any way.
-                    Err(RequestError::User(Error::INVALID_FORMAT, true))
-                }
-                // No more requests and no more bytes to read. Job well done.
-                Ok(None) => Ok(None),
-                // Can't recover from this protocol error.
-                Err(err) => Err(err),
             }
+            // Unexpected argument.
+            Ok(Some(_)) => {
+                // We'll consider this a fatal error because we can't
+                // (reliably) determine where the next request starts.
+                // TODO: attempt to the above any way.
+                Err(RequestError::User(Error::INVALID_FORMAT, true))
+            }
+            // No more requests and no more bytes to read. Job well done.
+            Ok(None) => Ok(None),
+            // Can't recover from this protocol error.
+            Err(err) => Err(err),
         }
     }
 
-    fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a, B>
+    type RequestError = RequestError<C::Error>;
+
+    async fn reply<B>(
+        &mut self,
+        response: Response<B>,
+        timeout: Duration,
+    ) -> Result<(), Self::ResponseError>
     where
-        B: Blob + 'a,
+        B: Blob,
     {
         // TODO: only prepare buf if we need the additional space.
         self.prepare_buf();
 
-        async move {
-            match response {
-                // Responses to GET.
-                // Returns the `key` as bulk string.
-                Response::Added(key) | Response::AlreadyStored(key) => {
-                    let start_idx = self.buf.len();
-                    {
-                        use std::io::Write; // Don't want to use this anywhere else.
-                        write!(&mut self.buf, "{}", key).unwrap();
-                    }
-                    encode::length(&mut self.buf, Key::STR_LENGTH);
-                    let key = &self.buf[start_idx..start_idx + Key::STR_LENGTH];
-                    let header = &self.buf[start_idx + Key::STR_LENGTH..];
-                    let mut bufs = [
-                        IoSlice::new(header),
-                        IoSlice::new(key),
-                        IoSlice::new(CRLF.as_bytes()),
-                    ];
-                    let res = self.conn.write_vectored(&mut bufs, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
+        match response {
+            // Responses to GET.
+            // Returns the `key` as bulk string.
+            Response::Added(key) | Response::AlreadyStored(key) => {
+                let start_idx = self.buf.len();
+                {
+                    use std::io::Write; // Don't want to use this anywhere else.
+                    write!(&mut self.buf, "{}", key).unwrap();
                 }
+                encode::length(&mut self.buf, Key::STR_LENGTH);
+                let key = &self.buf[start_idx..start_idx + Key::STR_LENGTH];
+                let header = &self.buf[start_idx + Key::STR_LENGTH..];
+                let mut bufs = [
+                    IoSlice::new(header),
+                    IoSlice::new(key),
+                    IoSlice::new(CRLF.as_bytes()),
+                ];
+                let res = self.conn.write_vectored(&mut bufs, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
 
-                // Responses to DEL.
-                // Returns 1 as integer.
-                Response::BlobRemoved => {
-                    let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                    let res = self.conn.write(value, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
-                // Returns 0 as integer.
-                Response::BlobNotRemoved => {
-                    let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                    let res = self.conn.write(value, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
+            // Responses to DEL.
+            // Returns 1 as integer.
+            Response::BlobRemoved => {
+                let (value, start_idx) = encode::integer(&mut self.buf, 1);
+                let res = self.conn.write(value, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
+            // Returns 0 as integer.
+            Response::BlobNotRemoved => {
+                let (value, start_idx) = encode::integer(&mut self.buf, 0);
+                let res = self.conn.write(value, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
 
-                // Responses to GET.
-                // Returns the `blob` as bulk string.
-                Response::Blob(blob) => {
-                    let (header, start_idx) = encode::length(&mut self.buf, blob.len());
-                    let res = blob
-                        .write(header, CRLF.as_bytes(), &mut self.conn, timeout)
-                        .await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
-                // Returns the `NIL` string as simple string.
-                Response::BlobNotFound => self.conn.write(NIL.as_bytes(), timeout).await,
+            // Responses to GET.
+            // Returns the `blob` as bulk string.
+            Response::Blob(blob) => {
+                let (header, start_idx) = encode::length(&mut self.buf, blob.len());
+                let res = blob
+                    .write(header, CRLF.as_bytes(), &mut self.conn, timeout)
+                    .await;
+                self.buf.truncate(start_idx);
+                res
+            }
+            // Returns the `NIL` string as simple string.
+            Response::BlobNotFound => self.conn.write(NIL.as_bytes(), timeout).await,
 
-                // Responses to EXISTS.
-                // Returns 1 as integer.
-                Response::ContainsBlob => {
-                    let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                    let res = self.conn.write(value, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
-                // Returns 0 as integer.
-                Response::NotContainBlob => {
-                    let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                    let res = self.conn.write(value, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
+            // Responses to EXISTS.
+            // Returns 1 as integer.
+            Response::ContainsBlob => {
+                let (value, start_idx) = encode::integer(&mut self.buf, 1);
+                let res = self.conn.write(value, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
+            // Returns 0 as integer.
+            Response::NotContainBlob => {
+                let (value, start_idx) = encode::integer(&mut self.buf, 0);
+                let res = self.conn.write(value, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
 
-                // Response to DBSIZE.
-                // Returns the `amount` as integer.
-                Response::ContainsBlobs(amount) => {
-                    let (value, start_idx) = encode::integer(&mut self.buf, amount);
-                    let res = self.conn.write(value, timeout).await;
-                    self.buf.truncate(start_idx);
-                    res
-                }
+            // Response to DBSIZE.
+            // Returns the `amount` as integer.
+            Response::ContainsBlobs(amount) => {
+                let (value, start_idx) = encode::integer(&mut self.buf, amount);
+                let res = self.conn.write(value, timeout).await;
+                self.buf.truncate(start_idx);
+                res
+            }
 
-                // Generic server error.
-                // Returns a server error as simple string.
-                Response::Error => {
-                    self.conn
-                        .write(Error::SERVER_ERROR.as_bytes(), timeout)
-                        .await
-                }
+            // Generic server error.
+            // Returns a server error as simple string.
+            Response::Error => {
+                self.conn
+                    .write(Error::SERVER_ERROR.as_bytes(), timeout)
+                    .await
             }
         }
     }
 
-    fn reply_to_error<'a>(
+    async fn reply_to_error<'a>(
         &'a mut self,
         err: Self::RequestError,
         timeout: Duration,
-    ) -> Self::ReplyWithError<'a> {
-        async move {
-            match err {
-                RequestError::User(err, ..) => self.conn.write(err.as_bytes(), timeout).await,
-                RequestError::Conn(..) => Ok(()),
-            }
+    ) -> Result<(), Self::ResponseError> {
+        match err {
+            RequestError::User(err, ..) => self.conn.write(err.as_bytes(), timeout).await,
+            RequestError::Conn(..) => Ok(()),
         }
     }
+
+    type ResponseError = C::Error;
 }
 
 /// Value send by the client.
