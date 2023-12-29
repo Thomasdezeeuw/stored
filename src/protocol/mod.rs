@@ -41,12 +41,10 @@ pub trait Protocol {
     /// stop.
     ///
     /// [fatal]: IsFatal::is_fatal
-    fn next_request<'a>(&'a mut self, timeout: Duration) -> Self::NextRequest<'a>;
-
-    /// [`Future`] behind [`Protocol::next_request`].
-    type NextRequest<'a>: Future<Output = Result<Option<Request<'a>>, Self::RequestError>> + 'a
-    where
-        Self: 'a;
+    fn next_request<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<Option<Request<'a>>, Self::RequestError>>;
 
     /// Error returned by [`Protocol::next_request`].
     ///
@@ -56,29 +54,23 @@ pub trait Protocol {
     type RequestError: IsFatal + fmt::Display;
 
     /// Reply to a request with `response`.
-    fn reply<'a, B>(&'a mut self, response: Response<B>, timeout: Duration) -> Self::Reply<'a, B>
+    fn reply<B>(
+        &mut self,
+        response: Response<B>,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), Self::ResponseError>>
     where
-        B: Blob + 'a;
-
-    /// [`Future`] behind [`Protocol::reply`].
-    type Reply<'a, B>: Future<Output = Result<(), Self::ResponseError>> + 'a
-    where
-        Self: 'a,
-        B: Blob + 'a;
+        B: Blob;
 
     /// Reply to a (broken) request with `error`.
-    fn reply_to_error<'a>(
-        &'a mut self,
+    fn reply_to_error(
+        &mut self,
         error: Self::RequestError,
         timeout: Duration,
-    ) -> Self::ReplyWithError<'a>;
-
-    /// [`Future`] behind [`Protocol::reply`].
-    type ReplyWithError<'a>: Future<Output = Result<(), Self::ResponseError>> + 'a
-    where
-        Self: 'a;
+    ) -> impl Future<Output = Result<(), Self::ResponseError>>;
 
     /// Error returned by [`Protocol::reply`] and [`Protocol::reply_to_error`].
+    ///
     /// This error is considered fatal for the connection and will stop further
     /// processing.
     type ResponseError: fmt::Display;
