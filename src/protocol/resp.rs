@@ -7,7 +7,6 @@ use std::fmt;
 use std::io::IoSlice;
 use std::mem::replace;
 use std::ops::Range;
-use std::time::Duration;
 
 use crate::key::{InvalidKeyStr, Key};
 use crate::protocol::{Connection, IsFatal, Protocol, Request, Response};
@@ -42,10 +41,7 @@ where
     /// Read a single argument from the connection.
     ///
     /// Returns `None` if no more arguments can be read from the connection.
-    async fn read_argument(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<Option<Value>, RequestError<C::Error>> {
+    async fn read_argument(&mut self) -> Result<Option<Value>, RequestError<C::Error>> {
         loop {
             match parse::argument(self.buf()) {
                 // Successfully parsed an argument.
@@ -60,7 +56,7 @@ where
                 }
                 // We don't have a complete argument in the buffer, read some
                 // more bytes.
-                Ok(None) => match self.read(timeout).await {
+                Ok(None) => match self.read().await {
                     // Read some bytes, let's try parsing again.
                     Ok(true) => continue,
                     // Read everything, but still got some bytes left, so we got
@@ -86,8 +82,8 @@ where
     ///
     /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
     /// from the connection.
-    async fn read_key(&mut self, timeout: Duration) -> Result<Key, RequestError<C::Error>> {
-        match self.read_string_idx(timeout).await {
+    async fn read_key(&mut self) -> Result<Key, RequestError<C::Error>> {
+        match self.read_string_idx().await {
             Ok(idx) => match Key::from_byte_str(&self.buf[idx]) {
                 Ok(key) => Ok(key),
                 Err(InvalidKeyStr) => Err(RequestError::User(Error::INVALID_KEY, false)),
@@ -101,8 +97,8 @@ where
     ///
     /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
     /// from the connection.
-    async fn read_string(&mut self, timeout: Duration) -> Result<&[u8], RequestError<C::Error>> {
-        match self.read_string_idx(timeout).await {
+    async fn read_string(&mut self) -> Result<&[u8], RequestError<C::Error>> {
+        match self.read_string_idx().await {
             Ok(idx) => Ok(&self.buf[idx]),
             Err(err) => Err(err),
         }
@@ -110,11 +106,8 @@ where
 
     /// Same as [`Resp::parse_string`] but returns the index range instead of
     /// the actual string.
-    async fn read_string_idx(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<Range<usize>, RequestError<C::Error>> {
-        match self.read_argument(timeout).await {
+    async fn read_string_idx(&mut self) -> Result<Range<usize>, RequestError<C::Error>> {
+        match self.read_argument().await {
             Ok(Some(Value::String(Some(idx)))) => Ok(idx),
             Ok(Some(_)) => Err(RequestError::User(Error::INVALID_ARG_TYPE_EXP_STR, false)),
             Ok(None) => return Err(RequestError::User(Error::INCOMPLETE, true)),
@@ -129,12 +122,11 @@ where
         &mut self,
         length: usize,
         expected: usize,
-        timeout: Duration,
     ) -> Result<(), RequestError<C::Error>> {
         if length == expected + 1 {
             Ok(())
         } else {
-            let fatal = self.recover(length - 1, timeout).await.is_err();
+            let fatal = self.recover(length - 1).await.is_err();
             Err(RequestError::User(Error::INVALID_ARGUMENTS, fatal))
         }
     }
@@ -146,10 +138,10 @@ where
     /// removed from the connection. If this returns `Err(())` we failed to
     /// remove the arguments from the connection and it should be considered
     /// broken.
-    async fn recover(&mut self, arguments: usize, timeout: Duration) -> Result<(), ()> {
+    async fn recover(&mut self, arguments: usize) -> Result<(), ()> {
         let mut iter = 0..arguments;
         while iter.next().is_some() {
-            match self.read_argument(timeout).await {
+            match self.read_argument().await {
                 Ok(Some(Value::Array(Some(n)))) => iter.end += n, // Great, more stuff to ignore.
                 Ok(Some(_)) => continue,
                 // Couldn't delete all arguments from the connection, we'll
@@ -166,11 +158,11 @@ where
     ///
     /// Returns `Ok(true)` if at least 1 byte was read, `Ok(false)` if we read 0
     /// bytes (thus read all bytes in the connection) and an error otherwise.
-    async fn read(&mut self, timeout: Duration) -> Result<bool, C::Error> {
+    async fn read(&mut self) -> Result<bool, C::Error> {
         self.prepare_buf();
         let buf = replace(&mut self.buf, Vec::new());
         let before_length = buf.len();
-        self.buf = self.conn.read_into(buf, timeout).await?;
+        self.buf = self.conn.read_into(buf).await?;
         Ok(before_length != self.buf.len())
     }
 
@@ -194,22 +186,19 @@ impl<C> Protocol for Resp<C>
 where
     C: Connection + 'static,
 {
-    async fn next_request<'a>(
-        &'a mut self,
-        timeout: Duration,
-    ) -> Result<Option<Request<'a>>, Self::RequestError> {
-        match self.read_argument(timeout).await {
+    async fn next_request<'a>(&'a mut self) -> Result<Option<Request<'a>>, Self::RequestError> {
+        match self.read_argument().await {
             Ok(Some(Value::Array(Some(length)))) => {
                 if length == 0 {
-                    let fatal = self.recover(length, timeout).await.is_err();
+                    let fatal = self.recover(length).await.is_err();
                     return Err(RequestError::User(Error::MISSING_COMMAND, fatal));
                 }
 
-                let cmd = match self.read_argument(timeout).await {
+                let cmd = match self.read_argument().await {
                     Ok(Some(Value::String(Some(idx)))) => &self.buf[idx],
                     // Unexpected argument type.
                     Ok(Some(_)) => {
-                        let fatal = self.recover(length - 1, timeout).await.is_err();
+                        let fatal = self.recover(length - 1).await.is_err();
                         return Err(RequestError::User(Error::INVALID_COMMAND_TYPE, fatal));
                     }
                     // Missing command.
@@ -220,39 +209,39 @@ where
 
                 match cmd {
                     b"GET" => {
-                        self.ensure_arguments(length, 1, timeout).await?;
-                        match self.read_key(timeout).await {
+                        self.ensure_arguments(length, 1).await?;
+                        match self.read_key().await {
                             Ok(key) => Ok(Some(Request::GetBlob(key))),
                             Err(err) => Err(err),
                         }
                     }
                     b"SET" => {
-                        self.ensure_arguments(length, 1, timeout).await?;
-                        match self.read_string(timeout).await {
+                        self.ensure_arguments(length, 1).await?;
+                        match self.read_string().await {
                             Ok(blob) => Ok(Some(Request::AddBlob(blob))),
                             Err(err) => Err(err),
                         }
                     }
                     b"EXISTS" => {
-                        self.ensure_arguments(length, 1, timeout).await?;
-                        match self.read_key(timeout).await {
+                        self.ensure_arguments(length, 1).await?;
+                        match self.read_key().await {
                             Ok(key) => Ok(Some(Request::ContainsBlob(key))),
                             Err(err) => Err(err),
                         }
                     }
                     b"DEL" => {
-                        self.ensure_arguments(length, 1, timeout).await?;
-                        match self.read_key(timeout).await {
+                        self.ensure_arguments(length, 1).await?;
+                        match self.read_key().await {
                             Ok(key) => Ok(Some(Request::RemoveBlob(key))),
                             Err(err) => Err(err),
                         }
                     }
                     b"DBSIZE" => {
-                        self.ensure_arguments(length, 0, timeout).await?;
+                        self.ensure_arguments(length, 0).await?;
                         Ok(Some(Request::BlobStored))
                     }
                     _ => {
-                        let fatal = self.recover(length - 1, timeout).await.is_err();
+                        let fatal = self.recover(length - 1).await.is_err();
                         Err(RequestError::User(Error::UNKNOWN_COMMAND, fatal))
                     }
                 }
@@ -273,11 +262,7 @@ where
 
     type RequestError = RequestError<C::Error>;
 
-    async fn reply<B>(
-        &mut self,
-        response: Response<B>,
-        timeout: Duration,
-    ) -> Result<(), Self::ResponseError>
+    async fn reply<B>(&mut self, response: Response<B>) -> Result<(), Self::ResponseError>
     where
         B: Blob,
     {
@@ -301,7 +286,7 @@ where
                     IoSlice::new(key),
                     IoSlice::new(CRLF.as_bytes()),
                 ];
-                let res = self.conn.write_vectored(&mut bufs, timeout).await;
+                let res = self.conn.write_vectored(&mut bufs).await;
                 self.buf.truncate(start_idx);
                 res
             }
@@ -310,14 +295,14 @@ where
             // Returns 1 as integer.
             Response::BlobRemoved => {
                 let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                let res = self.conn.write(value, timeout).await;
+                let res = self.conn.write(value).await;
                 self.buf.truncate(start_idx);
                 res
             }
             // Returns 0 as integer.
             Response::BlobNotRemoved => {
                 let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                let res = self.conn.write(value, timeout).await;
+                let res = self.conn.write(value).await;
                 self.buf.truncate(start_idx);
                 res
             }
@@ -326,27 +311,25 @@ where
             // Returns the `blob` as bulk string.
             Response::Blob(blob) => {
                 let (header, start_idx) = encode::length(&mut self.buf, blob.len());
-                let res = blob
-                    .write(header, CRLF.as_bytes(), &mut self.conn, timeout)
-                    .await;
+                let res = blob.write(header, CRLF.as_bytes(), &mut self.conn).await;
                 self.buf.truncate(start_idx);
                 res
             }
             // Returns the `NIL` string as simple string.
-            Response::BlobNotFound => self.conn.write(NIL.as_bytes(), timeout).await,
+            Response::BlobNotFound => self.conn.write(NIL.as_bytes()).await,
 
             // Responses to EXISTS.
             // Returns 1 as integer.
             Response::ContainsBlob => {
                 let (value, start_idx) = encode::integer(&mut self.buf, 1);
-                let res = self.conn.write(value, timeout).await;
+                let res = self.conn.write(value).await;
                 self.buf.truncate(start_idx);
                 res
             }
             // Returns 0 as integer.
             Response::NotContainBlob => {
                 let (value, start_idx) = encode::integer(&mut self.buf, 0);
-                let res = self.conn.write(value, timeout).await;
+                let res = self.conn.write(value).await;
                 self.buf.truncate(start_idx);
                 res
             }
@@ -355,28 +338,23 @@ where
             // Returns the `amount` as integer.
             Response::ContainsBlobs(amount) => {
                 let (value, start_idx) = encode::integer(&mut self.buf, amount);
-                let res = self.conn.write(value, timeout).await;
+                let res = self.conn.write(value).await;
                 self.buf.truncate(start_idx);
                 res
             }
 
             // Generic server error.
             // Returns a server error as simple string.
-            Response::Error => {
-                self.conn
-                    .write(Error::SERVER_ERROR.as_bytes(), timeout)
-                    .await
-            }
+            Response::Error => self.conn.write(Error::SERVER_ERROR.as_bytes()).await,
         }
     }
 
     async fn reply_to_error<'a>(
         &'a mut self,
         err: Self::RequestError,
-        timeout: Duration,
     ) -> Result<(), Self::ResponseError> {
         match err {
-            RequestError::User(err, ..) => self.conn.write(err.as_bytes(), timeout).await,
+            RequestError::User(err, ..) => self.conn.write(err.as_bytes()).await,
             RequestError::Conn(..) => Ok(()),
         }
     }

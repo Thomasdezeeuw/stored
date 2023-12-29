@@ -58,14 +58,16 @@ where
     debug!(source = as_display!(source); "accepted connection");
 
     loop {
-        let request = match protocol.next_request(config.read_timeout()).await {
+        // TODO: add timeout.
+        let request = match protocol.next_request().await {
             Ok(Some(request)) => request,
             Ok(None) => break, // Done.
             Err(err) => {
                 let is_fatal = err.is_fatal();
                 warn!(source = as_display!(source), fatal = as_display!(is_fatal);
                     "error reading next request: {err}");
-                match protocol.reply_to_error(err, config.write_timeout()).await {
+                // TODO: add timeout.
+                match protocol.reply_to_error(err).await {
                     Ok(()) if is_fatal => break,
                     Ok(()) => continue,
                     Err(err) => {
@@ -120,7 +122,8 @@ where
         info!(target: "request", source = as_display!(source), request = as_display!(request_info),
             response = as_display!(response), elapsed = as_debug!(elapsed); "processed request");
 
-        match protocol.reply(response, config.write_timeout()).await {
+        // TODO: add timeout.
+        match protocol.reply(response).await {
             Ok(()) => {} // On to the next request.
             Err(err) => {
                 return Err(Error {

@@ -12,7 +12,6 @@ use std::io::IoSlice;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
-use std::time::Duration;
 
 use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, Rpc, RpcMessage};
@@ -54,7 +53,6 @@ impl storage::Blob for Blob {
         header: &'a [u8],
         trailer: &'a [u8],
         mut conn: C,
-        timeout: Duration,
     ) -> Self::Write<'a, C>
     where
         C: Connection + 'a,
@@ -65,7 +63,7 @@ impl storage::Blob for Blob {
                 IoSlice::new(&*self.0),
                 IoSlice::new(trailer),
             ];
-            conn.write_vectored(&mut bufs, timeout).await
+            conn.write_vectored(&mut bufs).await
         }
     }
 
