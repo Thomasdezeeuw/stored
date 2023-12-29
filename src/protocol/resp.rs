@@ -619,29 +619,19 @@ mod encode {
     //!
     //! <https://redis.io/topics/protocol>.
 
-    /// Encode `length` onto `buf` (without changing it's current contents),
-    /// returns the bytes with the length line and the index to which to
-    /// truncate the buffer to restore it.
-    pub(super) fn length<'a>(buf: &'a mut Vec<u8>, length: usize) -> (&'a [u8], usize) {
-        let start_idx = length_idx(buf, length);
-        (&buf[start_idx..], start_idx)
-    }
-
-    /// Encodes `length` onto `buf` (without changing it's current contents),
-    /// returns the index at which the encoded length starts (end at the end of
-    /// the buffer).
-    pub(super) fn length_idx<'a>(buf: &'a mut Vec<u8>, length: usize) -> usize {
+    /// Encode `length` onto `buf` (without changing it's current contents) as
+    /// length of a bulk string.
+    pub(super) fn length(buf: &mut Vec<u8>, length: usize) {
         int(buf, b'$', length)
     }
 
     /// Encode `value` onto `buf` (without changing it's current contents).
-    pub(super) fn integer<'a>(buf: &'a mut Vec<u8>, value: usize) {
-        int(buf, b':', value);
+    pub(super) fn integer(buf: &mut Vec<u8>, value: usize) {
+        int(buf, b':', value)
     }
 
     /// Encode an integer with `prefix`.
-    fn int<'a>(buf: &'a mut Vec<u8>, prefix: u8, value: usize) -> usize {
-        let start_idx = buf.len();
+    fn int(buf: &mut Vec<u8>, prefix: u8, value: usize) {
         let mut buffer = itoa::Buffer::new();
         let int_bytes = buffer.format(value).as_bytes();
         buf.reserve(int_bytes.len() + 3); // 3 = prefix + CRLF.
@@ -649,6 +639,5 @@ mod encode {
         buf.extend_from_slice(int_bytes);
         buf.push(b'\r');
         buf.push(b'\n');
-        start_idx
     }
 }
