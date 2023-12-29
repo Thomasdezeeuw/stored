@@ -1,4 +1,6 @@
 //! Key of a blob.
+//!
+//! See [`Key`].
 
 use std::error::Error;
 use std::hash::{Hash, Hasher};
