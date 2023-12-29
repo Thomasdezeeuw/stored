@@ -11,7 +11,7 @@ heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "c9dd
 heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "c9dd1468dd22a47766b00a5973bab27e88d46916" }
 itoa              = { version = "1.0.4",   default-features = false }
 log               = { version = "0.4.17",  default-features = false, features = ["kv_unstable_std", "release_max_level_info"] }
-ring              = { version = "0.16.20", default-features = false, features = ["std"] }
+ring              = { version = "0.17", default-features = false, features = ["std"] }
 serde             = { version = "1.0.145", default-features = false, features = ["derive"] }
 std-logger        = { version = "0.4.4",   default-features = false, features = ["timestamp", "log-panic", "nightly"] }
 toml              = { version = "0.5.9",   default-features = false }
