@@ -1,9 +1,13 @@
 [package]
-name    = "stored"
-version = "0.2.0"
-authors = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
-edition = "2018"
-publish = false
+name        = "stored"
+description = "Store*d* (pronounced store-daemon, or just stored) is a distributed immutable blob store. Stored is not a key-value store, as the key isn't the decided by the user but by the SHA-512 checksum of the stored blob."
+version     = "0.2.0"
+publish     = false # In development.
+authors     = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+license     = "MIT"
+repository  = "https://github.com/Thomasdezeeuw/stored"
+readme      = "README.md"
+edition     = "2021"
 
 [dependencies]
 # TODO: replace with published crates.
