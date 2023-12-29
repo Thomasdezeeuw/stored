@@ -202,11 +202,7 @@ where
         let start = self.buf.len();
         encode::length(&mut self.buf, blob.len());
         let header = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
-        self.buf = blob
-            .write(header, CRLF.as_bytes(), &mut self.conn)
-            .await?
-            .0
-            .reset();
+        self.buf = blob.write(header, CRLF, &mut self.conn).await?.0.reset();
         Ok(())
     }
 
