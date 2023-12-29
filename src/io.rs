@@ -23,7 +23,7 @@ pub trait Connection: Read + Write {
 
 impl Connection for TcpStream {
     async fn source(&mut self) -> Result<Self::Source, io::Error> {
-        self.local_addr()
+        self.peer_addr()
     }
 
     type Source = std::net::SocketAddr;
