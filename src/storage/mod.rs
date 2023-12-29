@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::io;
 
-use heph_rt::io::Write;
+use heph_rt::io::{Buf, Write};
 
 use crate::key::Key;
 
@@ -16,13 +16,18 @@ pub trait Blob {
     fn len(&self) -> usize;
 
     /// Write the blob with `header` and `trailer` to `connection`.
-    fn write<'a, C>(
+    ///
+    /// The `write` call will attempt to use the most efficient I/O possible,
+    /// ranging from `sendfile(2)` to vectored I/O.
+    fn write<'a, H, T, C>(
         &'a self,
-        header: &'a [u8],
-        trailer: &'static [u8],
+        header: H,
+        trailer: T,
         connection: C,
-    ) -> impl Future<Output = Result<(), io::Error>> + 'a
+    ) -> impl Future<Output = Result<(H, T), io::Error>> + 'a
     where
+        H: Buf,
+        T: Buf,
         C: Write + 'a;
 }
 
