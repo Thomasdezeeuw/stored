@@ -20,11 +20,10 @@ use crate::storage::{AddError, Storage};
 
 /// Controller configuration.
 pub trait Config {
-    /// Read timeout, passed to [`Protocol::next_request`].
+    /// Read timeout.
     fn read_timeout(&self) -> Duration;
 
-    /// Write timeout, passed to [`Protocol::reply`] and
-    /// [`Protocol::reply_to_error`].
+    /// Write timeout.
     fn write_timeout(&self) -> Duration;
 }
 
