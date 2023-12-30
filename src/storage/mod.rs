@@ -28,7 +28,7 @@ pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncI
     // NOTE: these type are only here to enforce the trait bounds. This could be
     // replaced with the `associated_type_bounds` unstable feature, once stable.
     /// Async iterator type.
-    type AsyncIter: AsyncIterator<Item = Self::Buf> + Unpin + 'static;
+    type AsyncIter: AsyncIterator<Item = Self::Buf> + 'static;
     /// Buffer type used in the async iteration.
     type Buf: Buf;
 
