@@ -55,7 +55,7 @@ impl storage::Blob for Blob {
         self.0.len()
     }
 
-    async fn write<H, T, C>(self, header: H, trailer: T, mut conn: C) -> Result<(H, T), io::Error>
+    async fn write<H, T, C>(self, header: H, trailer: T, mut conn: C) -> io::Result<(H, T)>
     where
         H: Buf,
         T: Buf,
