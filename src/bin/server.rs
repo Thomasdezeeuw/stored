@@ -1,7 +1,7 @@
 use std::io;
 use std::process::ExitCode;
 
-use heph::actor::NewActor;
+use heph::actor::{actor_fn, NewActor};
 use heph_rt::net::tcp;
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::Runtime;
@@ -40,7 +40,7 @@ fn try_main() -> Result<(), heph_rt::Error> {
 
     runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
         let storage = mem::Storage::from(storage_handle);
-        let new_actor = (controller::actor as fn(_, _, _, _) -> _).map_arg(move |stream| {
+        let new_actor = actor_fn(controller::actor).map_arg(move |stream| {
             let config = controller::DefaultConfig;
             let protocol = Resp::new(stream);
             (config, protocol, storage.clone())
