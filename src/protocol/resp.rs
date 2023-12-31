@@ -7,6 +7,8 @@ use std::mem::replace;
 use std::ops::Range;
 use std::{fmt, io};
 
+use heph_rt::timer::DeadlinePassed;
+
 use crate::io::{Connection, WriteBuf};
 use crate::key::{InvalidKeyStr, Key};
 use crate::protocol::{IsFatal, Protocol, Request, Response};
@@ -381,6 +383,12 @@ pub enum RequestError {
     User(Error, bool),
     /// Connection error.
     Conn(io::Error),
+}
+
+impl From<DeadlinePassed> for RequestError {
+    fn from(err: DeadlinePassed) -> RequestError {
+        RequestError::Conn(err.into())
+    }
 }
 
 impl IsFatal for RequestError {
