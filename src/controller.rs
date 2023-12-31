@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use heph::actor;
 use heph::supervisor::SupervisorStrategy;
 use heph_rt::timer::{DeadlinePassed, Timer};
+use heph_rt::Access;
 use log::{as_debug, as_display, debug, error, info, warn};
 
 use crate::key::Key;
@@ -56,7 +57,7 @@ where
     P::ResponseError: From<DeadlinePassed>,
     S: Storage,
     S::Error: fmt::Display,
-    RT: heph_rt::Access + Clone,
+    RT: Access + Clone,
 {
     let accepted = Instant::now();
     let source = match protocol.source().await {
