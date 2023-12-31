@@ -12,6 +12,7 @@ use std::{fmt, io};
 use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
 use heph_http::head::{Header, HeaderName, Headers, Method, StatusCode};
 use heph_http::server::Connection;
+use heph_rt::timer::DeadlinePassed;
 
 use crate::key::{InvalidKeyStr, Key};
 use crate::protocol::{IsFatal, Protocol, Request, Response};
@@ -238,6 +239,12 @@ pub enum RequestError {
     BodyNotEmpty,
     /// Connection error.
     Conn(heph_http::server::RequestError),
+}
+
+impl From<DeadlinePassed> for RequestError {
+    fn from(err: DeadlinePassed) -> RequestError {
+        RequestError::Conn(heph_http::server::RequestError::Io(err.into()))
+    }
 }
 
 impl IsFatal for RequestError {
