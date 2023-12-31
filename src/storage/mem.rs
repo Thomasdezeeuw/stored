@@ -12,6 +12,7 @@ use std::hash::BuildHasherDefault;
 use std::io;
 use std::sync::Arc;
 
+use heph::actor::actor_fn;
 use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::supervisor::NoSupervisor;
@@ -30,7 +31,7 @@ use crate::storage::{self, AddError};
 pub fn new() -> (Handle, impl Future<Output = ()>) {
     let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
     let (future, writer) =
-        ActorFuture::new(NoSupervisor, writer as fn(_, _) -> _, Writer { inner: w }).unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
+        ActorFuture::new(NoSupervisor, actor_fn(writer), Writer { inner: w }).unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
     (Handle { writer, handle }, future)
 }
 
