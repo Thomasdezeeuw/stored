@@ -12,9 +12,9 @@ edition     = "2021"
 [dependencies]
 # TODO: replace with published crates.
 left-right        = { git = "https://github.com/Thomasdezeeuw/left-right", rev = "2c70f732c84964b78972465309caff0a6d27cb7c", default-features = false }
-heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "1358eb379f8f5b74d95b6e08b3ce0fc7e379839d", default-features = false }
-heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "1358eb379f8f5b74d95b6e08b3ce0fc7e379839d", default-features = false }
-heph-http         = { git = "https://github.com/Thomasdezeeuw/heph", rev = "1358eb379f8f5b74d95b6e08b3ce0fc7e379839d", default-features = false }
+heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "d64a504aa359dc14d448a8a47b907f8dfd761ae9", default-features = false }
+heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "d64a504aa359dc14d448a8a47b907f8dfd761ae9", default-features = false }
+heph-http         = { git = "https://github.com/Thomasdezeeuw/heph", rev = "d64a504aa359dc14d448a8a47b907f8dfd761ae9", default-features = false }
 itoa              = { version = "1.0.4", default-features = false }
 log               = { version = "0.4.17", default-features = false, features = ["kv_unstable_std", "release_max_level_info"] }
 ring              = { version = "0.17", default-features = false }

@@ -45,7 +45,7 @@ impl Config for DefaultConfig {
 ///
 /// `source` is used in logging and should be socket address or similar.
 pub async fn actor<C, P, S, RT>(
-    ctx: actor::Context<!, RT>,
+    mut ctx: actor::Context<!, RT>,
     config: C,
     mut protocol: P,
     mut storage: S,
@@ -65,7 +65,7 @@ where
     debug!(source = as_display!(source); "accepted connection");
 
     loop {
-        let timer = Timer::after(ctx.runtime_ref().clone(), config.read_timeout());
+        let timer = Timer::after(ctx.runtime(), config.read_timeout());
         let request = match either(protocol.next_request(), timer).await {
             Ok(Ok(Some(request))) => request,
             Ok(Ok(None)) => break, // Done.
@@ -73,7 +73,7 @@ where
                 let is_fatal = err.is_fatal();
                 warn!(source = as_display!(source), fatal = as_display!(is_fatal);
                     "error reading next request: {err}");
-                let timer = Timer::after(ctx.runtime_ref().clone(), config.write_timeout());
+                let timer = Timer::after(ctx.runtime(), config.write_timeout());
                 match either(protocol.reply_to_error(err), timer).await {
                     Ok(Ok(())) if is_fatal => break,
                     Ok(Ok(())) => continue,
@@ -132,7 +132,7 @@ where
         info!(target: "request", source = as_display!(source), request = as_display!(request_info),
             response = as_display!(response), elapsed = as_debug!(elapsed); "processed request");
 
-        let timer = Timer::after(ctx.runtime_ref().clone(), config.write_timeout());
+        let timer = Timer::after(ctx.runtime(), config.write_timeout());
         match either(protocol.reply(response), timer).await {
             Ok(Ok(())) => {} // On to the next request.
             Ok(Err(err)) => return Err(Error::new("writing response", err)),
