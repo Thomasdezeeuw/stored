@@ -3,10 +3,7 @@
 //!
 //! The implementation starts with [`Http`].
 
-#![allow(warnings)] // FIXME: remove.
-
 use std::mem::replace;
-use std::ops::Range;
 use std::{fmt, io};
 
 use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
@@ -14,7 +11,7 @@ use heph_http::head::{Header, HeaderName, Headers, Method, StatusCode};
 use heph_http::server::Connection;
 use heph_rt::timer::DeadlinePassed;
 
-use crate::key::{InvalidKeyStr, Key};
+use crate::key::Key;
 use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::Blob;
 
@@ -28,7 +25,8 @@ pub struct Http {
 }
 
 impl Http {
-    fn new(mut conn: Connection) -> io::Result<Http> {
+    /// Create a new HTTP [`Protocol`].
+    pub fn new(mut conn: Connection) -> io::Result<Http> {
         conn.set_nodelay(true)?;
         Ok(Http {
             conn,
@@ -141,7 +139,7 @@ impl Protocol for Http {
                             Err(RequestError::BodyNotEmpty)
                         }
                     }
-                    method => Err(RequestError::NotFound),
+                    _ => Err(RequestError::NotFound),
                 }
             }
             Ok(None) => Ok(None),
