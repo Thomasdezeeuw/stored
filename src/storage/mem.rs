@@ -86,7 +86,7 @@ async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: Write
         // Don't care about about whether or not the other end got the response.
         let _ = match request {
             WriteRequest::Add(msg) => {
-                msg.handle(|blob| async { writer.add_blob(blob).await })
+                msg.handle(|(blob, key)| async { writer.add_blob(blob, key).await })
                     .await
             }
             WriteRequest::Remove(msg) => {
@@ -100,13 +100,13 @@ async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: Write
 enum WriteRequest {
     /// Add `Blob` to storage. Returns `Ok(Key)` if the blob was added,
     /// `Err(key)` if the blob is already stored.
-    Add(RpcMessage<Blob, Result<Key, Key>>),
+    Add(RpcMessage<(Blob, Key), Result<Key, Key>>),
     /// Remove blob with `Key` from the storage. Returns true if the blob was
     /// removed, false if the blob was not in the storage.
     Remove(RpcMessage<Key, bool>),
 }
 
-from_message!(WriteRequest::Add(Blob) -> Result<Key, Key>);
+from_message!(WriteRequest::Add((Blob, Key)) -> Result<Key, Key>);
 from_message!(WriteRequest::Remove(Key) -> bool);
 
 /// Write access to the storage.
@@ -116,8 +116,8 @@ struct Writer {
 
 impl Writer {
     /// Add `blob` to storage.
-    async fn add_blob(&mut self, blob: Blob) -> Result<Key, Key> {
-        let key = Key::for_blob(&blob.0);
+    async fn add_blob(&mut self, blob: Blob, key: Key) -> Result<Key, Key> {
+        debug_assert_eq!(key, Key::for_blob(&blob.0));
         if self.inner.contains_key(&key) {
             Err(key)
         } else {
@@ -179,10 +179,15 @@ impl storage::Storage for Storage {
     }
 
     async fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>> {
-        match self.writer.rpc(Blob(blob.into())).await {
-            Ok(Ok(key)) => Ok(key),
-            Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
-            Err(err) => Err(AddError::Err(err)),
+        let key = Key::for_blob(&blob);
+        if self.reader.contains_key(&key) {
+            Err(AddError::AlreadyStored(key))
+        } else {
+            match self.writer.rpc((Blob(blob.into()), key)).await {
+                Ok(Ok(key)) => Ok(key),
+                Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
+                Err(err) => Err(AddError::Err(err)),
+            }
         }
     }
 
