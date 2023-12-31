@@ -15,8 +15,9 @@ use std::sync::Arc;
 use heph::actor::actor_fn;
 use heph::actor_ref::rpc::RpcError;
 use heph::actor_ref::{ActorRef, RpcMessage};
+use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::supervisor::NoSupervisor;
-use heph::{actor, from_message, ActorFuture};
+use heph::{actor, from_message};
 use heph_rt::io::{Buf, Write};
 use left_right::hashmap;
 
@@ -30,8 +31,10 @@ use crate::storage::{self, AddError};
 /// ever.
 pub fn new() -> (Handle, impl Future<Output = ()>) {
     let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
-    let (future, writer) =
-        ActorFuture::new(NoSupervisor, actor_fn(writer), Writer { inner: w }).unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
+    let (future, writer) = ActorFutureBuilder::new()
+        .with_inbox_size(InboxSize::MAX)
+        .build(NoSupervisor, actor_fn(writer), Writer { inner: w })
+        .unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
     (Handle { writer, handle }, future)
 }
 
