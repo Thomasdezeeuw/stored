@@ -160,7 +160,7 @@ where
     ///
     /// Returns `Ok(true)` if at least 1 byte was read, `Ok(false)` if we read 0
     /// bytes (thus read all bytes in the connection) and an error otherwise.
-    async fn read(&mut self) -> Result<bool, io::Error> {
+    async fn read(&mut self) -> io::Result<bool> {
         self.prepare_buf();
         let buf = replace(&mut self.buf, Vec::new());
         let before_length = buf.len();
@@ -179,14 +179,14 @@ where
     }
 
     /// Write `value` as integer  response.
-    async fn write_integer(&mut self, value: usize) -> Result<(), io::Error> {
+    async fn write_integer(&mut self, value: usize) -> io::Result<()> {
         let start = self.buf.len();
         encode::integer(&mut self.buf, value);
         self.write_part_buf(start).await
     }
 
     /// Write `key` as bulk string response.
-    async fn write_key(&mut self, key: &Key) -> Result<(), io::Error> {
+    async fn write_key(&mut self, key: &Key) -> io::Result<()> {
         let start = self.buf.len();
         encode::length(&mut self.buf, Key::STR_LENGTH);
         {
@@ -198,7 +198,7 @@ where
     }
 
     /// Write `blob` as bulk string response.
-    async fn write_blob<B: Blob>(&mut self, blob: B) -> Result<(), io::Error> {
+    async fn write_blob<B: Blob>(&mut self, blob: B) -> io::Result<()> {
         let start = self.buf.len();
         encode::length(&mut self.buf, blob.len());
         let header = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
@@ -207,19 +207,19 @@ where
     }
 
     /// Write a nill string response.
-    async fn write_nil_string(&mut self) -> Result<(), io::Error> {
+    async fn write_nil_string(&mut self) -> io::Result<()> {
         self.conn.write_all(NIL).await?;
         Ok(())
     }
 
     /// Write `error` as error response.
-    async fn write_err(&mut self, err: Error) -> Result<(), io::Error> {
+    async fn write_err(&mut self, err: Error) -> io::Result<()> {
         self.conn.write_all(err.as_bytes()).await?;
         Ok(())
     }
 
     /// Write `self.buf[start..]` as response.
-    async fn write_part_buf(&mut self, start: usize) -> Result<(), io::Error> {
+    async fn write_part_buf(&mut self, start: usize) -> io::Result<()> {
         let buf = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
         self.buf = self.conn.write_all(buf).await?.reset();
         Ok(())

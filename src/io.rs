@@ -13,7 +13,7 @@ pub trait Connection: Read + Write {
     /// # Errors
     ///
     /// The Error is considered fatal.
-    fn source(&mut self) -> impl Future<Output = Result<Self::Source, io::Error>>;
+    fn source(&mut self) -> impl Future<Output = io::Result<Self::Source>>;
 
     /// Source of the client.
     ///
@@ -22,7 +22,7 @@ pub trait Connection: Read + Write {
 }
 
 impl Connection for TcpStream {
-    async fn source(&mut self) -> Result<Self::Source, io::Error> {
+    async fn source(&mut self) -> io::Result<Self::Source> {
         self.peer_addr()
     }
 

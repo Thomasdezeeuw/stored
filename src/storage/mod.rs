@@ -44,7 +44,7 @@ pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncI
         header: H,
         trailer: T,
         connection: C,
-    ) -> impl Future<Output = Result<(H, T), io::Error>>
+    ) -> impl Future<Output = io::Result<(H, T)>>
     where
         H: Buf,
         T: Buf,

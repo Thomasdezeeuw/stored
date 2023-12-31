@@ -28,7 +28,7 @@ pub struct Http {
 }
 
 impl Http {
-    fn new(mut conn: Connection) -> Result<Http, io::Error> {
+    fn new(mut conn: Connection) -> io::Result<Http> {
         conn.set_nodelay(true)?;
         Ok(Http {
             conn,
@@ -39,11 +39,7 @@ impl Http {
 
     /// Respond with an empty body with `status_code` and a `Location` header
     /// pointing to the blob with `key`.
-    async fn redirect_response(
-        &mut self,
-        status_code: StatusCode,
-        key: Key,
-    ) -> Result<(), io::Error> {
+    async fn redirect_response(&mut self, status_code: StatusCode, key: Key) -> io::Result<()> {
         self.buf.clear();
         {
             use std::io::Write; // Limited scope.
@@ -55,7 +51,7 @@ impl Http {
     }
 
     /// Respond without an empty.
-    async fn empty_response(&mut self, status_code: StatusCode) -> Result<(), io::Error> {
+    async fn empty_response(&mut self, status_code: StatusCode) -> io::Result<()> {
         self.conn
             .respond(status_code, &self.headers, EmptyBody)
             .await
@@ -66,23 +62,19 @@ impl Http {
         &mut self,
         status_code: StatusCode,
         body: &'static str,
-    ) -> Result<(), io::Error> {
+    ) -> io::Result<()> {
         self.conn
             .respond(status_code, &self.headers, OneshotBody::new(body))
             .await
     }
 
-    async fn integer_response(
-        &mut self,
-        status_code: StatusCode,
-        value: usize,
-    ) -> Result<(), io::Error> {
+    async fn integer_response(&mut self, status_code: StatusCode, value: usize) -> io::Result<()> {
         // TODO: avoid allocation.
         let body = OneshotBody::new(value.to_string());
         self.conn.respond(status_code, &self.headers, body).await
     }
 
-    async fn blob_response<B: Blob>(&mut self, blob: B) -> Result<(), io::Error> {
+    async fn blob_response<B: Blob>(&mut self, blob: B) -> io::Result<()> {
         let body = StreamingBody::new(blob.len(), blob.into_async_iter());
         self.conn.respond(StatusCode::OK, &self.headers, body).await
     }
