@@ -348,10 +348,7 @@ where
         }
     }
 
-    async fn reply_to_error<'a>(
-        &'a mut self,
-        err: Self::RequestError,
-    ) -> Result<(), Self::ResponseError> {
+    async fn reply_to_error(&mut self, err: Self::RequestError) -> Result<(), Self::ResponseError> {
         match err {
             RequestError::User(err, ..) => self.write_err(err).await,
             RequestError::Conn(..) => Ok(()),
@@ -495,7 +492,7 @@ mod decode {
     /// Parse an array from `buf` including starting `*` and `\r\n` end.
     ///
     /// Returns the length of the array.
-    fn array<'a>(buf: &'a [u8]) -> ParseResult<Option<usize>> {
+    fn array(buf: &[u8]) -> ParseResult<Option<usize>> {
         debug_assert_eq!(buf.first(), Some(&b'*'));
         match int(&buf[1..]) {
             // Null array. Format `*-1\r\n`.
@@ -510,7 +507,7 @@ mod decode {
     /// Parse a bulk string from `buf` including starting `$` and `\r\n` end.
     ///
     /// Returns the range bytes that make up the string in `buf`.
-    fn bulk_string<'a>(buf: &'a [u8]) -> ParseResult<Option<Range<usize>>> {
+    fn bulk_string(buf: &[u8]) -> ParseResult<Option<Range<usize>>> {
         debug_assert_eq!(buf.first(), Some(&b'$'));
         let (length, processed) = match int(&buf[1..]) {
             // Null, or nill, string. Format `$-1\r\n`.
@@ -539,7 +536,7 @@ mod decode {
     /// Parse a simple string from `buf` including starting `+` and `\r\n` end.
     ///
     /// Returns the range bytes that make up the string in `buf`.
-    fn simple_string<'a>(buf: &'a [u8]) -> ParseResult<Range<usize>> {
+    fn simple_string(buf: &[u8]) -> ParseResult<Range<usize>> {
         debug_assert_eq!(buf.first(), Some(&b'+'));
         until_crlf(&buf[1..])
     }
@@ -547,7 +544,7 @@ mod decode {
     /// Parse an error from `buf` including starting `-` and `\r\n` end.
     ///
     /// Returns the range bytes that make up the string in `buf`.
-    fn error<'a>(buf: &'a [u8]) -> ParseResult<Range<usize>> {
+    fn error(buf: &[u8]) -> ParseResult<Range<usize>> {
         debug_assert_eq!(buf.first(), Some(&b'-'));
         until_crlf(&buf[1..])
     }
@@ -555,7 +552,7 @@ mod decode {
     /// Parse an integer from `buf` including starting `:` and `\r\n` end.
     ///
     /// Returns the integer value.
-    fn integer<'a>(buf: &'a [u8]) -> ParseResult<isize> {
+    fn integer(buf: &[u8]) -> ParseResult<isize> {
         debug_assert_eq!(buf.first(), Some(&b':'));
         int(&buf[1..])
     }
@@ -566,7 +563,7 @@ mod decode {
     ///
     /// The first byte (`+` or `-`) should **not** be included. The processed
     /// bytes will always be +1 (so that the first byte can be safely ignored).
-    fn until_crlf<'a>(buf: &'a [u8]) -> ParseResult<Range<usize>> {
+    fn until_crlf(buf: &[u8]) -> ParseResult<Range<usize>> {
         let mut end: usize = 1; // Skipping first byte per the docs.
         let mut bytes = buf.iter();
         while let Some(b) = bytes.next() {

@@ -190,10 +190,7 @@ impl Protocol for Http {
         }
     }
 
-    async fn reply_to_error<'a>(
-        &'a mut self,
-        err: Self::RequestError,
-    ) -> Result<(), Self::ResponseError> {
+    async fn reply_to_error(&mut self, err: Self::RequestError) -> Result<(), Self::ResponseError> {
         match err {
             RequestError::NotFound => {
                 self.string_response(StatusCode::NOT_FOUND, "path not found")

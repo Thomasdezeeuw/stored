@@ -41,7 +41,7 @@ impl Key {
     /// # Panics
     ///
     /// This will panic if `bytes` is not of length `Key::LENGTH`.
-    pub fn from_bytes<'a>(bytes: &'a [u8]) -> &'a Key {
+    pub fn from_bytes(bytes: &[u8]) -> &Key {
         assert!(bytes.len() >= Key::LENGTH, "invalid Key length");
         // Safety: we ensured above that `bytes` is of length `Key::LENGTH` and
         // `Key` has the same layout as `[u8; Key::LENGTH]` because we use the
@@ -66,7 +66,7 @@ impl Key {
     }
 
     /// Calculate the `Key` for the provided `blob`.
-    pub fn for_blob<'a>(blob: &'a [u8]) -> Key {
+    pub fn for_blob(blob: &[u8]) -> Key {
         let result = digest(&SHA512, blob);
         Key::from_bytes(result.as_ref()).to_owned()
     }
