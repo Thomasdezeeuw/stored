@@ -310,7 +310,7 @@ impl KeyCalculator<()> {
 
     /// Add blob bytes to the calculation.
     pub fn add_bytes(&mut self, bytes: &[u8]) {
-        self.digest.update(&bytes);
+        self.digest.update(bytes);
     }
 }
 
@@ -324,7 +324,7 @@ impl<IO> KeyCalculator<IO> {
     fn update_digest(&mut self, bytes: &[u8]) {
         if self.skip_left == 0 {
             // No more bytes to skip.
-            self.digest.update(&bytes);
+            self.digest.update(bytes);
         } else if bytes.len() <= self.skip_left {
             // Need to skip all bytes.
             self.skip_left -= bytes.len();
@@ -351,7 +351,7 @@ impl<IO> KeyCalculator<IO> {
                 return;
             } else {
                 // Entire buffer was filled.
-                self.update_digest(&buf);
+                self.update_digest(buf);
                 left -= length;
             }
         }
@@ -394,7 +394,7 @@ where
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         self.io.read_to_string(buf).map(|n| {
-            self.update_digest(&buf.as_bytes());
+            self.update_digest(buf.as_bytes());
             n
         })
     }
