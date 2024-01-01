@@ -76,7 +76,7 @@ impl IntoAsyncIterator for Blob {
     type IntoAsyncIter = std::async_iter::FromIter<std::option::IntoIter<Self::Item>>;
 
     fn into_async_iter(self) -> Self::IntoAsyncIter {
-        std::async_iter::from_iter(Some(self.0).into_iter())
+        std::async_iter::from_iter(Some(self.0))
     }
 }
 
@@ -179,7 +179,7 @@ impl storage::Storage for Storage {
     }
 
     async fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>> {
-        let key = Key::for_blob(&blob);
+        let key = Key::for_blob(blob);
         if self.reader.contains_key(&key) {
             Err(AddError::AlreadyStored(key))
         } else {

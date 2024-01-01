@@ -112,7 +112,7 @@ where
         match self.read_argument().await {
             Ok(Some(Value::String(Some(idx)))) => Ok(idx),
             Ok(Some(_)) => Err(RequestError::User(Error::INVALID_ARG_TYPE_EXP_STR, false)),
-            Ok(None) => return Err(RequestError::User(Error::INCOMPLETE, true)),
+            Ok(None) => Err(RequestError::User(Error::INCOMPLETE, true)),
             Err(err) => Err(err),
         }
     }

@@ -375,7 +375,7 @@ impl Index {
             let mut buf = Vec::with_capacity(2 * 4096);
             loop {
                 buf = self.file.read(buf).await?;
-                if buf.len() == 0 {
+                if buf.is_empty() {
                     break;
                 }
 
@@ -491,7 +491,7 @@ impl DiskEntry {
 // returned pointer is valid and has a static and `Unpin` lifetime.
 unsafe impl Buf for Box<DiskEntry> {
     unsafe fn parts(&self) -> (*const u8, usize) {
-        let this: &DiskEntry = &(**self);
+        let this: &DiskEntry = self;
         // SAFETY: the layout of `DiskEntry` is valid as slice of bytes due to
         // `repr(C)`.
         ((this as *const DiskEntry).cast(), size_of::<Self>())
