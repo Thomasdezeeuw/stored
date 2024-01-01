@@ -5,6 +5,7 @@
 //!
 //! See the sub-modules for concrete implementations:
 //!  * [in-memory](mem).
+//!  * [on-disk](disk).
 //!
 //! The [`Blob`] trait defines specialised behaviour for the type used a blob.
 //!
@@ -20,6 +21,9 @@ use crate::key::Key;
 
 pub mod mem;
 pub use mem::new as new_in_memory;
+
+pub mod disk;
+pub use disk::open as open_on_disk;
 
 /// Trait to represent a BLOB (Binary Large OBject).
 // NOTE: the `IntoAsyncIterator` requirement is for the HTTP implementation

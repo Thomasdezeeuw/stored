@@ -6,6 +6,20 @@ use std::{fmt, io};
 use heph_rt::io::{Buf, Read, Write};
 use heph_rt::net::TcpStream;
 
+/// Helper macro to execute a system call that returns an `io::Result`.
+macro_rules! syscall {
+    ($fn: ident ( $($arg: expr),* $(,)? ) ) => {{
+        let res = unsafe { libc::$fn($( $arg, )*) };
+        if res == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(res)
+        }
+    }};
+}
+
+pub(crate) use syscall;
+
 /// Connection abstraction.
 pub trait Connection: Read + Write {
     /// Return the source of the client.
