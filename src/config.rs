@@ -8,9 +8,9 @@ use std::path::{Path, PathBuf};
 pub struct Config {
     pub storage: Storage,
     /// Hypertext Transfer Protocol (HTTP).
-    pub http: Option<ProtocolConfig>,
+    pub http: Option<Protocol>,
     /// Redis Protocol specification (RESP).
-    pub resp: Option<ProtocolConfig>,
+    pub resp: Option<Protocol>,
 }
 
 /// Storage type used.
@@ -21,7 +21,7 @@ pub enum Storage {
     OnDisk(PathBuf),
 }
 
-pub struct ProtocolConfig {
+pub struct Protocol {
     /// Address to accept connections on.
     pub address: SocketAddr,
 }
@@ -42,7 +42,7 @@ impl Default for Config {
         Config {
             storage: Storage::InMemory,
             http: None,
-            resp: Some(ProtocolConfig {
+            resp: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6378),
             }),
         }
