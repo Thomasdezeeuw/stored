@@ -56,7 +56,6 @@ where
     P::RequestError: From<DeadlinePassed>,
     P::ResponseError: From<DeadlinePassed>,
     S: Storage,
-    S::Error: fmt::Display,
     RT: Access + Clone,
 {
     let accepted = Instant::now();
