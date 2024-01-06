@@ -43,7 +43,7 @@ impl Default for Config {
             storage: Storage::InMemory,
             http: None,
             resp: Some(ProtocolConfig {
-                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6379),
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6378),
             }),
         }
     }
