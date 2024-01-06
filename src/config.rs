@@ -38,9 +38,11 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             storage: Storage::InMemory,
-            http: None,
+            http: Some(Protocol {
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
+            }),
             resp: Some(Protocol {
-                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6378),
+                address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5378),
             }),
         }
     }
