@@ -10,6 +10,7 @@ use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
 use heph_http::head::{Header, HeaderName, Headers, Method, StatusCode};
 use heph_http::server::Connection;
 use heph_rt::timer::DeadlinePassed;
+use log::warn;
 
 use crate::key::Key;
 use crate::protocol::{IsFatal, Protocol, Request, Response};
@@ -26,13 +27,16 @@ pub struct Http {
 
 impl Http {
     /// Create a new HTTP [`Protocol`].
-    pub fn new(mut conn: Connection) -> io::Result<Http> {
-        conn.set_nodelay(true)?;
-        Ok(Http {
+    pub fn new(mut conn: Connection) -> Http {
+        if let Err(err) = conn.set_nodelay(true) {
+            warn!("failed to set NODELAY on socket: {err}");
+        }
+
+        Http {
             conn,
             headers: Headers::EMPTY,
             buf: Vec::new(),
-        })
+        }
     }
 
     /// Respond with an empty body with `status_code` and a `Location` header
