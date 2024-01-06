@@ -1,10 +1,14 @@
-use std::io;
-use std::process::ExitCode;
+#![feature(never_type)]
 
-use heph::actor::{actor_fn, NewActor};
+use std::process::ExitCode;
+use std::{env, io};
+
+use heph::actor::{self, actor_fn, NewActor};
+use heph::supervisor::NoSupervisor;
 use heph_rt::net::tcp;
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
-use heph_rt::Runtime;
+use heph_rt::{Runtime, Signal};
+use log::{error, info};
 
 use stored::controller;
 use stored::protocol::Resp;
@@ -16,7 +20,7 @@ fn main() -> ExitCode {
     match try_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
-            log::error!("{err}");
+            error!("{err}");
             ExitCode::FAILURE
         }
     }
@@ -28,6 +32,14 @@ fn try_main() -> Result<(), heph_rt::Error> {
         .use_all_cores()
         .auto_cpu_affinity()
         .build()?;
+
+    let actor_ref = runtime.spawn(
+        NoSupervisor,
+        actor_fn(signal_handler),
+        (),
+        ActorOptions::default().with_priority(Priority::HIGH),
+    );
+    runtime.receive_signals(actor_ref);
 
     let (storage_handle, future) = storage::new_in_memory();
     runtime.spawn_future(
@@ -56,8 +68,18 @@ fn try_main() -> Result<(), heph_rt::Error> {
         Ok(())
     })?;
 
-    log::info!(address = log::as_display!(address); "listening");
+    info!(address = log::as_display!(address); "listening");
     runtime.start()
 }
 
 heph::restart_supervisor!(ServerSupervisor, "TCP server");
+
+async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
+    while let Ok(signal) = ctx.receive_next().await {
+        if signal.should_stop() {
+            info!(signal = log::as_display!(signal); "received shut down signal, waiting on all connections to close before shutting down");
+            break;
+        }
+    }
+    Ok(())
+}
