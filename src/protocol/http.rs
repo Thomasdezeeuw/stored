@@ -105,8 +105,9 @@ impl Protocol for Http {
                         while before_length != body_buf.len() {
                             // FIXME: put size restrictions on this.
                             body_buf.reserve(4096);
-                            body_buf = body.recv(body_buf).await
-                                .map_err(|err| RequestError::Conn(heph_http::server::RequestError::Io(err)))?;
+                            body_buf = body.recv(body_buf).await.map_err(|err| {
+                                RequestError::Conn(heph_http::server::RequestError::Io(err))
+                            })?;
                         }
                         self.buf = body_buf;
                         Ok(Some(Request::AddBlob(&self.buf)))
