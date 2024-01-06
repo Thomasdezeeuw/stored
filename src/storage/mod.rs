@@ -13,7 +13,7 @@
 
 use std::async_iter::{AsyncIterator, IntoAsyncIterator};
 use std::future::Future;
-use std::io;
+use std::{io, fmt};
 
 use heph_rt::io::{Buf, Write};
 
@@ -61,7 +61,7 @@ pub trait Storage {
     type Blob: Blob;
 
     /// Error used by the storage.
-    type Error;
+    type Error: fmt::Display;
 
     /// Returns the number of blobs stored.
     fn len(&self) -> usize;
