@@ -1,5 +1,6 @@
 #![feature(never_type)]
 
+use std::path::Path;
 use std::process::ExitCode;
 use std::{env, io};
 
@@ -10,6 +11,7 @@ use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::{Runtime, Signal};
 use log::{error, info};
 
+use stored::config::Config;
 use stored::controller;
 use stored::protocol::Resp;
 use stored::storage::{self, mem};
@@ -53,12 +55,19 @@ const USAGE: &str = "Usage:
 fn main() -> ExitCode {
     std_logger::Config::logfmt().init();
 
-    let config_path = match parse_args() {
-        Ok(config_path) => config_path,
+    let config = match parse_args() {
+        Ok(Some(conf_path)) => match Config::read_from_path(Path::new(&conf_path)) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("failed to read configuration from '{conf_path}': {err}",);
+                return ExitCode::FAILURE;
+            }
+        },
+        Ok(None) => Config::default(),
         Err(code) => return code,
     };
 
-    match try_main(config_path) {
+    match run(config) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             error!("{err}");
@@ -67,7 +76,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_args() -> Result<String, ExitCode> {
+fn parse_args() -> Result<Option<String>, ExitCode> {
     match env::args().nth(1) {
         Some(arg) if arg == "-v" || arg == "--version" => {
             println!("Stored v{}", VERSION);
@@ -81,15 +90,12 @@ fn parse_args() -> Result<String, ExitCode> {
             eprintln!("Unknown argument '{}'.\n\n{}", arg, USAGE);
             Err(ExitCode::FAILURE)
         }
-        Some(config_path) => Ok(config_path),
-        None => {
-            eprintln!("Missing path to configuration file.\n\n{}", USAGE);
-            Err(ExitCode::FAILURE)
-        }
+        Some(config_path) => Ok(Some(config_path)),
+        None => Ok(None),
     }
 }
 
-fn try_main(_config_path: String) -> Result<(), heph_rt::Error> {
+fn run(config: Config) -> Result<(), heph_rt::Error> {
     // TODO: read and use configuration file.
 
     let mut runtime = Runtime::setup()
