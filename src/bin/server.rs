@@ -11,9 +11,9 @@ use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::{Runtime, Signal};
 use log::{error, info};
 
-use stored::config::Config;
+use stored::config::{self, Config};
 use stored::controller;
-use stored::protocol::Resp;
+use stored::protocol::{Http, Resp};
 use stored::storage::{self, mem};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -96,8 +96,6 @@ fn parse_args() -> Result<Option<String>, ExitCode> {
 }
 
 fn run(config: Config) -> Result<(), heph_rt::Error> {
-    // TODO: read and use configuration file.
-
     let mut runtime = Runtime::setup()
         .with_name("stored".to_owned())
         .use_all_cores()
@@ -112,38 +110,76 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
     );
     runtime.receive_signals(actor_ref);
 
-    let (storage_handle, future) = storage::new_in_memory();
-    runtime.spawn_future(
-        future,
-        FutureOptions::default().with_priority(Priority::HIGH),
-    );
+    let storage_handle = match config.storage {
+        config::Storage::InMemory => {
+            let (storage_handle, future) = storage::new_in_memory();
+            runtime.spawn_future(
+                future,
+                FutureOptions::default().with_priority(Priority::HIGH),
+            );
+            storage_handle
+        }
+        config::Storage::OnDisk(path) => {
+            // FIXME.
+            todo!("open on-disk storage");
+        }
+    };
 
-    // TODO: get from arguments/configuration.
-    let address = "127.0.0.1:6378".parse().unwrap();
-
-    runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
-        let storage = mem::Storage::from(storage_handle);
+    if let Some(config::Protocol { address }) = config.resp {
+        let storage_handle = storage_handle.clone();
         let new_actor = actor_fn(controller::actor).map_arg(move |stream| {
             let config = controller::DefaultConfig;
             let protocol = Resp::new(stream);
-            (config, protocol, storage.clone())
+            let storage = mem::Storage::from(storage_handle.clone());
+            (config, protocol, storage)
         });
-        let supervisor = controller::supervisor;
         let options = ActorOptions::default();
-        let server = tcp::server::setup(address, supervisor, new_actor, options)?;
+        let server = tcp::server::setup(address, controller::supervisor, new_actor, options)
+            .map_err(|err| {
+                heph_rt::Error::setup(format!("failed to setup RESP listener: {err}"))
+            })?;
 
-        let supervisor = ServerSupervisor::new();
-        let options = ActorOptions::default().with_priority(Priority::LOW);
-        let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
-        runtime_ref.receive_signals(actor_ref.try_map());
-        Ok(())
-    })?;
+        runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
+            let supervisor = RespSupervisor::new();
+            let options = ActorOptions::default().with_priority(Priority::LOW);
+            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
+            runtime_ref.receive_signals(actor_ref.try_map());
+            Ok(())
+        })?;
 
-    info!(address = log::as_display!(address); "listening");
+        info!(address = log::as_display!(address); "listening for RESP requests");
+    }
+
+    if let Some(config::Protocol { address }) = config.http {
+        let storage_handle = storage_handle.clone();
+        let new_actor = actor_fn(controller::actor).map_arg(move |conn| {
+            let config = controller::DefaultConfig;
+            let protocol = Http::new(conn);
+            let storage = mem::Storage::from(storage_handle.clone());
+            (config, protocol, storage)
+        });
+        let options = ActorOptions::default();
+        let server = heph_http::server::setup(address, controller::supervisor, new_actor, options)
+            .map_err(|err| {
+                heph_rt::Error::setup(format!("failed to setup HTTP listener: {err}"))
+            })?;
+
+        runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
+            let supervisor = HttpSupervisor::new();
+            let options = ActorOptions::default().with_priority(Priority::LOW);
+            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
+            runtime_ref.receive_signals(actor_ref.try_map());
+            Ok(())
+        })?;
+
+        info!(address = log::as_display!(address); "listening for HTTP requests");
+    }
+
     runtime.start()
 }
 
-heph::restart_supervisor!(ServerSupervisor, "TCP server");
+heph::restart_supervisor!(RespSupervisor, "RESP server");
+heph::restart_supervisor!(HttpSupervisor, "HTTP server");
 
 async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
     while let Ok(signal) = ctx.receive_next().await {

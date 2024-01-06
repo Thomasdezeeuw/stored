@@ -21,6 +21,7 @@ pub enum Storage {
     OnDisk(PathBuf),
 }
 
+#[derive(Clone)]
 pub struct Protocol {
     /// Address to accept connections on.
     pub address: SocketAddr,
@@ -29,11 +30,7 @@ pub struct Protocol {
 impl Config {
     pub fn read_from_path(path: &Path) -> io::Result<Config> {
         todo!("Config::read_from_path");
-    }
-
-    /// Returns true if at least one protocol has been configured.
-    pub fn has_protocol(&self) -> bool {
-        self.http.is_some() || self.resp.is_some()
+        // TODO: check if it has at least a RESP or HTTP protocol section.
     }
 }
 
