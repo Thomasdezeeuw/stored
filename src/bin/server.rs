@@ -14,10 +14,51 @@ use stored::controller;
 use stored::protocol::Resp;
 use stored::storage::{self, mem};
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+// NOTE: keep in sync with below `USAGE` text.
+const HELP: &str = concat!(
+    "Stored v",
+    env!("CARGO_PKG_VERSION"),
+    "
+
+Stored (pronounced store-daemon, or just stored) is a distributed immutable blob
+store. Stored is not a key-value store, as the key isn't the decided by the user
+but by the SHA-512 checksum of the stored blob.
+
+It supports three operations: storing, retrieving and removing blobs. As the key
+of a blob is its checksum it is not possible to modify blobs. If a blob needs to
+be modified a new blob simply needs to be stored and the new key used. The
+client can validate the correct delivery of the blob by using the returned key
+(checksum). The blob themselves are unchanged by Stored.
+
+Usage:
+    stored <path_to_config>
+    stored -v or --version
+    stored -h or --help
+
+Environment Variables
+    LOG_LEVEL
+      The severity level of messages to log. Can be one of: 'error', 'warn',
+      'info', 'debug' or 'trace'. Note that 'debug' and 'trace' might not be
+      available in release builds."
+);
+
+// NOTE: keep in sync with above `HELP` text.
+const USAGE: &str = "Usage:
+    stored <path_to_config>
+    stored -v or --version
+    stored -h or --help";
+
 fn main() -> ExitCode {
     std_logger::Config::logfmt().init();
 
-    match try_main() {
+    let config_path = match parse_args() {
+        Ok(config_path) => config_path,
+        Err(code) => return code,
+    };
+
+    match try_main(config_path) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             error!("{err}");
@@ -26,7 +67,31 @@ fn main() -> ExitCode {
     }
 }
 
-fn try_main() -> Result<(), heph_rt::Error> {
+fn parse_args() -> Result<String, ExitCode> {
+    match env::args().nth(1) {
+        Some(arg) if arg == "-v" || arg == "--version" => {
+            println!("Stored v{}", VERSION);
+            Err(ExitCode::SUCCESS)
+        }
+        Some(arg) if arg == "-h" || arg == "--help" => {
+            println!("{}", HELP);
+            Err(ExitCode::SUCCESS)
+        }
+        Some(arg) if arg.starts_with('-') => {
+            eprintln!("Unknown argument '{}'.\n\n{}", arg, USAGE);
+            Err(ExitCode::FAILURE)
+        }
+        Some(config_path) => Ok(config_path),
+        None => {
+            eprintln!("Missing path to configuration file.\n\n{}", USAGE);
+            Err(ExitCode::FAILURE)
+        }
+    }
+}
+
+fn try_main(_config_path: String) -> Result<(), heph_rt::Error> {
+    // TODO: read and use configuration file.
+
     let mut runtime = Runtime::setup()
         .with_name("stored".to_owned())
         .use_all_cores()
