@@ -13,7 +13,7 @@
 
 use std::async_iter::{AsyncIterator, IntoAsyncIterator};
 use std::future::Future;
-use std::{io, fmt};
+use std::{fmt, io};
 
 use heph_rt::io::{Buf, Write};
 
@@ -47,7 +47,7 @@ pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncI
         self,
         header: H,
         trailer: T,
-        connection: C,
+        connection: &mut C,
     ) -> impl Future<Output = io::Result<(H, T)>>
     where
         H: Buf,

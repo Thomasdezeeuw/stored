@@ -609,7 +609,7 @@ impl storage::Blob for BlobRef {
         self.entry.length as usize
     }
 
-    async fn write<H, T, C>(self, header: H, trailer: T, mut conn: C) -> io::Result<(H, T)>
+    async fn write<H, T, C>(self, header: H, trailer: T, conn: &mut C) -> io::Result<(H, T)>
     where
         H: Buf,
         T: Buf,
