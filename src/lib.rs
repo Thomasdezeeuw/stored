@@ -27,6 +27,7 @@
     never_type
 )]
 
+pub mod config;
 pub mod controller;
 mod io;
 pub mod key;
