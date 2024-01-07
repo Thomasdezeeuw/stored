@@ -79,15 +79,15 @@ fn main() -> ExitCode {
 fn parse_args() -> Result<Option<String>, ExitCode> {
     match env::args().nth(1) {
         Some(arg) if arg == "-v" || arg == "--version" => {
-            println!("Stored v{}", VERSION);
+            println!("Stored v{VERSION}");
             Err(ExitCode::SUCCESS)
         }
         Some(arg) if arg == "-h" || arg == "--help" => {
-            println!("{}", HELP);
+            println!("{HELP}");
             Err(ExitCode::SUCCESS)
         }
         Some(arg) if arg.starts_with('-') => {
-            eprintln!("Unknown argument '{}'.\n\n{}", arg, USAGE);
+            eprintln!("Unknown argument '{arg}'.\n\n{USAGE}");
             Err(ExitCode::FAILURE)
         }
         Some(config_path) => Ok(Some(config_path)),
