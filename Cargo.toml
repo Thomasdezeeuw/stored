@@ -1,7 +1,7 @@
 [package]
 name        = "stored"
 description = "Store*d* (pronounced store-daemon, or just stored) is a distributed immutable blob store. Stored is not a key-value store, as the key isn't the decided by the user but by the SHA-512 checksum of the stored blob."
-version     = "0.2.0"
+version     = "0.2.0-dev"
 publish     = false # In development.
 authors     = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
 license     = "MIT"
