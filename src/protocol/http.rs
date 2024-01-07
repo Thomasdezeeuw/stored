@@ -83,6 +83,8 @@ impl Http {
 }
 
 impl Protocol for Http {
+    const NAME: &'static str = "HTTP";
+
     async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
         self.conn.peer_addr()
     }

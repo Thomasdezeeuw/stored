@@ -235,6 +235,8 @@ impl<C> Protocol for Resp<C>
 where
     C: Connection,
 {
+    const NAME: &'static str = "RESP";
+
     async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
         self.conn.source().await
     }
