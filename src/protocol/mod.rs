@@ -27,6 +27,9 @@ pub use http::Http;
 
 /// Protocol that defines how to interact with connected clients.
 pub trait Protocol {
+    /// Name of the protocol, e.g. `HTTP` or `RESP`.
+    const NAME: &'static str;
+
     /// Return the source of the client.
     ///
     /// # Errors
