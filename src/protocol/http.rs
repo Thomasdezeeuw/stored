@@ -26,19 +26,6 @@ pub struct Http {
 }
 
 impl Http {
-    /// Create a new HTTP [`Protocol`].
-    pub fn new(mut conn: Connection) -> Http {
-        if let Err(err) = conn.set_nodelay(true) {
-            warn!("failed to set NODELAY on socket: {err}");
-        }
-
-        Http {
-            conn,
-            headers: Headers::EMPTY,
-            buf: Vec::new(),
-        }
-    }
-
     /// Respond with an empty body with `status_code` and a `Location` header
     /// pointing to the blob with `key`.
     async fn redirect_response(&mut self, status_code: StatusCode, key: Key) -> io::Result<()> {
@@ -84,6 +71,20 @@ impl Http {
 
 impl Protocol for Http {
     const NAME: &'static str = "HTTP";
+
+    type Conn = Connection;
+
+    fn new(mut conn: Connection) -> Http {
+        if let Err(err) = conn.set_nodelay(true) {
+            warn!("failed to set NODELAY on socket: {err}");
+        }
+
+        Http {
+            conn,
+            headers: Headers::EMPTY,
+            buf: Vec::new(),
+        }
+    }
 
     async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
         self.conn.peer_addr()

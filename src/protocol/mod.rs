@@ -30,6 +30,12 @@ pub trait Protocol {
     /// Name of the protocol, e.g. `HTTP` or `RESP`.
     const NAME: &'static str;
 
+    /// Connection type.
+    type Conn;
+
+    /// Create a new protocol around `conn`ection.
+    fn new(conn: Self::Conn) -> Self;
+
     /// Return the source of the client.
     ///
     /// # Errors
