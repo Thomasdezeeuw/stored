@@ -182,7 +182,7 @@ where
         encode::length(&mut self.buf, Key::STR_LENGTH);
         {
             use std::io::Write; // Don't want to use this anywhere else.
-            write!(&mut self.buf, "{}", key).unwrap();
+            write!(&mut self.buf, "{key}").unwrap();
         }
         self.buf.extend_from_slice(CRLF.as_bytes());
         self.write_part_buf(start).await
