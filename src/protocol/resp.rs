@@ -31,15 +31,6 @@ impl<C> Resp<C>
 where
     C: Connection,
 {
-    /// Create a new RESP [`Protocol`].
-    pub fn new(conn: C) -> Resp<C> {
-        Resp {
-            conn,
-            buf: Vec::with_capacity(4096),
-            processed: 0,
-        }
-    }
-
     /// Read a single argument from the connection.
     ///
     /// Returns `None` if no more arguments can be read from the connection.
@@ -236,6 +227,16 @@ where
     C: Connection,
 {
     const NAME: &'static str = "RESP";
+
+    type Conn = C;
+
+    fn new(conn: C) -> Resp<C> {
+        Resp {
+            conn,
+            buf: Vec::with_capacity(4096),
+            processed: 0,
+        }
+    }
 
     async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
         self.conn.source().await
