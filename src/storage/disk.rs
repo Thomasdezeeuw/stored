@@ -91,7 +91,6 @@ use std::mem::{self, size_of};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::Arc;
 use std::task::{self, Poll};
 
@@ -516,14 +515,6 @@ struct Reader {
     data_file: File,
 }
 
-impl Reader {
-    fn try_clone(&self) -> io::Result<Reader> {
-        Ok(Reader {
-            data_file: self.data_file.try_clone()?,
-        })
-    }
-}
-
 /// Handle to the [`Storage`] that can be send across thread bounds.
 ///
 /// Can be be converted into `Storage` using `Storage::try_from(handle)`.
@@ -537,23 +528,19 @@ pub struct Handle {
 /// On-disk storage, pinned to a thread.
 #[derive(Clone)]
 pub struct Storage {
-    // We use a `Rc` instead of `Arc` to avoid contention on the same memory (in
-    // the `Arc` counts).
-    reader: Rc<Reader>,
+    reader: Arc<Reader>,
     writer: ActorRef<WriteRequest>,
     index: hashmap::Reader<Key, Entry, BuildHasherDefault<KeyHasher>>,
 }
 
 /// Turn a [`Handle`] into a [`Storage`].
-impl TryFrom<Handle> for Storage {
-    type Error = io::Error;
-
-    fn try_from(handle: Handle) -> Result<Storage, Self::Error> {
-        Ok(Storage {
-            reader: Rc::new(handle.reader.try_clone()?),
+impl From<Handle> for Storage {
+    fn from(handle: Handle) -> Storage {
+        Storage {
+            reader: handle.reader.clone(),
             writer: handle.writer,
             index: handle.index.into_reader(),
-        })
+        }
     }
 }
 
@@ -597,7 +584,7 @@ impl storage::Storage for Storage {
 
 /// Reference to a BLOB (Binary Large OBject) stored on disk.
 pub struct BlobRef {
-    reader: Rc<Reader>,
+    reader: Arc<Reader>,
     entry: Entry,
 }
 
@@ -664,7 +651,7 @@ pub struct BlobBytes<F: WorkAroundReadAt + 'static = File> {
     /// `data_file` in `Reader`.
     /// NOTE: due to the above `future` MUST be declared before `reader`.
     future: Option<F::Future<'static>>,
-    reader: Rc<Reader>,
+    reader: Arc<Reader>,
     /// Current offset into the data file.
     offset: u64,
     /// Length of the blob left.
