@@ -63,7 +63,7 @@ where
         Ok(source) => source,
         Err(err) => return Err(Error::new("getting source of client", err)),
     };
-    debug!(source = as_display!(source); "accepted connection");
+    debug!(source = as_display!(source); "accepted {} connection", P::NAME);
 
     loop {
         let timer = Timer::after(ctx.runtime(), config.read_timeout());
@@ -133,7 +133,7 @@ where
     }
 
     let elapsed = accepted.elapsed();
-    debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping connection");
+    debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping {} connection", P::NAME);
     Ok(())
 }
 
