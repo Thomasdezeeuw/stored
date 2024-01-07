@@ -6,14 +6,14 @@ use std::{env, io};
 
 use heph::actor::{self, actor_fn, NewActor};
 use heph::supervisor::NoSupervisor;
-use heph_rt::net::tcp;
+use heph_rt::net::{tcp, TcpStream};
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::{Runtime, Signal};
 use log::{error, info};
 
 use stored::config::{self, Config};
 use stored::controller;
-use stored::protocol::{Http, Resp};
+use stored::protocol::{Http, Protocol, Resp};
 use stored::storage::{self, mem};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -127,59 +127,18 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
 
     if let Some(config::Protocol { address }) = config.resp {
         let storage_handle = storage_handle.clone();
-        let new_actor = actor_fn(controller::actor).map_arg(move |stream| {
-            let config = controller::DefaultConfig;
-            let protocol = Resp::new(stream);
-            let storage = mem::Storage::from(storage_handle.clone());
-            (config, protocol, storage)
-        });
-        let options = ActorOptions::default();
-        let server = tcp::server::setup(address, controller::supervisor, new_actor, options)
-            .map_err(|err| {
-                heph_rt::Error::setup(format!("failed to setup RESP listener: {err}"))
-            })?;
-
-        runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
-            let supervisor = RespSupervisor::new();
-            let options = ActorOptions::default().with_priority(Priority::LOW);
-            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
-            runtime_ref.receive_signals(actor_ref.try_map());
-            Ok(())
-        })?;
-
-        info!(address = log::as_display!(address); "listening for RESP requests");
+        #[rustfmt::skip]
+        start_listener!(Resp<TcpStream>, mem::Storage, runtime, storage_handle, tcp::server::setup, address, RespSupervisor);
     }
 
     if let Some(config::Protocol { address }) = config.http {
         let storage_handle = storage_handle.clone();
-        let new_actor = actor_fn(controller::actor).map_arg(move |conn| {
-            let config = controller::DefaultConfig;
-            let protocol = Http::new(conn);
-            let storage = mem::Storage::from(storage_handle.clone());
-            (config, protocol, storage)
-        });
-        let options = ActorOptions::default();
-        let server = heph_http::server::setup(address, controller::supervisor, new_actor, options)
-            .map_err(|err| {
-                heph_rt::Error::setup(format!("failed to setup HTTP listener: {err}"))
-            })?;
-
-        runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
-            let supervisor = HttpSupervisor::new();
-            let options = ActorOptions::default().with_priority(Priority::LOW);
-            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
-            runtime_ref.receive_signals(actor_ref.try_map());
-            Ok(())
-        })?;
-
-        info!(address = log::as_display!(address); "listening for HTTP requests");
+        #[rustfmt::skip]
+        start_listener!(Http, mem::Storage, runtime, storage_handle, heph_http::server::setup, address, HttpSupervisor);
     }
 
     runtime.start()
 }
-
-heph::restart_supervisor!(RespSupervisor, "RESP server");
-heph::restart_supervisor!(HttpSupervisor, "HTTP server");
 
 async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
     while let Ok(signal) = ctx.receive_next().await {
@@ -190,3 +149,41 @@ async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !
     }
     Ok(())
 }
+
+// NOTE: this should have been a function, but the traits were too complex.
+macro_rules! start_listener (
+    (
+        $protocol: ty, // Protocol.
+        $storage: ty, // Storage.
+        $runtime: ident, // &mut heph_rt::Runtime.
+        $storage_handle: ident, // Into<Storage> + Send.
+        $start_listener: path, // Function to start listener.
+        $address: ident, // SocketAddr.
+        $listener_supervisor: ident $(,)? // fn new() -> Supervisor<Listener>.
+    ) => {
+        let new_actor = actor_fn(controller::actor::<_, _, $storage, _>).map_arg(move |conn| {
+            let protocol = <$protocol>::new(conn);
+            let storage = $storage_handle.clone().into();
+            (controller::DefaultConfig, protocol, storage)
+        });
+        let options = ActorOptions::default();
+        let server = $start_listener($address, controller::supervisor, new_actor, options).map_err(|err| {
+            heph_rt::Error::setup(format!("failed to setup {} server: {err}", <$protocol>::NAME))
+        })?;
+
+        $runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
+            let supervisor = $listener_supervisor::new();
+            let options = ActorOptions::default().with_priority(Priority::LOW);
+            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
+            runtime_ref.receive_signals(actor_ref.try_map());
+            Ok(())
+        })?;
+
+        info!(address = log::as_display!($address); "listening for {} requests", <$protocol>::NAME);
+    }
+);
+
+use start_listener;
+
+heph::restart_supervisor!(RespSupervisor, "RESP server");
+heph::restart_supervisor!(HttpSupervisor, "HTTP server");
