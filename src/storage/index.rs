@@ -4,8 +4,8 @@
 //! Mapped Trie (HAMT). Some resources:
 //! * <https://en.wikipedia.org/wiki/Hash_array_mapped_trie>,
 //! * <https://idea.popcount.org/2012-07-25-introduction-to-hamt>,
-//! * Ideal Hash Trees by Phil Bagwell
-//! * Fast And Space Efficient Trie Searches by Phil Bagwell
+//! * Ideal Hash Trees by Phil Bagwell,
+//! * Fast And Space Efficient Trie Searches by Phil Bagwell.
 //!
 //! The structure is implemented as a tree with `N_BRANCHES` (16) pointers on
 //! each level. A pointer can point to a `Branch`, which again contains multiple
@@ -186,6 +186,9 @@ impl<B> From<Handle<B>> for Index<B> {
 }
 
 /// Snapshot of an [`Index`].
+///
+/// A snapshot gives a consistent view of an index that can be queried without
+/// blocking the writer.
 #[derive(Debug)]
 pub struct Snapshot<B> {
     root: Arc<Root<B>>,

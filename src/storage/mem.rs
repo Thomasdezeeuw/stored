@@ -1,7 +1,5 @@
 //! Simple in-memory storage implementation.
 //!
-//! Nothing special, simply a `HashMap` with `Arc<[u8]>` as blob.
-//!
 //! A new in-memory storage can be created using [`new`]. It returns a
 //! [`Handle`], which can be converted into [`Storage`] on the thread that needs
 //! it.
@@ -131,6 +129,10 @@ pub struct Handle {
 }
 
 /// In-memory storage, pinned to a thread.
+///
+/// See the [`Storage`] implementation.
+///
+/// [`Storage`]: storage::Storage
 #[derive(Clone)]
 pub struct Storage {
     writer: ActorRef<WriteRequest>,
