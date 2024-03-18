@@ -106,13 +106,23 @@ impl<B> Writer<B> {
 /// Handle to the [`Index`] that can be send across thread bounds.
 ///
 /// Can be be converted into `Index` using `Index::from(handle)`.
-#[derive(Clone)]
 pub struct Handle<B> {
     handle: left_right::Handle<Arc<Root<B>>>,
 }
 
+impl<B> Clone for Handle<B> {
+    fn clone(&self) -> Self {
+        Handle {
+            handle: self.handle.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.handle.clone_from(&source.handle);
+    }
+}
+
 /// In-memory blob index.
-#[derive(Clone)]
 pub struct Index<B> {
     reader: left_right::Reader<Arc<Root<B>>>,
 }
@@ -151,6 +161,18 @@ impl<B> Index<B> {
         // SAFETY: we're ensuring that we're the only reader in this type.
         let root = unsafe { self.reader.read() };
         root.entry(key).is_some()
+    }
+}
+
+impl<B> Clone for Index<B> {
+    fn clone(&self) -> Self {
+        Index {
+            reader: self.reader.clone(),
+        }
+    }
+
+    fn clone_from(&mut self, source: &Self) {
+        self.reader.clone_from(&source.reader);
     }
 }
 
