@@ -42,9 +42,6 @@ pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncI
     fn len(&self) -> usize;
 
     /// Write the blob with `header` and `trailer` to `connection`.
-    ///
-    /// The `write` call will attempt to use the most efficient I/O possible,
-    /// ranging from `sendfile(2)` to vectored I/O.
     fn write<H, T, C>(
         self,
         header: H,
