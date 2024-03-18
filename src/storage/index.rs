@@ -68,7 +68,7 @@ impl<B> Writer<B> {
     /// Add `blob` to the index.
     pub fn add_blob(&mut self, key: Key, blob: B) -> Result<Key, Key> {
         // If the blob is already stored we're done quickly.
-        if self.writer.entry(&key).is_none() {
+        if self.writer.entry(&key).is_some() {
             return Err(key);
         }
 
