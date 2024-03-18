@@ -112,6 +112,7 @@ pub struct Handle<B> {
 }
 
 /// In-memory blob index.
+#[derive(Clone)]
 pub struct Index<B> {
     reader: left_right::Reader<Arc<Root<B>>>,
 }
