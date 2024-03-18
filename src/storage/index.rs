@@ -477,7 +477,7 @@ struct Pointer<B> {
 
 /// Number of bits used for the tag in `Pointer`.
 const POINTER_TAG_BITS: usize = 1;
-const POINTER_TAG_MASK: usize = !(1 << POINTER_TAG_BITS);
+const POINTER_TAG_MASK: usize = !1;
 /// Tags used for the `Pointer`.
 const BRANCH_TAG: usize = 0b0;
 const ENTRY_TAG: usize = 0b1;
@@ -527,7 +527,7 @@ impl<B> Pointer<B> {
     fn as_ptr(&self) -> *mut () {
         self.tagged_ptr
             .as_ptr()
-            .map_addr(|addr| addr & !POINTER_TAG_MASK)
+            .map_addr(|addr| addr & POINTER_TAG_MASK)
     }
 }
 
