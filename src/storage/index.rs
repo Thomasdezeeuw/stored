@@ -570,3 +570,7 @@ impl<B> Drop for Pointer<B> {
         }
     }
 }
+
+unsafe impl<B: Send> Send for Pointer<B> {}
+
+unsafe impl<B: Sync> Sync for Pointer<B> {}
