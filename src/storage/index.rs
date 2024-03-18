@@ -145,6 +145,13 @@ impl<B> Index<B> {
             None => None,
         }
     }
+
+    /// Returns true if the index contains the `key`.
+    pub fn contains(&self, key: &Key) -> bool {
+        // SAFETY: we're ensuring that we're the only reader in this type.
+        let root = unsafe { self.reader.read() };
+        root.entry(key).is_some()
+    }
 }
 
 /// Turn a [`Handle`] into a [`Index`].
