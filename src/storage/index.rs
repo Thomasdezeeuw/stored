@@ -244,7 +244,7 @@ impl<B> Root<B> {
                     } else {
                         // SAFETY: not a branch, so must be an entry.
                         let entry = ptr.as_entry().unwrap();
-                        return (entry.key == *key).then(|| entry);
+                        return (entry.key == *key).then_some(entry);
                     }
                 }
                 None => return None,
@@ -318,7 +318,7 @@ impl<B> Root<B> {
                         drop(indices);
 
                         // Add the existing entry.
-                        current.branches[existing_idx] = Some(existing_entry.into());
+                        current.branches[existing_idx] = Some(existing_entry);
                         // Add the new entry.
                         let entry = Entry {
                             key: key.clone(),
@@ -389,7 +389,7 @@ impl<B> Root<B> {
 
 /// Iterator for the indices for `key`.
 fn key_indices<'a>(key: &'a Key) -> impl Iterator<Item = usize> + 'a {
-    let iter = key.as_bytes().into_iter().flat_map(|b| {
+    let iter = key.as_bytes().iter().flat_map(|b| {
         [
             (*b as usize) & LEVEL_MASK,
             ((*b as usize) >> LEVEL_SHIFT) & LEVEL_MASK,
@@ -403,7 +403,7 @@ impl<B> Clone for Root<B> {
     fn clone(&self) -> Self {
         Root {
             root: self.root.clone(),
-            length: self.length.clone(),
+            length: self.length,
         }
     }
 
@@ -480,7 +480,7 @@ struct Pointer<B> {
 
 /// Number of bits used for the tag in `Pointer`.
 const POINTER_TAG_BITS: usize = 1;
-const POINTER_TAG_MASK: usize = !1;
+const POINTER_TAG_MASK: usize = (1 << POINTER_TAG_BITS) - 1;
 /// Tags used for the `Pointer`.
 const BRANCH_TAG: usize = 0b0;
 const ENTRY_TAG: usize = 0b1;
@@ -488,12 +488,12 @@ const ENTRY_TAG: usize = 0b1;
 impl<B> Pointer<B> {
     /// Returns `true` is the tagged pointer points to an [`Entry`].
     fn is_entry(&self) -> bool {
-        (self.tagged_ptr.as_ptr().addr() & ENTRY_TAG) != 0
+        (self.tagged_ptr.as_ptr().addr() & POINTER_TAG_MASK) == ENTRY_TAG
     }
 
     /// Returns `true` is the tagged pointer points to an [`Branch`].
     fn is_branch(&self) -> bool {
-        (self.tagged_ptr.as_ptr().addr() & BRANCH_TAG) != 0
+        (self.tagged_ptr.as_ptr().addr() & POINTER_TAG_MASK) == BRANCH_TAG
     }
 
     fn as_entry(&self) -> Option<&Entry<B>> {
@@ -530,7 +530,7 @@ impl<B> Pointer<B> {
     fn as_ptr(&self) -> *mut () {
         self.tagged_ptr
             .as_ptr()
-            .map_addr(|addr| addr & POINTER_TAG_MASK)
+            .map_addr(|addr| addr & !POINTER_TAG_MASK)
     }
 }
 
