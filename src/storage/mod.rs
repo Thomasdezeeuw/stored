@@ -19,6 +19,8 @@ use heph_rt::io::{Buf, Write};
 
 use crate::key::Key;
 
+pub mod index;
+
 pub mod mem;
 pub use mem::new as new_in_memory;
 

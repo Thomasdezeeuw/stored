@@ -24,7 +24,9 @@
     async_iterator,
     if_let_guard,
     impl_trait_in_assoc_type,
-    never_type
+    iter_advance_by,
+    never_type,
+    strict_provenance
 )]
 
 pub mod config;
