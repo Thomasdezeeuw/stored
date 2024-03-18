@@ -8,7 +8,6 @@
 
 use std::async_iter::IntoAsyncIterator;
 use std::future::Future;
-use std::hash::BuildHasherDefault;
 use std::io;
 use std::sync::Arc;
 
@@ -19,10 +18,9 @@ use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message};
 use heph_rt::io::{Buf, Write};
-use left_right::hashmap;
 
-use crate::key::{Key, KeyHasher};
-use crate::storage::{self, AddError};
+use crate::key::Key;
+use crate::storage::{self, index, AddError};
 
 /// Create a new in-memory storage.
 ///
@@ -30,15 +28,16 @@ use crate::storage::{self, AddError};
 /// be run otherwise write requests will never be processed and will stall for
 /// ever.
 pub fn new() -> (Handle, impl Future<Output = ()>) {
-    let (w, handle) = hashmap::with_hasher(BuildHasherDefault::default());
+    let (w, handle) = index::new();
     let (future, writer) = ActorFutureBuilder::new()
         .with_inbox_size(InboxSize::MAX)
-        .build(NoSupervisor, actor_fn(writer), Writer { inner: w })
+        .build(NoSupervisor, actor_fn(writer), w)
         .unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
     (Handle { writer, handle }, future)
 }
 
 /// BLOB (Binary Large OBject) stored in-memory.
+#[derive(Debug)]
 pub struct Blob(Arc<[u8]>);
 
 impl Clone for Blob {
@@ -81,17 +80,30 @@ impl IntoAsyncIterator for Blob {
 }
 
 /// Actor that handles write access to the storage.
-async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: Writer) {
+async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: index::Writer<Blob>) {
     while let Ok(request) = ctx.receive_next().await {
         // Don't care about about whether or not the other end got the response.
         let _ = match request {
             WriteRequest::Add(msg) => {
-                msg.handle(|(blob, key)| async { writer.add_blob(blob, key).await })
-                    .await
+                msg.handle(|(blob, key)| async {
+                    let result = writer.add_blob(key, blob);
+                    if result.is_ok() {
+                        writer.flush_changes().await;
+                    }
+                    result
+                })
+                .await
             }
             WriteRequest::Remove(msg) => {
-                msg.handle(|key| async { writer.remove_blob(key).await })
-                    .await
+                msg.handle(|key| async {
+                    let key = key; // Move into closure.
+                    let removed = writer.remove_blob(&key);
+                    if removed {
+                        writer.flush_changes().await;
+                    }
+                    removed
+                })
+                .await
             }
         };
     }
@@ -109,46 +121,20 @@ enum WriteRequest {
 from_message!(WriteRequest::Add((Blob, Key)) -> Result<Key, Key>);
 from_message!(WriteRequest::Remove(Key) -> bool);
 
-/// Write access to the storage.
-struct Writer {
-    inner: hashmap::Writer<Key, Blob, BuildHasherDefault<KeyHasher>>,
-}
-
-impl Writer {
-    /// Add `blob` to storage.
-    async fn add_blob(&mut self, blob: Blob, key: Key) -> Result<Key, Key> {
-        debug_assert_eq!(key, Key::for_blob(&blob.0));
-        if self.inner.contains_key(&key) {
-            Err(key)
-        } else {
-            self.inner.insert(key.clone(), blob);
-            self.inner.flush().await;
-            Ok(key)
-        }
-    }
-
-    /// Remove blob with `key`.
-    async fn remove_blob(&mut self, key: Key) -> bool {
-        let existed = self.inner.remove(key).is_some();
-        self.inner.flush().await;
-        existed
-    }
-}
-
 /// Handle to the [`Storage`] that can be send across thread bounds.
 ///
 /// Can be be converted into `Storage` using `Storage::from(handle)`.
 #[derive(Clone)]
 pub struct Handle {
     writer: ActorRef<WriteRequest>,
-    handle: hashmap::Handle<Key, Blob, BuildHasherDefault<KeyHasher>>,
+    handle: index::Handle<Blob>,
 }
 
 /// In-memory storage, pinned to a thread.
 #[derive(Clone)]
 pub struct Storage {
     writer: ActorRef<WriteRequest>,
-    reader: hashmap::Reader<Key, Blob, BuildHasherDefault<KeyHasher>>,
+    index: index::Index<Blob>,
 }
 
 /// Turn a [`Handle`] into a [`Storage`].
@@ -156,7 +142,7 @@ impl From<Handle> for Storage {
     fn from(handle: Handle) -> Storage {
         Storage {
             writer: handle.writer,
-            reader: handle.handle.into_reader(),
+            index: index::Index::from(handle.handle),
         }
     }
 }
@@ -167,20 +153,20 @@ impl storage::Storage for Storage {
     type Error = RpcError;
 
     fn len(&self) -> usize {
-        self.reader.len()
+        self.index.len()
     }
 
     async fn lookup(&self, key: Key) -> Result<Option<Self::Blob>, Self::Error> {
-        Ok(self.reader.get_cloned(&key))
+        Ok(self.index.entry(&key).map(|entry| entry.blob.clone()))
     }
 
     async fn contains(&self, key: Key) -> Result<bool, Self::Error> {
-        Ok(self.reader.contains_key(&key))
+        Ok(self.index.contains(&key))
     }
 
     async fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>> {
         let key = Key::for_blob(blob);
-        if self.reader.contains_key(&key) {
+        if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
             match self.writer.rpc((Blob(blob.into()), key)).await {
