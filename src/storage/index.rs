@@ -65,6 +65,11 @@ pub struct Writer<B> {
 }
 
 impl<B> Writer<B> {
+    /// Returns true if the index contains the `key`.
+    pub fn contains(&self, key: &Key) -> bool {
+        self.writer.entry(key).is_some()
+    }
+
     /// Add `blob` to the index.
     pub fn add_blob(&mut self, key: Key, blob: B) -> Result<Key, Key> {
         // If the blob is already stored we're done quickly.
@@ -152,6 +157,19 @@ impl<B> Index<B> {
                 Arc::increment_strong_count(entry);
                 Some(Arc::from_raw(entry))
             },
+            None => None,
+        }
+    }
+
+    /// Lookup the blob with `key` and return a clone.
+    pub fn blob(&self, key: &Key) -> Option<B>
+    where
+        B: Clone,
+    {
+        // SAFETY: we're ensuring that we're the only reader in this type.
+        let root = unsafe { self.reader.read() };
+        match root.entry(key) {
+            Some(entry) => Some(entry.blob.clone()),
             None => None,
         }
     }

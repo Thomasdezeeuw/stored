@@ -85,7 +85,6 @@
 use std::async_iter::{AsyncIterator, IntoAsyncIterator};
 use std::cmp::min;
 use std::future::Future;
-use std::hash::BuildHasherDefault;
 use std::io;
 use std::mem::{self, size_of};
 use std::os::fd::AsRawFd;
@@ -103,12 +102,11 @@ use heph::supervisor::SupervisorStrategy;
 use heph_rt::fs::File;
 use heph_rt::io::{Buf, Read, Write};
 use heph_rt::Access;
-use left_right::hashmap;
 use log::{debug, error, trace};
 
 use crate::io::syscall;
-use crate::key::{Key, KeyHasher};
-use crate::storage::{self, AddError};
+use crate::key::Key;
+use crate::storage::{self, index, AddError};
 
 /// Buffer size for reading blob data.
 const READ_BLOB_BUF_SIZE: usize = 4096;
@@ -126,7 +124,7 @@ pub fn open<RT: Access + Clone>(
     path: PathBuf,
 ) -> io::Result<(Handle, impl Future<Output = ()>)> {
     // In-memory index of the stored blobs.
-    let (write_index, read_index) = hashmap::with_hasher(BuildHasherDefault::default());
+    let (write_index, read_index) = index::new();
     // Create the writing and reading sides of the storage.
     let w = Writer::open(&rt, path, write_index)?;
     let reader = Arc::new(w.new_reader()?);
@@ -211,7 +209,7 @@ impl Writer {
     fn open<RT: Access>(
         rt: &RT,
         path: PathBuf,
-        write_index: hashmap::Writer<Key, Entry, BuildHasherDefault<KeyHasher>>,
+        write_index: index::Writer<Entry>,
     ) -> io::Result<Writer> {
         // Ensure the directory exists.
         debug!(path = log::as_display!(path.display()); "creating directory for storage");
@@ -247,7 +245,7 @@ impl Writer {
     async fn add_blob(&mut self, blob: Box<[u8]>, key: Key) -> io::Result<Result<Key, Key>> {
         debug_assert_eq!(key, Key::for_blob(&blob));
 
-        if !self.index.index.contains_key(&key) {
+        if !self.index.index.contains(&key) {
             return Ok(Err(key));
         }
 
@@ -343,7 +341,7 @@ struct Index {
     /// Index file opened for reading and writing in append-only mode.
     file: File,
     /// In-memory index of blobs.
-    index: hashmap::Writer<Key, Entry, BuildHasherDefault<KeyHasher>>,
+    index: index::Writer<Entry>,
     /// Current offset to write the next entry to.
     offset: u64,
 }
@@ -369,8 +367,6 @@ impl Index {
 
         // Add existing entries to the index.
         if file_size != 0 {
-            self.index.reserve(file_size as usize / Index::ENTRY_SIZE);
-
             let mut buf = Vec::with_capacity(2 * 4096);
             loop {
                 buf = self.file.read(buf).await?;
@@ -382,9 +378,9 @@ impl Index {
                 while let Some(disk_entry) = DiskEntry::from_disk(left) {
                     let key = disk_entry.key();
                     if disk_entry.is_deleted() {
-                        self.index.remove(key);
+                        let _ = self.index.remove_blob(&key);
                     } else {
-                        self.index.insert(key, disk_entry.to_entry());
+                        let _ = self.index.add_blob(key, disk_entry.to_entry());
                     }
 
                     left = &left[size_of::<DiskEntry>()..];
@@ -394,7 +390,7 @@ impl Index {
             }
         }
 
-        self.index.flush().await;
+        self.index.flush_changes().await;
         Ok(())
     }
 
@@ -405,19 +401,21 @@ impl Index {
         self.offset += size_of::<DiskEntry>() as u64;
 
         let entry = Entry { offset, length };
-        self.index.insert(key, entry);
-        self.index.flush().await;
+        let added = self.index.add_blob(key, entry).is_ok();
+        if added {
+            self.index.flush_changes().await;
+        }
 
         Ok(())
     }
 
     /// Writes a new entry to the index that deletes the blob with `key`.
     async fn remove_entry(&mut self, key: Key) -> io::Result<bool> {
-        let is_removed = self.index.remove(key.clone()).is_some();
+        let is_removed = self.index.remove_blob(&key);
         if is_removed {
             let entry = Box::new(DiskEntry::new_deleted(key));
             self.file.write_all(entry).await?;
-            self.index.flush().await;
+            self.index.flush_changes().await;
         }
         Ok(is_removed)
     }
@@ -498,7 +496,7 @@ unsafe impl Buf for Box<DiskEntry> {
 }
 
 /// Entry in the [`Index`].
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 struct Entry {
     /// Offset into the data file.
     offset: u64,
@@ -522,7 +520,7 @@ struct Reader {
 pub struct Handle {
     reader: Arc<Reader>,
     writer: ActorRef<WriteRequest>,
-    index: hashmap::Handle<Key, Entry, BuildHasherDefault<KeyHasher>>,
+    index: index::Handle<Entry>,
 }
 
 /// On-disk storage, pinned to a thread.
@@ -530,7 +528,7 @@ pub struct Handle {
 pub struct Storage {
     reader: Arc<Reader>,
     writer: ActorRef<WriteRequest>,
-    index: hashmap::Reader<Key, Entry, BuildHasherDefault<KeyHasher>>,
+    index: index::Index<Entry>,
 }
 
 /// Turn a [`Handle`] into a [`Storage`].
@@ -539,7 +537,7 @@ impl From<Handle> for Storage {
         Storage {
             reader: handle.reader.clone(),
             writer: handle.writer,
-            index: handle.index.into_reader(),
+            index: handle.index.into(),
         }
     }
 }
@@ -554,19 +552,19 @@ impl storage::Storage for Storage {
     }
 
     async fn lookup(&self, key: Key) -> Result<Option<Self::Blob>, Self::Error> {
-        Ok(self.index.get_cloned(&key).map(|entry| BlobRef {
+        Ok(self.index.blob(&key).map(|entry| BlobRef {
             reader: self.reader.clone(),
             entry,
         }))
     }
 
     async fn contains(&self, key: Key) -> Result<bool, Self::Error> {
-        Ok(self.index.contains_key(&key))
+        Ok(self.index.contains(&key))
     }
 
     async fn add_blob(&mut self, blob: &[u8]) -> Result<Key, AddError<Self::Error>> {
         let key = Key::for_blob(blob);
-        if self.index.contains_key(&key) {
+        if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
             match self.writer.rpc((blob.into(), key)).await {
