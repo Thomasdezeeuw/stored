@@ -20,6 +20,7 @@
 //! [`Storage`]: storage::Storage
 
 #![feature(
+    associated_type_bounds,
     async_iter_from_iter,
     async_iterator,
     if_let_guard,

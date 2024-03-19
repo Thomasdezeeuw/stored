@@ -64,7 +64,7 @@ impl Http {
     }
 
     async fn blob_response<B: Blob>(&mut self, blob: B) -> io::Result<()> {
-        let body = StreamingBody::new(blob.len(), blob.into_async_iter());
+        let body = StreamingBody::new(blob.len(), blob.bytes());
         self.conn.respond(StatusCode::OK, &self.headers, body).await
     }
 }
