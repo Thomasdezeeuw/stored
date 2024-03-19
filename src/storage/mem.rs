@@ -34,22 +34,11 @@ pub fn new() -> (Handle, impl Future<Output = ()>) {
 }
 
 /// BLOB (Binary Large OBject) stored in-memory.
-#[derive(Debug)]
-pub struct Blob(Arc<[u8]>);
-
-impl Clone for Blob {
-    fn clone(&self) -> Blob {
-        Blob(self.0.clone())
-    }
-
-    fn clone_from(&mut self, source: &Self) {
-        self.0.clone_from(&source.0)
-    }
-}
+pub type Blob = Arc<[u8]>;
 
 impl storage::Blob for Blob {
     fn len(&self) -> usize {
-        self.0.len()
+        (**self).len()
     }
 
     async fn write<H, T, C>(self, header: H, trailer: T, conn: &mut C) -> io::Result<(H, T)>
@@ -58,7 +47,7 @@ impl storage::Blob for Blob {
         T: Buf,
         C: Write,
     {
-        let bufs = (header, self.0, trailer);
+        let bufs = (header, self, trailer);
         let bufs = conn.write_vectored_all(bufs).await?;
         Ok((bufs.0, bufs.2))
     }
@@ -66,7 +55,7 @@ impl storage::Blob for Blob {
     type BlobBytes = std::async_iter::FromIter<std::option::IntoIter<Arc<[u8]>>>;
 
     fn bytes(self) -> Self::BlobBytes {
-        std::async_iter::from_iter(Some(self.0))
+        std::async_iter::from_iter(Some(self))
     }
 }
 
@@ -164,7 +153,7 @@ impl storage::Storage for Storage {
         if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
-            match self.writer.rpc((Blob(blob.into()), key)).await {
+            match self.writer.rpc((blob.into(), key)).await {
                 Ok(Ok(key)) => Ok(key),
                 Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
                 Err(err) => Err(AddError::Err(err)),
