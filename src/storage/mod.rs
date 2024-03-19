@@ -27,33 +27,6 @@ pub use mem::new as new_in_memory;
 pub mod disk;
 pub use disk::open as open_on_disk;
 
-/// Trait to represent a BLOB (Binary Large OBject).
-// NOTE: the `IntoAsyncIterator` requirement is for the HTTP implementation
-// which doesn't have direct access to the underlying stream.
-pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncIter> {
-    // NOTE: these type are only here to enforce the trait bounds. This could be
-    // replaced with the `associated_type_bounds` unstable feature, once stable.
-    /// Async iterator type.
-    type AsyncIter: AsyncIterator<Item = Self::Buf> + 'static;
-    /// Buffer type used in the async iteration.
-    type Buf: Buf;
-
-    /// Length of the blob in bytes.
-    fn len(&self) -> usize;
-
-    /// Write the blob with `header` and `trailer` to `connection`.
-    fn write<H, T, C>(
-        self,
-        header: H,
-        trailer: T,
-        connection: &mut C,
-    ) -> impl Future<Output = io::Result<(H, T)>>
-    where
-        H: Buf,
-        T: Buf,
-        C: Write;
-}
-
 /// Storage implementation.
 pub trait Storage {
     /// Blob type used by the implementation.
@@ -89,4 +62,31 @@ pub enum AddError<E> {
     AlreadyStored(Key),
     /// Other, storage specific, error.
     Err(E),
+}
+
+/// Trait to represent a BLOB (Binary Large OBject).
+// NOTE: the `IntoAsyncIterator` requirement is for the HTTP implementation
+// which doesn't have direct access to the underlying stream.
+pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncIter> {
+    // NOTE: these type are only here to enforce the trait bounds. This could be
+    // replaced with the `associated_type_bounds` unstable feature, once stable.
+    /// Async iterator type.
+    type AsyncIter: AsyncIterator<Item = Self::Buf> + 'static;
+    /// Buffer type used in the async iteration.
+    type Buf: Buf;
+
+    /// Length of the blob in bytes.
+    fn len(&self) -> usize;
+
+    /// Write the blob with `header` and `trailer` to `connection`.
+    fn write<H, T, C>(
+        self,
+        header: H,
+        trailer: T,
+        connection: &mut C,
+    ) -> impl Future<Output = io::Result<(H, T)>>
+    where
+        H: Buf,
+        T: Buf,
+        C: Write;
 }
