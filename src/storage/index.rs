@@ -61,7 +61,7 @@ pub fn new<B>() -> (Writer<B>, Handle<B>) {
 ///
 /// [flushed]: Writer::flush_changes
 pub struct Writer<B> {
-    writer: left_right::Writer<Arc<Root<B>>, OverwriteOperation<Arc<Root<B>>>>,
+    writer: left_right::Writer<Arc<Root<B>>, Option<OverwriteOperation<Arc<Root<B>>>>>,
 }
 
 impl<B> Writer<B> {
