@@ -1,26 +1,24 @@
-#![feature(never_type, process_exitcode_placeholder, available_concurrency)]
+#![feature(never_type)]
 
+use std::path::Path;
 use std::process::ExitCode;
-use std::sync::Arc;
-use std::{env, thread};
+use std::{env, io};
 
-use heph::actor;
-use heph::actor::context::ThreadSafe;
-use heph::actor_ref::ActorGroup;
-use heph::rt::options::{ActorOptions, Priority};
-use heph::rt::{Runtime, Signal};
+use heph::actor::{self, actor_fn, NewActor};
 use heph::supervisor::NoSupervisor;
+use heph_rt::net::{tcp, TcpStream};
+use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
+use heph_rt::{Runtime, Signal};
 use log::{error, info};
-use parking_lot::RwLock;
 
-use stored::config::Config;
-use stored::passport::Uuid;
-use stored::util::CountDownLatch;
-use stored::{db, http, peer};
+use stored::config::{self, Config};
+use stored::controller;
+use stored::protocol::{Http, Protocol, Resp};
+use stored::storage::{self, mem};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const COMMIT_VERSION: Option<&str> = option_env!("COMMIT_VERSION");
 
+// NOTE: keep in sync with below `USAGE` text.
 const HELP: &str = concat!(
     "Stored v",
     env!("CARGO_PKG_VERSION"),
@@ -48,149 +46,144 @@ Environment Variables
       available in release builds."
 );
 
-// NOTE: keep in sync with above `HELP` section.
+// NOTE: keep in sync with above `HELP` text.
 const USAGE: &str = "Usage:
     stored <path_to_config>
     stored -v or --version
     stored -h or --help";
 
 fn main() -> ExitCode {
-    // Enable logging.
-    heph::log::init();
-    // Make the generated `Uuid`s random.
-    Uuid::initialise();
+    std_logger::Config::logfmt().init();
 
-    let code = match try_main() {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(code) => code,
+    let config = match parse_args() {
+        Ok(Some(conf_path)) => match Config::read_from_path(Path::new(&conf_path)) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("failed to read configuration from '{conf_path}': {err}",);
+                return ExitCode::FAILURE;
+            }
+        },
+        Ok(None) => Config::default(),
+        Err(code) => return code,
     };
-    log::logger().flush();
-    code
-}
 
-/// Macro to log an error and map it to `ExitCode::FAILURE`.
-macro_rules! map_err {
-    ($format: expr) => {
-        |err| {
-            error!($format, err);
+    match run(config) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            error!("{err}");
             ExitCode::FAILURE
         }
-    };
+    }
 }
 
-fn try_main() -> Result<(), ExitCode> {
-    let config_path = parse_args()?;
-    let config = Config::from_file(&config_path)
-        .map_err(map_err!("error reading configuration file: {}"))?;
+fn parse_args() -> Result<Option<String>, ExitCode> {
+    match env::args().nth(1) {
+        Some(arg) if arg == "-v" || arg == "--version" => {
+            println!("Stored v{VERSION}");
+            Err(ExitCode::SUCCESS)
+        }
+        Some(arg) if arg == "-h" || arg == "--help" => {
+            println!("{HELP}");
+            Err(ExitCode::SUCCESS)
+        }
+        Some(arg) if arg.starts_with('-') => {
+            eprintln!("Unknown argument '{arg}'.\n\n{USAGE}");
+            Err(ExitCode::FAILURE)
+        }
+        Some(config_path) => Ok(Some(config_path)),
+        None => Ok(None),
+    }
+}
 
-    let mut runtime = Runtime::new()
-        .map_err(map_err!("error creating Heph runtime: {}"))?
-        .num_threads(worker_threads());
+fn run(config: Config) -> Result<(), heph_rt::Error> {
+    let mut runtime = Runtime::setup()
+        .with_name("stored".to_owned())
+        .use_all_cores()
+        .auto_cpu_affinity()
+        .build()?;
 
     let actor_ref = runtime.spawn(
         NoSupervisor,
-        signal_handler as fn(_) -> _,
+        actor_fn(signal_handler),
         (),
         ActorOptions::default().with_priority(Priority::HIGH),
     );
     runtime.receive_signals(actor_ref);
 
-    info!("opening database: path=\"{}\"", config.path.display());
-    let db_ref =
-        db::start(&mut runtime, &*config.path).map_err(map_err!("error opening database: {}"))?;
-
-    let start_refs = Arc::new(RwLock::new(ActorGroup::empty()));
-    // Latch used by the synchronisation peer (see `peer::sync::actor`) to wait
-    // until all worker threads are started and all peers are connected.
-    let start_sync = Arc::new(CountDownLatch::new(runtime.get_threads()));
-    let peers = if let Some(distributed_config) = config.distributed {
-        info!(
-            "listening on {} for peer connections",
-            distributed_config.peer_address
-        );
-        info!("connecting to peers: {}", distributed_config.peers);
-        info!("blob replication method: {}", distributed_config.replicas);
-        let peers = peer::start(
-            &mut runtime,
-            distributed_config,
-            db_ref.clone(),
-            start_refs.clone(),
-            start_sync.clone(),
-        )
-        .map_err(map_err!("error setting up peer actors: {}"))?;
-        Some(peers)
-    } else {
-        None
+    let storage_handle = match config.storage {
+        config::Storage::InMemory => {
+            let (storage_handle, future) = storage::new_in_memory();
+            runtime.spawn_future(
+                future,
+                FutureOptions::default().with_priority(Priority::HIGH),
+            );
+            storage_handle
+        }
+        config::Storage::OnDisk(path) => {
+            // FIXME.
+            todo!("open on-disk storage");
+        }
     };
 
-    let start_listener = http::setup(config.http.address, db_ref, start_refs, peers)
-        .map_err(map_err!("error binding HTTP server: {}"))?;
-
-    runtime
-        .with_setup(move |mut runtime_ref| {
-            let res = start_listener(&mut runtime_ref);
-            start_sync.decrease();
-            res
-        })
-        .start()
-        .map_err(map_err!("{}"))
-}
-
-/// Determine the amount of worker threads to use to handle HTTP requests.
-fn worker_threads() -> usize {
-    let worker_threads = thread::available_concurrency()
-        .map(|n| n.get())
-        .unwrap_or(1);
-
-    // If we have enough CPU core we dedicate one of them to the `db::actor`,
-    // which runs as sync actor on its own thread.
-    if worker_threads >= 8 {
-        worker_threads - 1
-    } else {
-        worker_threads
+    if let Some(config::Protocol { address }) = config.resp {
+        let storage_handle = storage_handle.clone();
+        #[rustfmt::skip]
+        start_listener!(Resp<TcpStream>, mem::Storage, runtime, storage_handle, tcp::server::setup, address, RespSupervisor);
     }
+
+    if let Some(config::Protocol { address }) = config.http {
+        let storage_handle = storage_handle.clone();
+        #[rustfmt::skip]
+        start_listener!(Http, mem::Storage, runtime, storage_handle, heph_http::server::setup, address, HttpSupervisor);
+    }
+
+    runtime.start()
 }
 
-/// Actor that waits for a signal and prints a message.
-async fn signal_handler(mut ctx: actor::Context<Signal, ThreadSafe>) -> Result<(), !> {
-    let signal = ctx.receive_next().await;
-    match signal {
-        Signal::Interrupt | Signal::Terminate | Signal::Quit => {
-            info!(
-                "received {:#} signal, waiting on all connection be closed before \
-                shutting down (takes up to {:?})",
-                signal,
-                stored::timeout::PEER_ALIVE
-            );
+async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
+    while let Ok(signal) = ctx.receive_next().await {
+        if signal.should_stop() {
+            info!(signal = log::as_display!(signal); "received shut down signal, waiting on all connections to close before shutting down");
+            break;
+        }
+    }
+    Ok(())
+}
+
+// NOTE: this should have been a function, but the traits were too complex.
+macro_rules! start_listener (
+    (
+        $protocol: ty, // Protocol.
+        $storage: ty, // Storage.
+        $runtime: ident, // &mut heph_rt::Runtime.
+        $storage_handle: ident, // Into<Storage> + Send.
+        $start_listener: path, // Function to start listener.
+        $address: ident, // SocketAddr.
+        $listener_supervisor: ident $(,)? // fn new() -> Supervisor<Listener>.
+    ) => {
+        let new_actor = actor_fn(controller::actor::<_, _, $storage, _>).map_arg(move |conn| {
+            let protocol = <$protocol>::new(conn);
+            let storage = $storage_handle.clone().into();
+            (controller::DefaultConfig, protocol, storage)
+        });
+        let options = ActorOptions::default();
+        let server = $start_listener($address, controller::supervisor, new_actor, options).map_err(|err| {
+            heph_rt::Error::setup(format!("failed to setup {} server: {err}", <$protocol>::NAME))
+        })?;
+
+        $runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
+            let supervisor = $listener_supervisor::new();
+            let options = ActorOptions::default().with_priority(Priority::LOW);
+            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
+            runtime_ref.receive_signals(actor_ref.try_map());
             Ok(())
-        }
-    }
-}
+        })?;
 
-/// Parses the arguments.
-/// Handles `-v` & `--version`, `-h` & `--help` and unknown arguments.
-fn parse_args() -> Result<String, ExitCode> {
-    match env::args().nth(1) {
-        Some(arg) if arg == "-v" || arg == "--version" => {
-            if let Some(commit_version) = COMMIT_VERSION {
-                println!("Stored v{} ({})", VERSION, commit_version);
-            } else {
-                println!("Stored v{}", VERSION);
-            }
-            Err(ExitCode::SUCCESS)
-        }
-        Some(arg) if arg == "-h" || arg == "--help" => {
-            println!("{}", HELP);
-            Err(ExitCode::SUCCESS)
-        }
-        Some(arg) if arg.starts_with('-') => {
-            eprintln!("unknown argument '{}'.\n\n{}", arg, USAGE);
-            Err(ExitCode::FAILURE)
-        }
-        Some(config_path) => Ok(config_path),
-        None => {
-            eprintln!("missing path to configuration file.\n\n{}", USAGE);
-            Err(ExitCode::FAILURE)
-        }
+        info!(address = log::as_display!($address); "listening for {} requests", <$protocol>::NAME);
     }
-}
+);
+
+use start_listener;
+
+heph::restart_supervisor!(RespSupervisor, "RESP server");
+heph::restart_supervisor!(HttpSupervisor, "HTTP server");

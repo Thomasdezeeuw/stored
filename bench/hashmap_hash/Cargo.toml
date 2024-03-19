@@ -9,12 +9,12 @@ publish = false
 stored = { path = "../../" }
 
 [dev-dependencies]
-ahash      = "0.3.2"
+ahash      = "0.8.0"
 criterion  = "0.3.1"
-fnv        = "1.0.6"
+fnv        = "1.0.7"
 fxhash     = "0.2.1"
 rustc-hash = "1.1.0"
-seahash    = "4.0.0"
+seahash    = "4.1.0"
 
 [[bench]]
 name    = "hash_function"

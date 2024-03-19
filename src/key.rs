@@ -1,18 +1,16 @@
-//! Blob's key.
+//! Key of a blob.
+//!
+//! See [`Key`].
 
 use std::error::Error;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{self, IoSlice, IoSliceMut, Read, Write};
+use std::ops::BitXor;
 use std::ops::Deref;
-use std::pin::Pin;
 use std::str::FromStr;
-use std::task::{self, Poll};
+use std::{fmt, slice};
 
-use futures_io::{AsyncRead, AsyncWrite};
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
-use serde::ser::SerializeTuple;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The key of a blob.
 ///
@@ -28,6 +26,9 @@ impl Key {
     /// Length of the key in bytes.
     pub const LENGTH: usize = SHA512_OUTPUT_LEN;
 
+    /// Length of the key formatted as string (using hex).
+    pub const STR_LENGTH: usize = Self::LENGTH * 2;
+
     /// Create a new `Key` from the provided `bytes`.
     pub const fn new(bytes: [u8; Key::LENGTH]) -> Key {
         Key { bytes }
@@ -38,16 +39,32 @@ impl Key {
     /// # Panics
     ///
     /// This will panic if `bytes` is not of length `Key::LENGTH`.
-    pub fn from_bytes<'a>(bytes: &'a [u8]) -> &'a Key {
-        assert_eq!(bytes.len(), Key::LENGTH, "invalid Key length");
+    pub fn from_bytes(bytes: &[u8]) -> &Key {
+        assert!(bytes.len() >= Key::LENGTH, "invalid Key length");
         // Safety: we ensured above that `bytes` is of length `Key::LENGTH` and
         // `Key` has the same layout as `[u8; Key::LENGTH]` because we use the
         // `repr(transparent)` attribute, so this cast is same.
         unsafe { &*(bytes.as_ptr().cast()) }
     }
 
+    /// Same as the [`FromStr::from_str`] implementation, but uses `&[u8]`
+    /// instead of a string.
+    pub fn from_byte_str(s: &[u8]) -> Result<Self, InvalidKeyStr> {
+        if s.len() != Key::LENGTH * 2 {
+            return Err(InvalidKeyStr);
+        }
+
+        let mut bytes = [0; Key::LENGTH];
+        for (i, digits) in s.chunks_exact(2).enumerate() {
+            let high = from_hex_digit(digits[0])?;
+            let low = from_hex_digit(digits[1])?;
+            bytes[i] = (high * 16) | low;
+        }
+        Ok(Key::new(bytes))
+    }
+
     /// Calculate the `Key` for the provided `blob`.
-    pub fn for_blob<'a>(blob: &'a [u8]) -> Key {
+    pub fn for_blob(blob: &[u8]) -> Key {
         let result = digest(&SHA512, blob);
         Key::from_bytes(result.as_ref()).to_owned()
     }
@@ -62,8 +79,7 @@ impl Key {
     /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
     /// blob, while streaming its contents.
     ///
-    /// It can be used while [`Reading`] or [`Writing`], and even asynchronously
-    /// with [`AsyncRead`] or [`AsyncWrite`].
+    /// It can be used while [`Reading`] or [`Writing`].
     ///
     /// [`Reading`]: std::io::Read
     /// [`Writing`]: std::io::Write
@@ -139,17 +155,7 @@ impl FromStr for Key {
     type Err = InvalidKeyStr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() != Key::LENGTH * 2 {
-            return Err(InvalidKeyStr);
-        }
-
-        let mut bytes = [0; Key::LENGTH];
-        for (i, digits) in s.as_bytes().chunks_exact(2).enumerate() {
-            let high = from_hex_digit(digits[0])?;
-            let low = from_hex_digit(digits[1])?;
-            bytes[i] = (high * 16) | low;
-        }
-        Ok(Key::new(bytes))
+        Key::from_byte_str(s.as_bytes())
     }
 }
 
@@ -162,74 +168,6 @@ fn from_hex_digit(digit: u8) -> Result<u8, InvalidKeyStr> {
         Ok(digit - b'A' + 10)
     } else {
         Err(InvalidKeyStr)
-    }
-}
-
-impl<'de> Deserialize<'de> for Key {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        use serde::de::{Error, SeqAccess, Visitor};
-
-        struct KeyVisitor;
-
-        impl<'de> Visitor<'de> for KeyVisitor {
-            type Value = Key;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a key")
-            }
-
-            fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
-            where
-                E: Error,
-            {
-                s.parse().map_err(Error::custom)
-            }
-
-            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-            where
-                A: SeqAccess<'de>,
-            {
-                let mut key_bytes = [0; Key::LENGTH];
-                for byte in key_bytes.iter_mut() {
-                    match seq.next_element()? {
-                        Some(b) => *byte = b,
-                        None => return Err(Error::invalid_length(Key::LENGTH, &self)),
-                    }
-                }
-                Ok(Key::new(key_bytes))
-            }
-        }
-
-        if deserializer.is_human_readable() {
-            deserializer.deserialize_str(KeyVisitor)
-        } else {
-            deserializer.deserialize_tuple(Key::LENGTH, KeyVisitor)
-        }
-    }
-
-    // TODO: implement deserialize_in_place.
-}
-
-impl Serialize for Key {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        if serializer.is_human_readable() {
-            let mut buf = [0; Key::LENGTH * 2];
-            write!(&mut buf[..], "{}", self).unwrap();
-            let output = std::str::from_utf8(&buf).unwrap();
-            serializer.serialize_str(output)
-        } else {
-            let mut seq = serializer.serialize_tuple(Key::LENGTH)?;
-            for byte in self.bytes.iter() {
-                seq.serialize_element(byte)?;
-            }
-            seq.end()
-        }
     }
 }
 
@@ -261,11 +199,12 @@ impl fmt::Debug for Key {
 }
 
 impl Hash for Key {
+    #[inline]
     fn hash<H>(&self, state: &mut H)
     where
         H: Hasher,
     {
-        Hash::hash(&self.bytes[..], state)
+        state.write(&self.bytes[..])
     }
 }
 
@@ -301,7 +240,7 @@ impl KeyCalculator<()> {
 
     /// Add blob bytes to the calculation.
     pub fn add_bytes(&mut self, bytes: &[u8]) {
-        self.digest.update(&bytes);
+        self.digest.update(bytes);
     }
 }
 
@@ -315,7 +254,7 @@ impl<IO> KeyCalculator<IO> {
     fn update_digest(&mut self, bytes: &[u8]) {
         if self.skip_left == 0 {
             // No more bytes to skip.
-            self.digest.update(&bytes);
+            self.digest.update(bytes);
         } else if bytes.len() <= self.skip_left {
             // Need to skip all bytes.
             self.skip_left -= bytes.len();
@@ -342,7 +281,7 @@ impl<IO> KeyCalculator<IO> {
                 return;
             } else {
                 // Entire buffer was filled.
-                self.update_digest(&buf);
+                self.update_digest(buf);
                 left -= length;
             }
         }
@@ -385,7 +324,7 @@ where
 
     fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
         self.io.read_to_string(buf).map(|n| {
-            self.update_digest(&buf.as_bytes());
+            self.update_digest(buf.as_bytes());
             n
         })
     }
@@ -422,81 +361,43 @@ where
     }
 }
 
-// TODO: lose the `Unpin` requirement.
+/// [`Hasher`] implementation for [`Key`].
+pub struct KeyHasher {
+    state: u64,
+}
 
-impl<R> AsyncRead for KeyCalculator<R>
-where
-    R: AsyncRead + Unpin,
-{
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-        buf: &mut [u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_read(ctx, buf).map_ok(|n| {
-            self.update_digest(&buf[..n]);
-            n
-        })
-    }
-
-    fn poll_read_vectored(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-        bufs: &mut [IoSliceMut],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io)
-            .poll_read_vectored(ctx, bufs)
-            .map_ok(|n| {
-                self.update_digestv(bufs, n);
-                n
-            })
+impl Default for KeyHasher {
+    #[inline]
+    fn default() -> KeyHasher {
+        KeyHasher { state: 0 }
     }
 }
 
-impl<W> AsyncWrite for KeyCalculator<W>
-where
-    W: AsyncWrite + Unpin,
-{
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-        buf: &[u8],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io).poll_write(ctx, buf).map_ok(|n| {
-            self.update_digest(&buf[..n]);
-            n
-        })
+impl Hasher for KeyHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.state
     }
 
-    fn poll_write_vectored(
-        mut self: Pin<&mut Self>,
-        ctx: &mut task::Context,
-        bufs: &[IoSlice],
-    ) -> Poll<io::Result<usize>> {
-        Pin::new(&mut self.io)
-            .poll_write_vectored(ctx, bufs)
-            .map_ok(|n| {
-                self.update_digestv(bufs, n);
-                n
-            })
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_flush(ctx)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, ctx: &mut task::Context) -> Poll<io::Result<()>> {
-        Pin::new(&mut self.io).poll_close(ctx)
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        debug_assert!(bytes.len() == Key::LENGTH);
+        // SAFETY: u64 and u8 have compatible layouts.
+        let parts = unsafe { slice::from_raw_parts(bytes.as_ptr().cast(), Key::LENGTH / 8) };
+        for p in parts {
+            self.state = self.state.bitxor(p);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{Hash, Hasher};
     use std::io::{self, Read};
 
     use serde_test::{assert_tokens, Configure, Token};
 
-    use crate::key::{InvalidKeyStr, Key};
+    use crate::key::{InvalidKeyStr, Key, KeyHasher};
 
     #[test]
     fn to_owned() {
@@ -513,7 +414,7 @@ mod tests {
         let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
                         5f79a942600f9725f58ce1f29c18139bf80b06c0f\
                         ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
-        assert_eq!(format!("{}", key), expected); // `fmt::Display` trait.
+        assert_eq!(format!("{key}"), expected); // `fmt::Display` trait.
         assert_eq!(format!("{:?}", key), expected); // `fmt::Debug` trait.
         assert_eq!(key.to_string(), expected); // ToString trait.
     }
@@ -542,56 +443,6 @@ mod tests {
     }
 
     #[test]
-    fn serialisation() {
-        let key = Key::for_blob(b"Hello world");
-        let expected = "\"b7f783baed8297f0db917462184ff4f08e69c2d5e\
-                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47\"";
-        let got = toml::ser::to_string(&key).unwrap();
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn deserialisation() {
-        use serde::Deserialize;
-
-        #[derive(Debug, Deserialize, Eq, PartialEq)]
-        struct T {
-            key: Key,
-        }
-        let expected = T {
-            key: Key::for_blob(b"Hello world"),
-        };
-        let input = "key = \"b7f783baed8297f0db917462184ff4f08e69c2d5e\
-                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47\"";
-        let got: T = toml::de::from_str(&input).unwrap();
-        assert_eq!(got, expected);
-    }
-
-    #[test]
-    fn serialisation_compact() {
-        let key = Key::for_blob(b"Hello world");
-        let mut expected: Vec<Token> = Vec::with_capacity(Key::LENGTH + 2);
-        expected.push(Token::Tuple { len: Key::LENGTH });
-        for byte in key.as_bytes().iter().copied() {
-            expected.push(Token::U8(byte));
-        }
-        expected.push(Token::TupleEnd);
-
-        assert_tokens(&key.compact(), &expected);
-    }
-
-    #[test]
-    fn serialisation_readable() {
-        let key = Key::for_blob(b"Hello world");
-        let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e\
-                        5f79a942600f9725f58ce1f29c18139bf80b06c0f\
-                        ff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
-        assert_tokens(&key.readable(), &[Token::Str(expected)]);
-    }
-
-    #[test]
     fn key_calculator() {
         let want = Key::for_blob(b"Hello world");
         let reader = io::Cursor::new(b"Hello world");
@@ -615,5 +466,30 @@ mod tests {
         assert_eq!(calc.read(&mut buf).unwrap(), 7);
         assert_eq!(&buf, b"o world");
         assert_eq!(calc.finish(), want);
+    }
+
+    #[test]
+    fn key_hashing() {
+        let keys = [
+            Key::for_blob(b"Hello world"),
+            Key::for_blob(b"Hello world1"),
+            Key::for_blob(b"Hello world2"),
+            Key::for_blob(b"Hello world3"),
+        ];
+
+        for keys in keys.windows(2) {
+            let result1 = hash_key(&keys[0]);
+            let result2 = hash_key(&keys[1]);
+            let result2b = hash_key(&keys[1]);
+
+            assert_ne!(result1, result2);
+            assert_eq!(result2, result2b);
+        }
+
+        fn hash_key(key: &Key) -> u64 {
+            let mut hasher = KeyHasher::default();
+            key.hash(&mut hasher);
+            hasher.finish()
+        }
     }
 }
