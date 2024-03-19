@@ -11,7 +11,7 @@
 //!
 //! [`controller`]: crate::controller
 
-use std::async_iter::{AsyncIterator, IntoAsyncIterator};
+use std::async_iter::AsyncIterator;
 use std::future::Future;
 use std::{fmt, io};
 
@@ -65,16 +65,7 @@ pub enum AddError<E> {
 }
 
 /// Trait to represent a BLOB (Binary Large OBject).
-// NOTE: the `IntoAsyncIterator` requirement is for the HTTP implementation
-// which doesn't have direct access to the underlying stream.
-pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncIter> {
-    // NOTE: these type are only here to enforce the trait bounds. This could be
-    // replaced with the `associated_type_bounds` unstable feature, once stable.
-    /// Async iterator type.
-    type AsyncIter: AsyncIterator<Item = Self::Buf> + 'static;
-    /// Buffer type used in the async iteration.
-    type Buf: Buf;
-
+pub trait Blob {
     /// Length of the blob in bytes.
     fn len(&self) -> usize;
 
@@ -89,4 +80,13 @@ pub trait Blob: IntoAsyncIterator<Item = Self::Buf, IntoAsyncIter = Self::AsyncI
         H: Buf,
         T: Buf,
         C: Write;
+
+    /// Iterator of the blob's bytes.
+    // NOTE: this is mainly here for the HTTP implementation which doesn't have
+    // direct access to the underlying stream.
+    type BlobBytes: AsyncIterator<Item: Buf> + 'static;
+
+    /// Returns an asynchronous iterator that iterator over buffers that
+    /// represent parts of the blob.
+    fn bytes(self) -> Self::BlobBytes;
 }

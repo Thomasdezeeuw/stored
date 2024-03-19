@@ -4,7 +4,6 @@
 //! [`Handle`], which can be converted into [`Storage`] on the thread that needs
 //! it.
 
-use std::async_iter::IntoAsyncIterator;
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -49,9 +48,6 @@ impl Clone for Blob {
 }
 
 impl storage::Blob for Blob {
-    type Buf = Arc<[u8]>;
-    type AsyncIter = std::async_iter::FromIter<std::option::IntoIter<Self::Item>>;
-
     fn len(&self) -> usize {
         self.0.len()
     }
@@ -66,13 +62,10 @@ impl storage::Blob for Blob {
         let bufs = conn.write_vectored_all(bufs).await?;
         Ok((bufs.0, bufs.2))
     }
-}
 
-impl IntoAsyncIterator for Blob {
-    type Item = Arc<[u8]>;
-    type IntoAsyncIter = std::async_iter::FromIter<std::option::IntoIter<Self::Item>>;
+    type BlobBytes = std::async_iter::FromIter<std::option::IntoIter<Arc<[u8]>>>;
 
-    fn into_async_iter(self) -> Self::IntoAsyncIter {
+    fn bytes(self) -> Self::BlobBytes {
         std::async_iter::from_iter(Some(self.0))
     }
 }

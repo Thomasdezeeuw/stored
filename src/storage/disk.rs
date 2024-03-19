@@ -82,7 +82,7 @@
 
 // TODO: add header with magic bytes to the data and index files and check that when opening.
 
-use std::async_iter::{AsyncIterator, IntoAsyncIterator};
+use std::async_iter::AsyncIterator;
 use std::cmp::min;
 use std::future::Future;
 use std::io;
@@ -587,9 +587,6 @@ pub struct BlobRef {
 }
 
 impl storage::Blob for BlobRef {
-    type Buf = Vec<u8>;
-    type AsyncIter = BlobBytes<File>;
-
     fn len(&self) -> usize {
         self.entry.length as usize
     }
@@ -624,13 +621,10 @@ impl storage::Blob for BlobRef {
         let trailer = conn.write_all(trailer).await?;
         Ok((header, trailer))
     }
-}
 
-impl IntoAsyncIterator for BlobRef {
-    type Item = Vec<u8>;
-    type IntoAsyncIter = BlobBytes<File>;
+    type BlobBytes = BlobBytes<File>;
 
-    fn into_async_iter(self) -> Self::IntoAsyncIter {
+    fn bytes(self) -> Self::BlobBytes {
         BlobBytes {
             future: None,
             reader: self.reader,
