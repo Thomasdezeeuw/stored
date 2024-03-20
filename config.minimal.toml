@@ -3,3 +3,7 @@
 
 [storage]
 kind = "memory"
+
+# One of the listeners, either http or resp, must be configured.
+[resp]
+address = "127.0.0.1:5378"
