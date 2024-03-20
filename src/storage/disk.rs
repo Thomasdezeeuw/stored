@@ -223,7 +223,7 @@ impl Writer {
             file: File::from_std(rt, data_file),
         };
 
-        let index_path = path.join("data");
+        let index_path = path.join("index");
         trace!(path:% = index_path.display(); "opening index file");
         let index_file = open_file(index_path)?;
         let index = Index {
