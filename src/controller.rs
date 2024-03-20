@@ -12,7 +12,7 @@ use heph::actor;
 use heph::supervisor::SupervisorStrategy;
 use heph_rt::timer::{DeadlinePassed, Timer};
 use heph_rt::Access;
-use log::{as_debug, as_display, debug, error, info, warn};
+use log::{debug, error, info, warn};
 
 use crate::key::Key;
 use crate::protocol::{IsFatal, Protocol, Request, Response};
@@ -63,7 +63,7 @@ where
         Ok(source) => source,
         Err(err) => return Err(Error::new("getting source of client", err)),
     };
-    debug!(source = as_display!(source); "accepted {} connection", P::NAME);
+    debug!(source:% = source; "accepted {} connection", P::NAME);
 
     loop {
         let timer = Timer::after(ctx.runtime(), config.read_timeout());
@@ -72,7 +72,7 @@ where
             Ok(None) => break, // Done.
             Err(err) => {
                 let is_fatal = err.is_fatal();
-                warn!(source = as_display!(source), fatal = as_display!(is_fatal);
+                warn!(source:% = source, fatal = is_fatal;
                     "error reading next request: {err}");
                 let timer = Timer::after(ctx.runtime(), config.write_timeout());
                 match timer.wrap(protocol.reply_to_error(err)).await {
@@ -122,8 +122,8 @@ where
         };
 
         let elapsed = start.elapsed();
-        info!(target: "request", source = as_display!(source), request = as_display!(request_info),
-            response = as_display!(response), elapsed = as_debug!(elapsed); "processed request");
+        info!(target: "request", source:% = source, request:% = request_info,
+            response:% = response, elapsed:? = elapsed; "processed request");
 
         let timer = Timer::after(ctx.runtime(), config.write_timeout());
         match timer.wrap(protocol.reply(response)).await {
@@ -133,7 +133,7 @@ where
     }
 
     let elapsed = accepted.elapsed();
-    debug!(source = as_display!(source), elapsed = as_debug!(elapsed); "dropping {} connection", P::NAME);
+    debug!(source:% = source, elapsed:? = elapsed; "dropping {} connection", P::NAME);
     Ok(())
 }
 

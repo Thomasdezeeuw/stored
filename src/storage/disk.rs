@@ -212,11 +212,11 @@ impl Writer {
         write_index: index::Writer<Entry>,
     ) -> io::Result<Writer> {
         // Ensure the directory exists.
-        debug!(path = log::as_display!(path.display()); "creating directory for storage");
+        debug!(path:% = path.display(); "creating directory for storage");
         std::fs::create_dir_all(&path)?;
 
         let data_path = path.join("data");
-        trace!(path = log::as_display!(data_path.display()); "opening data file");
+        trace!(path:% = data_path.display(); "opening data file");
         let data_file = open_file(data_path)?;
         let data = Data {
             offset: data_file.metadata()?.len(),
@@ -224,7 +224,7 @@ impl Writer {
         };
 
         let index_path = path.join("data");
-        trace!(path = log::as_display!(index_path.display()); "opening index file");
+        trace!(path:% = index_path.display(); "opening index file");
         let index_file = open_file(index_path)?;
         let index = Index {
             offset: index_file.metadata()?.len(),
@@ -291,7 +291,7 @@ fn open_file(path: PathBuf) -> io::Result<std::fs::File> {
 /// Once the `file` is dropped it's automatically unlocked. The locked is
 /// maintain when the file descriptor is `dup`licated (`try_clone`d).
 fn lock_file(file: &std::fs::File) -> io::Result<()> {
-    debug!(file = log::as_debug!(file); "locking file");
+    debug!(file:? = file; "locking file");
     loop {
         match syscall!(flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB)) {
             Ok(_) => return Ok(()),
@@ -677,7 +677,7 @@ impl AsyncIterator for BlobBytes {
                 Poll::Ready(Some(buf))
             }
             Poll::Ready(Err(err)) => {
-                error!(error = log::as_error!(err), offset = this.offset; "error reading blob from disk");
+                error!(error:err = err, offset = this.offset; "error reading blob from disk");
                 this.left = 0;
                 Poll::Ready(None)
             }

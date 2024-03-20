@@ -143,7 +143,7 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
 async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
     while let Ok(signal) = ctx.receive_next().await {
         if signal.should_stop() {
-            info!(signal = log::as_display!(signal); "received shut down signal, waiting on all connections to close before shutting down");
+            info!(signal:% = signal; "received shut down signal, waiting on all connections to close before shutting down");
             break;
         }
     }
@@ -179,7 +179,7 @@ macro_rules! start_listener (
             Ok(())
         })?;
 
-        info!(address = log::as_display!($address); "listening for {} requests", <$protocol>::NAME);
+        info!(address:% = $address; "listening for {} requests", <$protocol>::NAME);
     }
 );
 
