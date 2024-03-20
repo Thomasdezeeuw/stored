@@ -8,13 +8,13 @@ use heph::actor::{self, actor_fn, NewActor};
 use heph::supervisor::NoSupervisor;
 use heph_rt::net::{tcp, TcpStream};
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
-use heph_rt::{Runtime, Signal};
+use heph_rt::{Runtime, Signal, ThreadSafe};
 use log::{error, info};
 
 use stored::config::{self, Config};
 use stored::controller;
 use stored::protocol::{Http, Protocol, Resp};
-use stored::storage::{self, mem};
+use stored::storage::{self, disk, mem};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -110,32 +110,26 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
     );
     runtime.receive_signals(actor_ref);
 
-    let storage_handle = match config.storage {
+    match config.storage {
         config::Storage::InMemory => {
             let (storage_handle, future) = storage::new_in_memory();
             runtime.spawn_future(
                 future,
                 FutureOptions::default().with_priority(Priority::HIGH),
             );
-            storage_handle
+            start_listeners!(mem::Storage, config, runtime, storage_handle);
         }
         config::Storage::OnDisk(path) => {
-            // FIXME.
-            todo!("open on-disk storage");
+            let rt = ThreadSafe::from(&runtime);
+            let (storage_handle, future) = storage::open_on_disk(rt, path)
+                .map_err(|err| heph_rt::Error::setup(format!("failed to open storage: {err}")))?;
+            runtime.spawn_future(
+                future,
+                FutureOptions::default().with_priority(Priority::HIGH),
+            );
+            start_listeners!(disk::Storage, config, runtime, storage_handle);
         }
     };
-
-    if let Some(config::Protocol { address }) = config.resp {
-        let storage_handle = storage_handle.clone();
-        #[rustfmt::skip]
-        start_listener!(Resp<TcpStream>, mem::Storage, runtime, storage_handle, tcp::server::setup, address, RespSupervisor);
-    }
-
-    if let Some(config::Protocol { address }) = config.http {
-        let storage_handle = storage_handle.clone();
-        #[rustfmt::skip]
-        start_listener!(Http, mem::Storage, runtime, storage_handle, heph_http::server::setup, address, HttpSupervisor);
-    }
 
     runtime.start()
 }
@@ -149,6 +143,28 @@ async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !
     }
     Ok(())
 }
+
+// NOTE: this should have been a function, but the traits were too complex.
+macro_rules! start_listeners (
+    (
+        $storage: ty, // Storage.
+        $config: ident, // Config.
+        $runtime: ident, // &mut heph_rt::Runtime.
+        $storage_handle: ident $(,)? // Into<Storage> + Send.
+    ) => {
+        if let Some(config::Protocol { address }) = $config.resp {
+            let storage_handle = $storage_handle.clone();
+            #[rustfmt::skip]
+            start_listener!(Resp<TcpStream>, $storage, $runtime, storage_handle, tcp::server::setup, address, RespSupervisor);
+        }
+
+        if let Some(config::Protocol { address }) = $config.http {
+            let storage_handle = $storage_handle.clone();
+            #[rustfmt::skip]
+            start_listener!(Http, $storage, $runtime, storage_handle, heph_http::server::setup, address, HttpSupervisor);
+        }
+    }
+);
 
 // NOTE: this should have been a function, but the traits were too complex.
 macro_rules! start_listener (
@@ -183,7 +199,7 @@ macro_rules! start_listener (
     }
 );
 
-use start_listener;
+use {start_listener, start_listeners};
 
 heph::restart_supervisor!(RespSupervisor, "RESP server");
 heph::restart_supervisor!(HttpSupervisor, "HTTP server");
