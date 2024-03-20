@@ -1,32 +1,14 @@
-# Path to the database file.
+[storage]
+kind = "disk" # Or `memory`.
+# For disk storage the path is required, for memory it's ignored.
 path = "stored.db"
-# Maximum size of a single blob (optional, default 1GB).
-max_blob_size = "100 MiB"
-# Maximum size of all blobs combined (optional, default no limit).
-max_store_size = "10 GiB"
 
-# Configuration for the HTTP server.
+# Support for thee Hypertext Transfer Protocol (HTTP) version 1.1 protocol.
 [http]
-# The address to listen on for HTTP requests (optional, defaults to
-# "127.0.0.1:8080").
-address = "127.0.0.1:8080"
+# Address to listen on.
+address = "127.0.0.1:5080"
 
-# Distributed configuration.
-# This entire section is optional.
-[distributed]
-# Address to listen on for peer connections.
-peer_address = "127.0.0.1:9001"
-# The amount of replicas of the blob stored, available options:
-# - `all': all nodes store all blobs (default). Highest availability, lowest
-#   chance of data lost, but highest amount of storage used.
-# - `majority': (N/2)+1 nodes store a blob, where N is the total number of nodes
-#   in the system. Medium availability, medium chance of data lost, medium
-#   amount of storage used.
-replicas = "all"
-# Addresses of peers to connect to.
-# Note that these don't need to contain all addresses, a single address of the
-# entire group is enough as each will automatically share all known peers.
-peers = [
-	"127.0.0.1:9002",
-	"127.0.0.1:9003",
-]
+# Support for the Redis Serialization Protocol (RESP) version 2 protocol.
+# This has the same structure as the HTTP section, see above.
+[resp]
+address = "127.0.0.1:5378"
