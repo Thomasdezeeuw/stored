@@ -181,9 +181,8 @@ async fn writer<RT: Access>(
 enum WriteRequest {
     /// Add a blob to the storage.
     ///
-    /// Returns `Ok(Key)` if the blob was added, `Err(key)` if the blob is
-    /// already stored.
-    Add(RpcMessage<(Box<[u8]>, Key), Result<Key, Key>>),
+    /// Returns true if the blob was added, false if the blob is already stored.
+    Add(RpcMessage<(Box<[u8]>, Key), bool>),
     /// Remove blob with `Key` from the storage.
     ///
     /// Returns true if the blob was removed, false if the blob was not in the
@@ -191,7 +190,7 @@ enum WriteRequest {
     Remove(RpcMessage<Key, bool>),
 }
 
-from_message!(WriteRequest::Add((Box<[u8]>, Key)) -> Result<Key, Key>);
+from_message!(WriteRequest::Add((Box<[u8]>, Key)) -> bool);
 from_message!(WriteRequest::Remove(Key) -> bool);
 
 /// Writing side of the store.
@@ -242,11 +241,11 @@ impl Writer {
     }
 
     /// Add `blob` to storage.
-    async fn add_blob(&mut self, blob: Box<[u8]>, key: Key) -> io::Result<Result<Key, Key>> {
+    async fn add_blob(&mut self, blob: Box<[u8]>, key: Key) -> io::Result<bool> {
         debug_assert_eq!(key, Key::for_blob(&blob));
 
         if !self.index.index.contains(&key) {
-            return Ok(Err(key));
+            return Ok(false);
         }
 
         // First we write the blob to the data file and sync it.
@@ -256,7 +255,7 @@ impl Writer {
         // Third add the blob entry to the in-memory index and flush it.
         self.index.write_entry(key.clone(), offset, length).await?;
 
-        Ok(Ok(key))
+        Ok(true)
     }
 
     /// Remove blob with `key`.
@@ -378,9 +377,9 @@ impl Index {
                 while let Some(disk_entry) = DiskEntry::from_disk(left) {
                     let key = disk_entry.key();
                     if disk_entry.is_deleted() {
-                        let _ = self.index.remove_blob(&key);
+                        self.index.remove_blob(&key);
                     } else {
-                        let _ = self.index.add_blob(key, disk_entry.to_entry());
+                        self.index.add_blob(key, disk_entry.to_entry());
                     }
 
                     left = &left[size_of::<DiskEntry>()..];
@@ -567,9 +566,9 @@ impl storage::Storage for Storage {
         if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
-            match self.writer.rpc((blob.into(), key)).await {
-                Ok(Ok(key)) => Ok(key),
-                Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
+            match self.writer.rpc((blob.into(), key.clone())).await {
+                Ok(true) => Ok(key),
+                Ok(false) => Err(AddError::AlreadyStored(key)),
                 Err(err) => Err(AddError::Err(err)),
             }
         }
