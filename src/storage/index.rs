@@ -96,11 +96,9 @@ impl<B> Writer<B> {
 
         // Get our own copy of the root that we can freely modify.
         let mut root = self.writer.clone();
-        let removed = Arc::make_mut(&mut root).remove_blob(key);
-        if removed {
-            self.writer.apply(OverwriteOperation::new(root));
-        }
-        removed
+        Arc::make_mut(&mut root).remove_blob(key);
+        self.writer.apply(OverwriteOperation::new(root));
+        true
     }
 
     /// Flush all previously applied changes so that the readers can see them
@@ -365,9 +363,7 @@ impl<B> Root<B> {
     }
 
     /// Remove blob with `key`.
-    ///
-    /// Returns true if the blob was removed, false if the blob wasn't stored.
-    fn remove_blob(&mut self, key: &Key) -> bool {
+    fn remove_blob(&mut self, key: &Key) {
         let mut current = &mut self.root;
         for idx in key_indices(key) {
             // SAFETY: masking so that we always have a valid index.
@@ -388,17 +384,16 @@ impl<B> Root<B> {
                     if entry.key == *key {
                         // Remove the blob.
                         current.branches[idx] = None;
-                        return true;
+                        return;
                     } else {
                         // Blob not stored, no changes needed.
-                        return false;
+                        return;
                     }
                 }
                 // Blob not stored, no changes needed.
-                None => return false,
+                None => return,
             }
         }
-        false
     }
 }
 
