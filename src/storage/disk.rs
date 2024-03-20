@@ -401,7 +401,7 @@ impl Index {
         self.offset += size_of::<DiskEntry>() as u64;
 
         let entry = Entry { offset, length };
-        let added = self.index.add_blob(key, entry).is_ok();
+        let added = self.index.add_blob(key, entry);
         if added {
             self.index.flush_changes().await;
         }

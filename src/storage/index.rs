@@ -71,19 +71,20 @@ impl<B> Writer<B> {
     }
 
     /// Add `blob` to the index.
-    pub fn add_blob(&mut self, key: Key, blob: B) -> Result<Key, Key> {
+    ///
+    /// Returns true if the blob was stored, returns false if the blob was
+    /// already stored.
+    pub fn add_blob(&mut self, key: Key, blob: B) -> bool {
         // If the blob is already stored we're done quickly.
         if self.writer.entry(&key).is_some() {
-            return Err(key);
+            return false;
         }
 
         // Get our own copy of the root that we can freely modify.
         let mut root = self.writer.clone();
-        let result = Arc::make_mut(&mut root).add_blob(key, blob);
-        if result.is_ok() {
-            self.writer.apply(OverwriteOperation::new(root));
-        }
-        result
+        Arc::make_mut(&mut root).add_blob(key, blob);
+        self.writer.apply(OverwriteOperation::new(root));
+        true
     }
 
     /// Remove blob with `key`.
@@ -272,7 +273,7 @@ impl<B> Root<B> {
     }
 
     /// Add `blob` to the index.
-    pub fn add_blob(&mut self, key: Key, blob: B) -> Result<Key, Key> {
+    pub fn add_blob(&mut self, key: Key, blob: B) {
         debug_assert!(self.entry(&key).is_none());
         let mut current = &mut self.root;
         let mut indices = key_indices(&key).enumerate();
@@ -343,7 +344,7 @@ impl<B> Root<B> {
                             blob,
                         };
                         current.branches[idx] = Some(Arc::new(entry).into());
-                        return Ok(key);
+                        return;
                     }
 
                     // If we hit this it means that the key for the new entry
@@ -357,14 +358,10 @@ impl<B> Root<B> {
                         blob,
                     };
                     current.branches[idx] = Some(Arc::new(entry).into());
-                    drop(indices);
-                    return Ok(key);
+                    return;
                 }
             }
         }
-
-        drop(indices);
-        Err(key)
     }
 
     /// Remove blob with `key`.

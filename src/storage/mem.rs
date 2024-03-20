@@ -66,11 +66,11 @@ async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: index
         let _ = match request {
             WriteRequest::Add(msg) => {
                 msg.handle(|(blob, key)| async {
-                    let result = writer.add_blob(key, blob);
-                    if result.is_ok() {
+                    let added = writer.add_blob(key, blob);
+                    if added {
                         writer.flush_changes().await;
                     }
-                    result
+                    added
                 })
                 .await
             }
@@ -90,15 +90,15 @@ async fn writer<RT>(mut ctx: actor::Context<WriteRequest, RT>, mut writer: index
 }
 
 enum WriteRequest {
-    /// Add `Blob` to storage. Returns `Ok(Key)` if the blob was added,
-    /// `Err(key)` if the blob is already stored.
-    Add(RpcMessage<(Blob, Key), Result<Key, Key>>),
+    /// Add `Blob` to storage. Returns true if the blob was added, false if the
+    /// blob is already stored.
+    Add(RpcMessage<(Blob, Key), bool>),
     /// Remove blob with `Key` from the storage. Returns true if the blob was
     /// removed, false if the blob was not in the storage.
     Remove(RpcMessage<Key, bool>),
 }
 
-from_message!(WriteRequest::Add((Blob, Key)) -> Result<Key, Key>);
+from_message!(WriteRequest::Add((Blob, Key)) -> bool);
 from_message!(WriteRequest::Remove(Key) -> bool);
 
 /// Handle to the [`Storage`] that can be send across thread bounds.
@@ -153,9 +153,9 @@ impl storage::Storage for Storage {
         if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
-            match self.writer.rpc((blob.into(), key)).await {
-                Ok(Ok(key)) => Ok(key),
-                Ok(Err(key)) => Err(AddError::AlreadyStored(key)),
+            match self.writer.rpc((blob.into(), key.clone())).await {
+                Ok(true) => Ok(key),
+                Ok(false) => Err(AddError::AlreadyStored(key)),
                 Err(err) => Err(AddError::Err(err)),
             }
         }
