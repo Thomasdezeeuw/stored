@@ -32,8 +32,15 @@ pub struct Protocol {
 impl Config {
     pub fn read_from_path(path: &Path) -> io::Result<Config> {
         let config = std::fs::read_to_string(path)?;
-        basic_toml::from_str(&config)
-            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))
+        let config: Config = basic_toml::from_str(&config)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
+        if config.http.is_none() && config.resp.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "missing listener configuration, please configure `http` or `resp`",
+            ))?;
+        }
+        Ok(config)
     }
 }
 
@@ -99,11 +106,6 @@ impl<'de> Deserialize<'de> for Config {
                     }
                 }
                 let storage = storage.ok_or_else(|| de::Error::missing_field("storage"))?;
-                if http.is_none() && resp.is_none() {
-                    return Err(de::Error::custom(format_args!(
-                        "missing `http` or `resp` field"
-                    )));
-                }
                 Ok(Config {
                     storage,
                     http,
