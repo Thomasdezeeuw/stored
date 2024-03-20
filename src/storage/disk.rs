@@ -165,7 +165,7 @@ async fn writer<RT: Access>(
         // Don't care about about whether or not the other end got the response.
         let _ = match request {
             WriteRequest::Add(msg) => {
-                msg.try_handle(|(blob, key)| async { writer.add_blob(blob, key).await })
+                msg.try_handle(|(key, blob)| async { writer.add_blob(key, blob).await })
                     .await?
             }
             WriteRequest::Remove(msg) => {
@@ -182,7 +182,7 @@ enum WriteRequest {
     /// Add a blob to the storage.
     ///
     /// Returns true if the blob was added, false if the blob is already stored.
-    Add(RpcMessage<(Box<[u8]>, Key), bool>),
+    Add(RpcMessage<(Key, Box<[u8]>), bool>),
     /// Remove blob with `Key` from the storage.
     ///
     /// Returns true if the blob was removed, false if the blob was not in the
@@ -190,7 +190,7 @@ enum WriteRequest {
     Remove(RpcMessage<Key, bool>),
 }
 
-from_message!(WriteRequest::Add((Box<[u8]>, Key)) -> bool);
+from_message!(WriteRequest::Add((Key, Box<[u8]>)) -> bool);
 from_message!(WriteRequest::Remove(Key) -> bool);
 
 /// Writing side of the store.
@@ -241,7 +241,7 @@ impl Writer {
     }
 
     /// Add `blob` to storage.
-    async fn add_blob(&mut self, blob: Box<[u8]>, key: Key) -> io::Result<bool> {
+    async fn add_blob(&mut self, key: Key, blob: Box<[u8]>) -> io::Result<bool> {
         debug_assert_eq!(key, Key::for_blob(&blob));
 
         if !self.index.index.contains(&key) {
@@ -566,7 +566,7 @@ impl storage::Storage for Storage {
         if self.index.contains(&key) {
             Err(AddError::AlreadyStored(key))
         } else {
-            match self.writer.rpc((blob.into(), key.clone())).await {
+            match self.writer.rpc((key.clone(), blob.into())).await {
                 Ok(true) => Ok(key),
                 Ok(false) => Err(AddError::AlreadyStored(key)),
                 Err(err) => Err(AddError::Err(err)),
