@@ -1,4 +1,4 @@
-//! Redis Protocol specification (RESP) version 2 like protocol
+//! Redis Serialization Protocol (RESP) version 2 like protocol
 //! (<https://redis.io/topics/protocol>).
 //!
 //! The implementation starts with [`Resp`].

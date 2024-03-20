@@ -59,7 +59,7 @@ fn main() -> ExitCode {
         Ok(Some(conf_path)) => match Config::read_from_path(Path::new(&conf_path)) {
             Ok(config) => config,
             Err(err) => {
-                eprintln!("failed to read configuration from '{conf_path}': {err}",);
+                error!("failed to process configuration file '{conf_path}': {err}",);
                 return ExitCode::FAILURE;
             }
         },
