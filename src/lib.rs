@@ -32,7 +32,7 @@
 
 pub mod config;
 pub mod controller;
-mod io;
+pub mod io;
 pub mod key;
 pub mod protocol;
 pub mod storage;
