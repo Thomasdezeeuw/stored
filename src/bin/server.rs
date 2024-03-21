@@ -177,10 +177,10 @@ macro_rules! start_listener (
         $address: ident, // SocketAddr.
         $listener_supervisor: ident $(,)? // fn new() -> Supervisor<Listener>.
     ) => {
-        let new_actor = actor_fn(controller::actor::<_, _, $storage, _>).map_arg(move |conn| {
+        let new_actor = actor_fn(controller::actor::<_, $storage, _>).map_arg(move |conn| {
             let protocol = <$protocol>::new(conn);
             let storage = $storage_handle.clone().into();
-            (controller::DefaultConfig, protocol, storage)
+            (controller::Config::default(), protocol, storage)
         });
         let options = ActorOptions::default();
         let server = $start_listener($address, controller::supervisor, new_actor, options).map_err(|err| {
