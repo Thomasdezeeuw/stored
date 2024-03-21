@@ -152,16 +152,16 @@ macro_rules! start_listeners (
         $runtime: ident, // &mut heph_rt::Runtime.
         $storage_handle: ident $(,)? // Into<Storage> + Send.
     ) => {
-        if let Some(config::Protocol { address }) = $config.resp {
+        if let Some(config) = $config.resp {
             let storage_handle = $storage_handle.clone();
             #[rustfmt::skip]
-            start_listener!(Resp<TcpStream>, $storage, $runtime, storage_handle, tcp::server::setup, address, RespSupervisor);
+            start_listener!(Resp<TcpStream>, $storage, $runtime, storage_handle, tcp::server::setup, config, RespSupervisor);
         }
 
-        if let Some(config::Protocol { address }) = $config.http {
+        if let Some(config) = $config.http {
             let storage_handle = $storage_handle.clone();
             #[rustfmt::skip]
-            start_listener!(Http, $storage, $runtime, storage_handle, heph_http::server::setup, address, HttpSupervisor);
+            start_listener!(Http, $storage, $runtime, storage_handle, heph_http::server::setup, config, HttpSupervisor);
         }
     }
 );
@@ -174,16 +174,20 @@ macro_rules! start_listener (
         $runtime: ident, // &mut heph_rt::Runtime.
         $storage_handle: ident, // Into<Storage> + Send.
         $start_listener: path, // Function to start listener.
-        $address: ident, // SocketAddr.
+        $config: ident, // config::Protocol.
         $listener_supervisor: ident $(,)? // fn new() -> Supervisor<Listener>.
     ) => {
+        let controller_config = controller::Config {
+            read_timeout: $config.read_timeout,
+            write_timeout: $config.write_timeout,
+        };
         let new_actor = actor_fn(controller::actor::<_, $storage, _>).map_arg(move |conn| {
             let protocol = <$protocol>::new(conn);
             let storage = $storage_handle.clone().into();
-            (controller::Config::default(), protocol, storage)
+            (controller_config.clone(), protocol, storage)
         });
         let options = ActorOptions::default();
-        let server = $start_listener($address, controller::supervisor, new_actor, options).map_err(|err| {
+        let server = $start_listener($config.address, controller::supervisor, new_actor, options).map_err(|err| {
             heph_rt::Error::setup(format!("failed to setup {} server: {err}", <$protocol>::NAME))
         })?;
 
@@ -195,7 +199,7 @@ macro_rules! start_listener (
             Ok(())
         })?;
 
-        info!(address:% = $address; "listening for {} requests", <$protocol>::NAME);
+        info!(address:% = $config.address; "listening for {} requests", <$protocol>::NAME);
     }
 );
 

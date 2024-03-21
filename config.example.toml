@@ -7,6 +7,16 @@ path = "stored.db"
 [http]
 # Address to listen on.
 address = "127.0.0.1:5080"
+# Read timeout.
+#
+# For durations we support the following suffixes:
+# * `s` seconds, e.g. `60s` is 60 seconds.
+# * `ms` milliseconds, e.g. `1000ms` is 1000 miliseconds or 1 seconds.
+read_timeout = "60s"
+# Write timeout.
+#
+# See read timeout for supported formats.
+write_timeout = "10000 ms"
 
 # Support for the Redis Serialization Protocol (RESP) version 2 protocol.
 # This has the same structure as the HTTP section, see above.
