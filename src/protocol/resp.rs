@@ -296,7 +296,7 @@ where
                     }
                     b"DBSIZE" => {
                         self.ensure_arguments(length, 0).await?;
-                        Ok(Some(Request::BlobStored))
+                        Ok(Some(Request::BlobsStored))
                     }
                     _ => {
                         let fatal = self.recover(length - 1).await.is_err();
