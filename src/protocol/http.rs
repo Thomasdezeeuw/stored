@@ -121,7 +121,7 @@ impl Protocol for Http {
                     }
                     Method::Get if head.path() == "/blobs-stored" => {
                         if body.is_empty() {
-                            Ok(Some(Request::BlobStored))
+                            Ok(Some(Request::BlobsStored))
                         } else {
                             Err(RequestError::BodyNotEmpty)
                         }

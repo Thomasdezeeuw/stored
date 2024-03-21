@@ -101,7 +101,7 @@ pub enum Request<'a> {
     /// Check if a blob with key exists.
     ContainsBlob(Key),
     /// Check the number of blobs stored.
-    BlobStored,
+    BlobsStored,
 }
 
 /// Response to a [`Request`], generic over the blob type `B`.
@@ -141,7 +141,7 @@ pub enum Response<B> {
     NotContainBlob,
     /// The amount of blobs stored.
     ///
-    /// Response to [`Request::BlobStored`].
+    /// Response to [`Request::BlobsStored`].
     ContainsBlobs(usize),
     /// Server error occurred, no detail is specified, but an error is logged.
     /// This is not an error from normal processing, something bad happened.
