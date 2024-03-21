@@ -19,24 +19,19 @@ use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
 
 /// Controller configuration.
-pub trait Config {
+pub struct Config {
     /// Read timeout.
-    fn read_timeout(&self) -> Duration;
-
+    read_timeout: Duration,
     /// Write timeout.
-    fn write_timeout(&self) -> Duration;
+    write_timeout: Duration,
 }
 
-/// Default implementation for [`Config`].
-pub struct DefaultConfig;
-
-impl Config for DefaultConfig {
-    fn read_timeout(&self) -> Duration {
-        Duration::from_secs(60)
-    }
-
-    fn write_timeout(&self) -> Duration {
-        Duration::from_secs(30)
+impl Default for Config {
+    fn default() -> Config {
+        Config {
+            read_timeout: Duration::from_secs(60),
+            write_timeout: Duration::from_secs(30),
+        }
     }
 }
 
@@ -44,14 +39,13 @@ impl Config for DefaultConfig {
 /// `storage`.
 ///
 /// `source` is used in logging and should be socket address or similar.
-pub async fn actor<C, P, S, RT>(
+pub async fn actor<P, S, RT>(
     mut ctx: actor::Context<!, RT>,
-    config: C,
+    config: Config,
     mut protocol: P,
     mut storage: S,
 ) -> Result<(), Error<P::ResponseError>>
 where
-    C: Config,
     P: Protocol,
     P::RequestError: From<DeadlinePassed>,
     P::ResponseError: From<DeadlinePassed>,
@@ -66,7 +60,7 @@ where
     debug!(source:% = source; "accepted {} connection", P::NAME);
 
     loop {
-        let timer = Timer::after(ctx.runtime(), config.read_timeout());
+        let timer = Timer::after(ctx.runtime(), config.read_timeout);
         let request = match timer.wrap(protocol.next_request()).await {
             Ok(Some(request)) => request,
             Ok(None) => break, // Done.
@@ -74,7 +68,7 @@ where
                 let is_fatal = err.is_fatal();
                 warn!(source:% = source, fatal = is_fatal;
                     "error reading next request: {err}");
-                let timer = Timer::after(ctx.runtime(), config.write_timeout());
+                let timer = Timer::after(ctx.runtime(), config.write_timeout);
                 match timer.wrap(protocol.reply_to_error(err)).await {
                     Ok(()) if is_fatal => break,
                     Ok(()) => continue,
@@ -125,7 +119,7 @@ where
         info!(target: "request", source:% = source, request:% = request_info,
             response:% = response, elapsed:? = elapsed; "processed request");
 
-        let timer = Timer::after(ctx.runtime(), config.write_timeout());
+        let timer = Timer::after(ctx.runtime(), config.write_timeout);
         match timer.wrap(protocol.reply(response)).await {
             Ok(()) => {} // On to the next request.
             Err(err) => return Err(Error::new("writing response", err)),
