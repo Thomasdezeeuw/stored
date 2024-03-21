@@ -165,13 +165,10 @@ async fn writer<RT: Access>(
         // Don't care about about whether or not the other end got the response.
         let _ = match request {
             WriteRequest::Add(msg) => {
-                msg.try_handle(|(key, blob)| async { writer.add_blob(key, blob).await })
+                msg.try_handle(|(key, blob)| writer.add_blob(key, blob))
                     .await?
             }
-            WriteRequest::Remove(msg) => {
-                msg.try_handle(|key| async { writer.remove_blob(key).await })
-                    .await?
-            }
+            WriteRequest::Remove(msg) => msg.try_handle(|key| writer.remove_blob(key)).await?,
         };
     }
     Ok(())
