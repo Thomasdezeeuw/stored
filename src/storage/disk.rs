@@ -452,11 +452,12 @@ impl DiskEntry {
         if buf.len() < size_of::<Self>() {
             return None;
         }
-        // SAFETY: the reference to `[u8]` ensure that the address is valid (not
-        // null, etc.). We check the length of the slice above to ensure we
-        // don't access memory we shouldn't. Both `Key` and `u64` do not have
-        // any invalid bit representations, so any slice of bytes is valid as
-        // `DiskEntry` (from a UB pov).
+        // SAFETY: the reference to `[u8]` ensures that the address is valid
+        // (not null, etc.). We checked the length of the slice above to ensure
+        // we don't access memory we shouldn't. Both `Key` and `u64` do not have
+        // any invalid bit representations and `DiskEntry` has a consistent
+        // layout using `repr(C)`, so any slice of bytes is valid as `DiskEntry`
+        // (from a UB pov).
         // TODO: does this need alignment?
         Some(unsafe { &*(buf.as_ptr().cast()) })
     }
@@ -484,10 +485,9 @@ impl DiskEntry {
 // returned pointer is valid and has a static and `Unpin` lifetime.
 unsafe impl Buf for Box<DiskEntry> {
     unsafe fn parts(&self) -> (*const u8, usize) {
-        let this: &DiskEntry = self;
         // SAFETY: the layout of `DiskEntry` is valid as slice of bytes due to
         // `repr(C)`.
-        ((this as *const DiskEntry).cast(), size_of::<Self>())
+        (((&**self) as *const DiskEntry).cast(), size_of::<Self>())
     }
 }
 
