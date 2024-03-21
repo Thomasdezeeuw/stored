@@ -23,13 +23,6 @@ ring              = { version = "0.17", default-features = false }
 serde             = { version = "1.0.197", default-features = false }
 std-logger        = { version = "0.5.3", default-features = false, features = ["timestamp", "log-panic", "nightly"] }
 
-[dev-dependencies]
-http        = { version = "0.2.1", default-features = false }
-lazy_static = { version = "1.4.0", default-features = false }
-mio         = { version = "0.8.0", default-features = false, features = ["os-poll"] }
-mio-pipe    = { version = "0.1.1", default-features = false }
-serde_test  = { version = "1.0.116", default-features = false }
-
 [profile.release]
 opt-level        = 3
 debug            = false
