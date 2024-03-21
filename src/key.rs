@@ -96,7 +96,7 @@ impl Key {
     /// # use std::io;
     /// use std::io::{Write, IoSlice};
     ///
-    /// # use stored::Key;
+    /// # use stored::key::Key;
     /// #
     /// # fn main() -> io::Result<()> {
     /// // Our `Write` implementation.
@@ -394,8 +394,6 @@ impl Hasher for KeyHasher {
 mod tests {
     use std::hash::{Hash, Hasher};
     use std::io::{self, Read};
-
-    use serde_test::{assert_tokens, Configure, Token};
 
     use crate::key::{InvalidKeyStr, Key, KeyHasher};
 
