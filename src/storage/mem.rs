@@ -162,6 +162,10 @@ impl storage::Storage for Storage {
     }
 
     async fn remove_blob(&mut self, key: Key) -> Result<bool, Self::Error> {
-        self.writer.rpc(key).await
+        if !self.index.contains(&key) {
+            Ok(false)
+        } else {
+            self.writer.rpc(key).await
+        }
     }
 }
