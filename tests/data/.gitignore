@@ -1,2 +1,0 @@
-# We don't want to modify the test databases by accident.
-*.db
