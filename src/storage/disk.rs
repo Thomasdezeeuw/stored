@@ -241,7 +241,7 @@ impl Writer {
     async fn add_blob(&mut self, key: Key, blob: Box<[u8]>) -> io::Result<bool> {
         debug_assert_eq!(key, Key::for_blob(&blob));
 
-        if !self.index.index.contains(&key) {
+        if self.index.index.contains(&key) {
             return Ok(false);
         }
 
