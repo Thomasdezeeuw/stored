@@ -19,20 +19,12 @@ use crate::protocol::{IsFatal, Protocol, Request, Response};
 use crate::storage::{AddError, Storage};
 
 /// Controller configuration.
+#[derive(Clone)]
 pub struct Config {
     /// Read timeout.
-    read_timeout: Duration,
+    pub read_timeout: Duration,
     /// Write timeout.
-    write_timeout: Duration,
-}
-
-impl Default for Config {
-    fn default() -> Config {
-        Config {
-            read_timeout: Duration::from_secs(60),
-            write_timeout: Duration::from_secs(30),
-        }
-    }
+    pub write_timeout: Duration,
 }
 
 /// Actor that controls a user connected using `protocol` trying to access

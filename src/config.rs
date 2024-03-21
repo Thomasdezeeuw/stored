@@ -2,6 +2,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::{fmt, io};
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
@@ -27,6 +28,10 @@ pub enum Storage {
 pub struct Protocol {
     /// Address to accept connections on.
     pub address: SocketAddr,
+    /// Read timeout.
+    pub read_timeout: Duration,
+    /// Write timeout.
+    pub write_timeout: Duration,
 }
 
 impl Config {
@@ -44,15 +49,22 @@ impl Config {
     }
 }
 
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl Default for Config {
     fn default() -> Config {
         Config {
             storage: Storage::InMemory,
             http: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
+                read_timeout: READ_TIMEOUT,
+                write_timeout: WRITE_TIMEOUT,
             }),
             resp: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5378),
+                read_timeout: READ_TIMEOUT,
+                write_timeout: WRITE_TIMEOUT,
             }),
         }
     }
@@ -303,6 +315,8 @@ impl<'de> Deserialize<'de> for Protocol {
                 V: MapAccess<'de>,
             {
                 let mut address = None;
+                let mut read_timeout = None;
+                let mut write_timeout = None;
                 while let Some(key) = map.next_key()? {
                     match key {
                         Field::Address => {
@@ -311,15 +325,33 @@ impl<'de> Deserialize<'de> for Protocol {
                             }
                             address = Some(map.next_value()?);
                         }
+                        Field::ReadTimeout => {
+                            if read_timeout.is_some() {
+                                return Err(de::Error::duplicate_field("read_timeout"));
+                            }
+                            read_timeout = Some(map.next_value::<DurationWrapper>()?.0);
+                        }
+                        Field::WriteTimeout => {
+                            if write_timeout.is_some() {
+                                return Err(de::Error::duplicate_field("write_timeout"));
+                            }
+                            write_timeout = Some(map.next_value::<DurationWrapper>()?.0);
+                        }
                     }
                 }
                 let address = address.ok_or_else(|| de::Error::missing_field("address"))?;
-                Ok(Protocol { address })
+                Ok(Protocol {
+                    address,
+                    read_timeout: read_timeout.unwrap_or(READ_TIMEOUT),
+                    write_timeout: write_timeout.unwrap_or(WRITE_TIMEOUT),
+                })
             }
         }
 
         enum Field {
             Address,
+            ReadTimeout,
+            WriteTimeout,
         }
 
         impl<'de> Deserialize<'de> for Field {
@@ -342,6 +374,8 @@ impl<'de> Deserialize<'de> for Protocol {
                     {
                         match value {
                             "address" => Ok(Field::Address),
+                            "read_timeout" => Ok(Field::ReadTimeout),
+                            "write_timeout" => Ok(Field::WriteTimeout),
                             _ => Err(de::Error::unknown_field(value, FIELDS)),
                         }
                     }
@@ -352,5 +386,47 @@ impl<'de> Deserialize<'de> for Protocol {
         }
 
         deserializer.deserialize_struct("Protocol", FIELDS, ProtocolVisitor)
+    }
+}
+
+/// Wrapper around [`Duration`] to ensure that serde/toml reports the line and column.
+struct DurationWrapper(Duration);
+
+impl<'de> Deserialize<'de> for DurationWrapper {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct DurationVisitor;
+
+        impl<'de> Visitor<'de> for DurationVisitor {
+            type Value = Duration;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("`address`")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Duration, E>
+            where
+                E: de::Error,
+            {
+                const EXPECTED: &str = "a duration";
+                let (digits, multipler) = if let Some(ms_duration) = value.strip_suffix("ms") {
+                    (ms_duration.trim(), 1) // Number of milliseconds in a millisecond, so 1.
+                } else if let Some(sec_duration) = value.strip_suffix("s") {
+                    (sec_duration.trim(), 1_000) // Number of milliseconds in a second.
+                } else {
+                    return Err(E::invalid_value(de::Unexpected::Str(value), &EXPECTED));
+                };
+                let digits: u64 = digits
+                    .parse()
+                    .map_err(|_| E::invalid_value(de::Unexpected::Str(value), &EXPECTED))?;
+                Ok(Duration::from_secs(digits.saturating_mul(multipler)))
+            }
+        }
+
+        deserializer
+            .deserialize_str(DurationVisitor)
+            .map(DurationWrapper)
     }
 }
