@@ -25,6 +25,7 @@ fn add_blob() {
         } else {
             panic!("unexpected request: {request:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
 
@@ -38,6 +39,7 @@ fn remove_blob() {
         } else {
             panic!("unexpected request: {request:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
 
@@ -51,6 +53,7 @@ fn get_blob() {
         } else {
             panic!("unexpected request: {request:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
 
@@ -64,6 +67,7 @@ fn contains_blob() {
         } else {
             panic!("unexpected request: {request:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
 
@@ -77,6 +81,7 @@ fn blobs_stored() {
         } else {
             panic!("unexpected request: {request:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
 
@@ -91,5 +96,6 @@ fn unknown_request() {
         } else {
             panic!("unexpected error: {request_err:?}");
         }
+        assert!(protocol.next_request().await.unwrap().is_none());
     });
 }
