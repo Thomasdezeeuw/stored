@@ -90,8 +90,11 @@ impl Write for TestConn {
         Ok((buf, written))
     }
 
-    async fn write_all<B: Buf>(&mut self, _: B) -> io::Result<B> {
-        todo!("TestConn::write_all");
+    async fn write_all<B: Buf>(&mut self, buf: B) -> io::Result<B> {
+        match self.output.send(buf.as_slice().into()) {
+            Ok(()) => Ok(buf),
+            Err(_) => Err(io::ErrorKind::UnexpectedEof.into()),
+        }
     }
 
     fn is_write_vectored(&self) -> bool {
@@ -105,10 +108,7 @@ impl Write for TestConn {
         todo!("TestConn::write_vectored");
     }
 
-    async fn write_vectored_all<B: BufSlice<N>, const N: usize>(
-        &mut self,
-        bufs: B,
-    ) -> io::Result<B> {
+    async fn write_vectored_all<B: BufSlice<N>, const N: usize>(&mut self, _: B) -> io::Result<B> {
         todo!("TestConn::write_vectored_all");
     }
 }
