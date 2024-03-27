@@ -1,7 +1,10 @@
 //! Testing utlities.
 
+use std::future::Future;
 use std::io;
+use std::pin::pin;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::task::{self, Poll};
 
 use heph_rt::io::{Buf, BufMut, BufMutSlice, BufSlice, Read, Write};
 use stored::io::Connection;
@@ -128,5 +131,16 @@ impl TestConnReceiver {
     /// Bytes read.
     pub fn received(&self) -> Bytes {
         self.output.try_recv().expect("no more data send")
+    }
+}
+
+pub fn block_on<Fut: Future>(fut: Fut) -> Fut::Output {
+    let mut fut = pin!(fut);
+    let mut ctx = task::Context::from_waker(task::Waker::noop());
+    loop {
+        match fut.as_mut().poll(&mut ctx) {
+            Poll::Ready(output) => return output,
+            Poll::Pending => {}
+        }
     }
 }
