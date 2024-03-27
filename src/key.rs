@@ -148,18 +148,21 @@ impl Key {
 pub struct InvalidKeyStr;
 
 impl InvalidKeyStr {
-    pub(crate) const DESC: &'static str = "invalid SHA-512 checksum string";
+    #[doc(hidden)] // For the `key!` macro.
+    pub const fn description() -> &'static str {
+        "invalid stored Key: invalid SHA-512 checksum"
+    }
 }
 
 impl fmt::Display for InvalidKeyStr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(Self::DESC)
+        f.write_str(self.description())
     }
 }
 
 impl Error for InvalidKeyStr {
     fn description(&self) -> &str {
-        Self::DESC
+        self.description()
     }
 }
 
@@ -397,3 +400,19 @@ impl Hasher for KeyHasher {
         }
     }
 }
+
+/// Macro to create a constant [`Key`].
+#[macro_export]
+macro_rules! key {
+    ($key: literal) => {{
+        const OUTPUT: $crate::key::Key = match $crate::key::Key::try_parse($key) {
+            ::std::result::Result::Ok(key) => key,
+            ::std::result::Result::Err($crate::key::InvalidKeyStr) => {
+                panic!("{}", $crate::key::InvalidKeyStr::description())
+            }
+        };
+        OUTPUT
+    }};
+}
+
+pub use key;
