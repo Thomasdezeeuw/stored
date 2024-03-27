@@ -1,9 +1,11 @@
 //! Unit tests.
 
 mod unit {
+    pub(super) mod util;
+
     mod key;
     mod protocol;
-    pub(super) mod util;
+    mod storage;
 }
 
 pub(crate) use unit::util;
