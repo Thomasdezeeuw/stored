@@ -221,11 +221,16 @@ impl<B> Snapshot<B> {
     }
 
     /// Lookup the blob with `key`.
-    pub fn lookup(&self, key: &Key) -> Option<&B> {
+    pub fn blob(&self, key: &Key) -> Option<&B> {
         match self.root.entry(key) {
             Some(entry) => Some(&entry.blob),
             None => None,
         }
+    }
+
+    /// Returns true if the index contains the `key`.
+    pub fn contains(&self, key: &Key) -> bool {
+        self.root.entry(key).is_some()
     }
 }
 
@@ -337,6 +342,7 @@ impl<B> Root<B> {
                         // Add the new entry.
                         let entry = Entry { key, blob };
                         current.branches[idx] = Some(Arc::new(entry).into());
+                        self.length += 1;
                         return;
                     }
 
@@ -349,6 +355,7 @@ impl<B> Root<B> {
                     drop(indices);
                     let entry = Entry { key, blob };
                     current.branches[idx] = Some(Arc::new(entry).into());
+                    self.length += 1;
                     return;
                 }
             }
@@ -377,6 +384,7 @@ impl<B> Root<B> {
                     if entry.key == *key {
                         // Remove the blob.
                         current.branches[idx] = None;
+                        self.length -= 1;
                         return;
                     }
                     // Blob not stored, no changes needed.

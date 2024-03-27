@@ -1,5 +1,7 @@
 //! Unit tests.
 
+#![feature(noop_waker)]
+
 mod unit {
     pub(super) mod util;
 
