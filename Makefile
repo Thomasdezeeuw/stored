@@ -1,41 +1,91 @@
-# NOTE: note exporting the following two variables as they interfere with
-# incremental compilation (not setting the flag, e.g. outside of running Make
-# will cause recompilation).
-RUSTFLAGS                ?= -C target-cpu=native
-MACOSX_DEPLOYMENT_TARGET ?= 10.15
-GIT_SHORT_HASH            = $(shell git rev-parse --short HEAD)
-# Either " modified" or empty if on a clean branch.
-GIT_MODIFIED              = $(shell git diff --quiet --ignore-submodules HEAD 2> /dev/null || echo " modified")
-export COMMIT_VERSION     = $(GIT_SHORT_HASH)$(GIT_MODIFIED)
+# Test options.
+# You can also use `TEST_FLAGS` to set additonal flags, e.g. `--release`.
+TEST_OPTS = -- --quiet -Z unstable-options --shuffle
+# Command to run in `dev` target, e.g. `make RUN=check dev`.
+RUN ?= test
 
 build:
-	RUSTFLAGS="$(RUSTFLAGS)" MACOSX_DEPLOYMENT_TARGET="$(MACOSX_DEPLOYMENT_TARGET)" cargo build --release
+	cargo build --release -C target-cpu=native
+
+# Development loop, runs $RUN whenever a source file changes.
+dev:
+	find src/ tests/ examples/ Makefile Cargo.toml | entr -d -c $(MAKE) $(RUN)
 
 test:
-	(cargo test \
-		&& (killall -u $$(whoami) -KILL stored || true)) || \
-		(killall -u $$(whoami) -KILL stored && exit 1)
+	cargo test --all-features $(TEST_FLAGS) $(TEST_OPTS)
 
-# NOTE: when using this command you might want to change the `test` target to
-# only run a subset of the tests you're actively working on.
-dev:
-	find src/ tests/ Makefile Cargo.toml | RUST_BACKTRACE=0 entr -d -c $(MAKE) test
+test_sanitizers:
+	$(MAKE) test_sanitizer sanitizer=address
+	$(MAKE) test_sanitizer sanitizer=leak
+	$(MAKE) test_sanitizer sanitizer=memory
+	$(MAKE) test_sanitizer sanitizer=thread
 
-lint:
-	cargo clippy --all-targets -- --warn warnings \
-		--warn clippy::correctness \
-		--warn clippy::style \
-		--warn clippy::complexity \
-		--warn clippy::perf \
-		--allow clippy::assertions_on_constants \
-		--allow clippy::borrow_interior_mutable_const \
-		--allow clippy::enum_variant_names \
-		--allow clippy::len_without_is_empty \
-		--allow clippy::needless_lifetimes \
+# Run with `make test_sanitizer sanitizer=$sanitizer`, or use `test_sanitizers`.
+test_sanitizer:
+	RUSTDOCFLAGS=-Zsanitizer=$(sanitizer) RUSTFLAGS=-Zsanitizer=$(sanitizer) \
+	cargo test -Zbuild-std --all-features --target x86_64-unknown-linux-gnu $(TEST_FLAGS) $(TEST_OPTS)
+
+# TODO: add TEST_OPTS to this, currently this doesn't work with miri.
+test_miri:
+	cargo miri test --all-features $(TEST_FLAGS)
+
+check:
+	cargo check --all-features --all-targets
+
+# Reasons to allow lints:
+# `cargo-common-metadata`: for `benches` and `tools`.
+# `doc-markdown`: too many false positives.
+# `equatable-if-let`: bad lint.
+# `future-not-send`: we don't want to require all generic parameters to be `Send`.
+# `match-bool`: often less lines of code and I find that use `match` generally
+# strictly better then `if`s.
+# `missing-const-for-fn`: See https://github.com/rust-lang/rust-clippy/issues/4979.
+# `module-name-repetitions`: we re-export various names.
+# `needless-lifetimes`: lifetime serves as documentation.
+# `option-if-let-else`: not idiomatic at all.
+# `use-self`: this is a bad lint.
+#
+# # Could fix these later
+# `enum-glob-use`: used in enum errors.
+# `missing-errors-doc`, `missing-panics-doc`: don't want to do this.
+# Too many warnings:
+#  * `must-use-candidate`.
+#  * `redundant-pub-crate`.
+lint: clippy
+clippy:
+	cargo clippy --all-features -- \
+		--deny clippy::all \
+		--deny clippy::correctness \
+		--deny clippy::style \
+		--deny clippy::complexity \
+		--deny clippy::perf \
+		--deny clippy::pedantic \
+		--deny clippy::nursery \
+		--deny clippy::cargo \
+		--allow clippy::cargo-common-metadata \
+		--allow clippy::doc-markdown \
+		--allow clippy::enum-glob-use \
+		--allow clippy::equatable-if-let \
+		--allow clippy::future-not-send \
+		--allow clippy::match-bool \
+		--allow clippy::missing-const-for-fn \
+		--allow clippy::missing-errors-doc \
+		--allow clippy::missing-panics-doc \
+		--allow clippy::module-name-repetitions \
+		--allow clippy::must-use-candidate \
+		--allow clippy::needless-lifetimes \
 		--allow clippy::new-without-default \
-		--allow clippy::partialeq_ne_impl
+		--allow clippy::option-if-let-else \
+		--allow clippy::redundant-pub-crate \
+		--allow clippy::use-self \
+
+doc:
+	cargo doc --all-features
+
+doc_private:
+	cargo doc --all-features --document-private-items
 
 clean:
 	cargo clean
 
-.PHONY: build test dev lint clean
+.PHONY: dev test test_sanitizers test_sanitizer test_miri check lint clippy doc doc_private clean
