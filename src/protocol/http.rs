@@ -3,7 +3,7 @@
 //!
 //! The implementation starts with [`Http`].
 
-use std::mem::replace;
+use std::mem::take;
 use std::{fmt, io};
 
 use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
@@ -99,7 +99,7 @@ impl Protocol for Http {
                 match head.method() {
                     Method::Post if head.path() == "/blob" => {
                         // Read the entire blob into memory.
-                        let mut body_buf = replace(&mut self.buf, Vec::new());
+                        let mut body_buf = take(&mut self.buf);
                         body_buf.clear();
                         // FIXME: make `Content-Length` required (expected for
                         // chunked encoding when we support streaming adding of

@@ -160,14 +160,11 @@ impl FromStr for Key {
 }
 
 fn from_hex_digit(digit: u8) -> Result<u8, InvalidKeyStr> {
-    if (b'0'..=b'9').contains(&digit) {
-        Ok(digit - b'0')
-    } else if (b'a'..=b'f').contains(&digit) {
-        Ok(digit - b'a' + 10)
-    } else if (b'A'..=b'F').contains(&digit) {
-        Ok(digit - b'A' + 10)
-    } else {
-        Err(InvalidKeyStr)
+    match digit {
+        b'0'..=b'9' => Ok(digit - b'0'),
+        b'a'..=b'f' => Ok(digit - b'a' + 10),
+        b'A'..=b'F' => Ok(digit - b'A' + 10),
+        _ => Err(InvalidKeyStr),
     }
 }
 
@@ -175,11 +172,7 @@ impl Eq for Key {}
 
 impl PartialEq for Key {
     fn eq(&self, other: &Key) -> bool {
-        self.bytes[..] == other.bytes[..]
-    }
-
-    fn ne(&self, other: &Key) -> bool {
-        self.bytes[..] != other.bytes[..]
+        self.bytes == other.bytes
     }
 }
 
@@ -204,7 +197,7 @@ impl Hash for Key {
     where
         H: Hasher,
     {
-        state.write(&self.bytes[..])
+        state.write(&self.bytes[..]);
     }
 }
 
@@ -279,15 +272,15 @@ impl<IO> KeyCalculator<IO> {
             if length >= left {
                 self.update_digest(&buf[..left]);
                 return;
-            } else {
-                // Entire buffer was filled.
-                self.update_digest(buf);
-                left -= length;
             }
+            // Entire buffer was filled.
+            self.update_digest(buf);
+            left -= length;
         }
     }
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl<IO: fmt::Debug> fmt::Debug for KeyCalculator<IO> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("KeyCalculator")

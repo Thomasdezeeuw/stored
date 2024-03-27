@@ -121,7 +121,7 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
         }
         config::Storage::OnDisk(path) => {
             let rt = ThreadSafe::from(&runtime);
-            let (storage_handle, future) = storage::open_on_disk(rt, path)
+            let (storage_handle, future) = storage::open_on_disk(rt, &path)
                 .map_err(|err| heph_rt::Error::setup(format!("failed to open storage: {err}")))?;
             runtime.spawn_future(
                 future,

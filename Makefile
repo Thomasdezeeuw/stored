@@ -37,6 +37,7 @@ check:
 # `doc-markdown`: too many false positives.
 # `equatable-if-let`: bad lint.
 # `future-not-send`: we don't want to require all generic parameters to be `Send`.
+# `if-not-else`: let the logic speak for itself.
 # `match-bool`: often less lines of code and I find that use `match` generally
 # strictly better then `if`s.
 # `missing-const-for-fn`: See https://github.com/rust-lang/rust-clippy/issues/4979.
@@ -45,12 +46,8 @@ check:
 # `option-if-let-else`: not idiomatic at all.
 # `use-self`: this is a bad lint.
 #
-# # Could fix these later
-# `enum-glob-use`: used in enum errors.
-# `missing-errors-doc`, `missing-panics-doc`: don't want to do this.
-# Too many warnings:
-#  * `must-use-candidate`.
-#  * `redundant-pub-crate`.
+# Could fix:
+# `cast-possible-truncation`.
 lint: clippy
 clippy:
 	cargo clippy --all-features -- \
@@ -63,11 +60,14 @@ clippy:
 		--deny clippy::nursery \
 		--deny clippy::cargo \
 		--allow clippy::cargo-common-metadata \
+		--allow clippy::cast-possible-truncation \
 		--allow clippy::doc-markdown \
-		--allow clippy::enum-glob-use \
 		--allow clippy::equatable-if-let \
 		--allow clippy::future-not-send \
+		--allow clippy::if-not-else \
+		--allow clippy::len-without-is-empty \
 		--allow clippy::match-bool \
+		--allow clippy::match-same-arms \
 		--allow clippy::missing-const-for-fn \
 		--allow clippy::missing-errors-doc \
 		--allow clippy::missing-panics-doc \
@@ -76,7 +76,7 @@ clippy:
 		--allow clippy::needless-lifetimes \
 		--allow clippy::new-without-default \
 		--allow clippy::option-if-let-else \
-		--allow clippy::redundant-pub-crate \
+		--allow clippy::struct-field-names \
 		--allow clippy::use-self \
 
 doc:

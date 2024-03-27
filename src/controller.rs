@@ -154,6 +154,7 @@ where
 /// stops the actor.
 ///
 /// [`Supervisor`]: heph::supervisor::Supervisor
+#[allow(clippy::needless_pass_by_value)]
 pub fn supervisor<A, E>(err: Error<E>) -> SupervisorStrategy<A>
 where
     E: fmt::Display,
