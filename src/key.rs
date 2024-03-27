@@ -47,18 +47,30 @@ impl Key {
         unsafe { &*(bytes.as_ptr().cast()) }
     }
 
-    /// Same as the [`FromStr::from_str`] implementation, but uses `&[u8]`
-    /// instead of a string.
-    pub fn from_byte_str(s: &[u8]) -> Result<Self, InvalidKeyStr> {
-        if s.len() != Key::LENGTH * 2 {
+    /// Parse a key from a string.
+    ///
+    /// This is the same as the [`FromStr::from_str`] implementation, but is
+    /// a constant function.
+    pub const fn try_parse(key: &str) -> Result<Key, InvalidKeyStr> {
+        Key::try_parse_bytes(key.as_bytes())
+    }
+
+    /// Same as the [`Key::try_parse`], but uses `&[u8]` instead of a `str`ing.
+    pub const fn try_parse_bytes(input: &[u8]) -> Result<Self, InvalidKeyStr> {
+        if input.len() != Key::LENGTH * 2 {
             return Err(InvalidKeyStr);
         }
 
         let mut bytes = [0; Key::LENGTH];
-        for (i, digits) in s.chunks_exact(2).enumerate() {
-            let high = from_hex_digit(digits[0])?;
-            let low = from_hex_digit(digits[1])?;
-            bytes[i] = (high * 16) | low;
+        let mut i = 0;
+        while i < Key::LENGTH {
+            let high = from_hex_digit(input[i * 2]);
+            let low = from_hex_digit(input[(i * 2) + 1]);
+            if high == INVALID_HEX_DIGIT || low == INVALID_HEX_DIGIT {
+                return Err(InvalidKeyStr);
+            }
+            bytes[i] = (high << 4) | low;
+            i += 1;
         }
         Ok(Key::new(bytes))
     }
@@ -155,16 +167,19 @@ impl FromStr for Key {
     type Err = InvalidKeyStr;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Key::from_byte_str(s.as_bytes())
+        Key::try_parse(s)
     }
 }
 
-fn from_hex_digit(digit: u8) -> Result<u8, InvalidKeyStr> {
+const INVALID_HEX_DIGIT: u8 = u8::MAX;
+
+/// Returns `INVALID_HEX_DIGIT` in case of an error.
+const fn from_hex_digit(digit: u8) -> u8 {
     match digit {
-        b'0'..=b'9' => Ok(digit - b'0'),
-        b'a'..=b'f' => Ok(digit - b'a' + 10),
-        b'A'..=b'F' => Ok(digit - b'A' + 10),
-        _ => Err(InvalidKeyStr),
+        b'0'..=b'9' => digit - b'0',
+        b'a'..=b'f' => digit - b'a' + 10,
+        b'A'..=b'F' => digit - b'A' + 10,
+        _ => INVALID_HEX_DIGIT,
     }
 }
 

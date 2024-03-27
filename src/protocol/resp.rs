@@ -77,7 +77,7 @@ where
     /// from the connection.
     async fn read_key(&mut self) -> Result<Key, RequestError> {
         match self.read_string_idx().await {
-            Ok(idx) => match Key::from_byte_str(&self.buf[idx]) {
+            Ok(idx) => match Key::try_parse_bytes(&self.buf[idx]) {
                 Ok(key) => Ok(key),
                 Err(InvalidKeyStr) => Err(RequestError::User(Error::INVALID_KEY, false)),
             },
