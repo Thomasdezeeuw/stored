@@ -85,13 +85,13 @@
 use std::async_iter::AsyncIterator;
 use std::cmp::min;
 use std::future::Future;
-use std::io;
 use std::mem::{self, size_of};
 use std::os::fd::AsRawFd;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
+use std::{io, ptr};
 
 use heph::actor::{self, actor_fn};
 use heph::actor_ref::rpc::RpcError;
@@ -121,7 +121,7 @@ const READ_BLOB_BUF_SIZE: usize = 4096;
 /// that when this function returns the index is not yet filled.
 pub fn open<RT: Access + Clone>(
     rt: RT,
-    path: PathBuf,
+    path: &Path,
 ) -> io::Result<(Handle, impl Future<Output = ()>)> {
     // In-memory index of the stored blobs.
     let (write_index, read_index) = index::new();
@@ -148,6 +148,7 @@ pub fn open<RT: Access + Clone>(
 /// [`Supervisor`] for the [`writer`] actor.
 ///
 /// [`Supervisor`]: heph::supervisor::Supervisor
+#[allow(clippy::needless_pass_by_value)]
 fn writer_supervisor<A>(err: io::Error) -> SupervisorStrategy<A> {
     error!("storage I/O error: {err}");
     SupervisorStrategy::Stop
@@ -204,12 +205,12 @@ impl Writer {
     /// created (same goes for the files).
     fn open<RT: Access>(
         rt: &RT,
-        path: PathBuf,
+        path: &Path,
         write_index: index::Writer<Entry>,
     ) -> io::Result<Writer> {
         // Ensure the directory exists.
         debug!(path:% = path.display(); "creating directory for storage");
-        std::fs::create_dir_all(&path)?;
+        std::fs::create_dir_all(path)?;
 
         let data_path = path.join("data");
         trace!(path:% = data_path.display(); "opening data file");
@@ -487,7 +488,7 @@ unsafe impl Buf for Box<DiskEntry> {
     unsafe fn parts(&self) -> (*const u8, usize) {
         // SAFETY: the layout of `DiskEntry` is valid as slice of bytes due to
         // `repr(C)`.
-        (((&**self) as *const DiskEntry).cast(), size_of::<Self>())
+        (ptr::from_ref::<DiskEntry>(self).cast(), size_of::<Self>())
     }
 }
 
@@ -572,7 +573,7 @@ impl storage::Storage for Storage {
     }
 
     async fn remove_blob(&mut self, key: Key) -> Result<bool, Self::Error> {
-        if !self.index.contains(&key) {
+        if self.index.contains(&key) {
             Ok(false)
         } else {
             self.writer.rpc(key).await

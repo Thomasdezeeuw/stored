@@ -3,7 +3,7 @@
 //!
 //! The implementation starts with [`Resp`].
 
-use std::mem::replace;
+use std::mem::{replace, take};
 use std::ops::Range;
 use std::{fmt, io};
 
@@ -153,7 +153,7 @@ where
     /// bytes (thus read all bytes in the connection) and an error otherwise.
     async fn read(&mut self) -> io::Result<bool> {
         self.prepare_buf();
-        let buf = replace(&mut self.buf, Vec::new());
+        let buf = take(&mut self.buf);
         let before_length = buf.len();
         self.buf = self.conn.read(buf).await?;
         Ok(before_length != self.buf.len())
@@ -192,7 +192,7 @@ where
     async fn write_blob<B: Blob>(&mut self, blob: B) -> io::Result<()> {
         let start = self.buf.len();
         encode::length(&mut self.buf, blob.len());
-        let header = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
+        let header = WriteBuf::new(take(&mut self.buf), start);
         self.buf = blob.write(header, CRLF, &mut self.conn).await?.0.reset();
         Ok(())
     }
@@ -211,7 +211,7 @@ where
 
     /// Write `self.buf[start..]` as response.
     async fn write_part_buf(&mut self, start: usize) -> io::Result<()> {
-        let buf = WriteBuf::new(replace(&mut self.buf, Vec::new()), start);
+        let buf = WriteBuf::new(take(&mut self.buf), start);
         self.buf = self.conn.write_all(buf).await?.reset();
         Ok(())
     }
@@ -501,6 +501,7 @@ mod decode {
             // Null array. Format `*-1\r\n`.
             Ok(Some((-1, processed))) => Ok(Some((None, processed))),
             Ok(Some((len, _))) if len.is_negative() => Err(Error::PARSE_ARRAY_NEGATIVE_LENGTH),
+            #[allow(clippy::cast_sign_loss)] // Check for negative in the line above.
             Ok(Some((len, processed))) => Ok(Some((Some(len as usize), processed))),
             Ok(None) => Ok(None),
             Err(err) => Err(err),
@@ -518,6 +519,7 @@ mod decode {
             Ok(Some((len, _))) if len.is_negative() => {
                 return Err(Error::PARSE_STR_NEGATIVE_LENGTH)
             }
+            #[allow(clippy::cast_sign_loss)] // Check for negative in the line above.
             Ok(Some((len, processed))) => (len as usize, processed), // $ is included in processed.
             Ok(None) => return Ok(None),
             Err(err) => return Err(err),
@@ -566,6 +568,7 @@ mod decode {
     ///
     /// The first byte (`+` or `-`) should **not** be included. The processed
     /// bytes will always be +1 (so that the first byte can be safely ignored).
+    #[allow(clippy::unnecessary_wraps)] // Matches the other functions.
     fn until_crlf(buf: &[u8]) -> ParseResult<Range<usize>> {
         let mut end: usize = 1; // Skipping first byte per the docs.
         let mut bytes = buf.iter();
@@ -573,9 +576,8 @@ mod decode {
             if *b == b'\r' {
                 if let Some(b'\n') = bytes.next() {
                     return Ok(Some((1..end, end + 2))); // +2 = CRLF.
-                } else {
-                    end += 1;
                 }
+                end += 1;
             }
             end += 1;
         }
@@ -609,7 +611,7 @@ mod decode {
                 b'\r' => match bytes.next() {
                     Some(b'\n') => {
                         if !is_positive {
-                            value = -value
+                            value = -value;
                         }
                         return Ok(Some((value, end)));
                     }
@@ -631,12 +633,12 @@ mod encode {
     /// Encode `length` onto `buf` (without changing it's current contents) as
     /// length of a bulk string.
     pub(super) fn length(buf: &mut Vec<u8>, length: usize) {
-        int(buf, b'$', length)
+        int(buf, b'$', length);
     }
 
     /// Encode `value` onto `buf` (without changing it's current contents).
     pub(super) fn integer(buf: &mut Vec<u8>, value: usize) {
-        int(buf, b':', value)
+        int(buf, b':', value);
     }
 
     /// Encode an integer with `prefix`.

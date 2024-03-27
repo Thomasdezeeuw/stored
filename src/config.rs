@@ -413,7 +413,7 @@ impl<'de> Deserialize<'de> for DurationWrapper {
                 const EXPECTED: &str = "a duration";
                 let (digits, multipler) = if let Some(ms_duration) = value.strip_suffix("ms") {
                     (ms_duration.trim(), 1) // Number of milliseconds in a millisecond, so 1.
-                } else if let Some(sec_duration) = value.strip_suffix("s") {
+                } else if let Some(sec_duration) = value.strip_suffix('s') {
                     (sec_duration.trim(), 1_000) // Number of milliseconds in a second.
                 } else {
                     return Err(E::invalid_value(de::Unexpected::Str(value), &EXPECTED));

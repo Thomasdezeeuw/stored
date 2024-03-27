@@ -61,6 +61,7 @@ pub fn new<B>() -> (Writer<B>, Handle<B>) {
 ///
 /// [flushed]: Writer::flush_changes
 pub struct Writer<B> {
+    #[allow(clippy::type_complexity)]
     writer: left_right::Writer<Arc<Root<B>>, Option<OverwriteOperation<Arc<Root<B>>>>>,
 }
 
@@ -103,7 +104,7 @@ impl<B> Writer<B> {
 
     /// Flush all previously applied changes so that the readers can see them
     pub async fn flush_changes(&mut self) {
-        self.writer.flush().await
+        self.writer.flush().await;
     }
 }
 
@@ -167,10 +168,7 @@ impl<B> Index<B> {
     {
         // SAFETY: we're ensuring that we're the only reader in this type.
         let root = unsafe { self.reader.read() };
-        match root.entry(key) {
-            Some(entry) => Some(entry.blob.clone()),
-            None => None,
-        }
+        root.entry(key).map(|entry| entry.blob.clone())
     }
 
     /// Returns true if the index contains the `key`.
@@ -337,10 +335,7 @@ impl<B> Root<B> {
                         // Add the existing entry.
                         current.branches[existing_idx] = Some(existing_entry);
                         // Add the new entry.
-                        let entry = Entry {
-                            key: key.clone(),
-                            blob,
-                        };
+                        let entry = Entry { key, blob };
                         current.branches[idx] = Some(Arc::new(entry).into());
                         return;
                     }
@@ -351,10 +346,8 @@ impl<B> Root<B> {
                     unreachable!();
                 }
                 None => {
-                    let entry = Entry {
-                        key: key.clone(),
-                        blob,
-                    };
+                    drop(indices);
+                    let entry = Entry { key, blob };
                     current.branches[idx] = Some(Arc::new(entry).into());
                     return;
                 }
@@ -385,10 +378,9 @@ impl<B> Root<B> {
                         // Remove the blob.
                         current.branches[idx] = None;
                         return;
-                    } else {
-                        // Blob not stored, no changes needed.
-                        return;
                     }
+                    // Blob not stored, no changes needed.
+                    return;
                 }
                 // Blob not stored, no changes needed.
                 None => return,
@@ -599,9 +591,9 @@ impl<B> Drop for Pointer<B> {
     fn drop(&mut self) {
         let ptr = self.as_ptr();
         if self.is_entry() {
-            drop(unsafe { Arc::<Entry<B>>::from_raw(ptr.cast()) })
+            drop(unsafe { Arc::<Entry<B>>::from_raw(ptr.cast()) });
         } else {
-            drop(unsafe { Arc::<Branch<B>>::from_raw(ptr.cast()) })
+            drop(unsafe { Arc::<Branch<B>>::from_raw(ptr.cast()) });
         }
     }
 }
