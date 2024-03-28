@@ -16,7 +16,7 @@ use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 ///
 /// This is always the SHA-512 checksum of the blob, which can be calculated
 /// using the [`Key::for_blob`] method.
-#[derive(Clone)]
+#[derive(Eq, PartialEq, Clone)]
 #[repr(transparent)]
 pub struct Key {
     bytes: [u8; Key::LENGTH],
@@ -183,14 +183,6 @@ const fn from_hex_digit(digit: u8) -> u8 {
         b'a'..=b'f' => digit - b'a' + 10,
         b'A'..=b'F' => digit - b'A' + 10,
         _ => INVALID_HEX_DIGIT,
-    }
-}
-
-impl Eq for Key {}
-
-impl PartialEq for Key {
-    fn eq(&self, other: &Key) -> bool {
-        self.bytes == other.bytes
     }
 }
 
