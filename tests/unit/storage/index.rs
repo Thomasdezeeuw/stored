@@ -3,8 +3,6 @@
 use stored::key::{key, Key};
 use stored::storage::index;
 
-use heph_rt::test::block_on_future;
-
 use crate::util::block_on;
 
 const BLOB: &[u8] = b"Hello world";

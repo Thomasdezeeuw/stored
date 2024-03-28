@@ -156,13 +156,13 @@ impl InvalidKeyStr {
 
 impl fmt::Display for InvalidKeyStr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(self.description())
+        f.write_str(InvalidKeyStr::description())
     }
 }
 
 impl Error for InvalidKeyStr {
     fn description(&self) -> &str {
-        self.description()
+        InvalidKeyStr::description()
     }
 }
 
