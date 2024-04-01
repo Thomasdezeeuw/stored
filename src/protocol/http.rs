@@ -56,8 +56,8 @@ impl Http {
     }
 
     async fn integer_response(&mut self, status_code: StatusCode, value: usize) -> io::Result<()> {
-        // TODO: avoid allocation using `self.buf`.
-        let body = OneshotBody::new(value.to_string());
+        // TODO: avoid allocation.
+        let body = OneshotBody::new(Box::<str>::from(itoa::Buffer::new().format(value)));
         self.conn.respond(status_code, &self.headers, body).await
     }
 
