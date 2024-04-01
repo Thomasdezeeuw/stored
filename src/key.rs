@@ -6,7 +6,7 @@ use std::error::Error;
 use std::fmt;
 use std::str::FromStr;
 
-use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
+use ring::digest::{self, SHA512_OUTPUT_LEN};
 
 /// The key of a blob.
 ///
@@ -73,8 +73,9 @@ impl Key {
 
     /// Calculate the `Key` for the provided `blob`.
     pub fn for_blob(blob: &[u8]) -> Key {
-        let result = digest(&SHA512, blob);
-        Key::from_bytes(result.as_ref()).to_owned()
+        let mut calc = KeyCalculator::new();
+        calc.update(blob);
+        calc.finish()
     }
 
     /// Get the key as bytes.
