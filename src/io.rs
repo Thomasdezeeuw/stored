@@ -26,12 +26,12 @@ pub trait Connection: Read + Write {
     ///
     /// # Errors
     ///
-    /// The Error is considered fatal.
+    /// The error is considered fatal.
     fn source(&mut self) -> impl Future<Output = io::Result<Self::Source>>;
 
     /// Source of the client.
     ///
-    /// For TCP connections this will be the IP address.
+    /// For example for TCP connections this will be the IP address.
     type Source: fmt::Display;
 }
 

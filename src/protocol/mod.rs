@@ -4,7 +4,7 @@
 //! certain protocol, e.g. HTTP or RESP. This is used by the [`controller`] to
 //! implement the client connection logic.
 //!
-//! The [`Request`] and [`Response`] type define the the incoming and outgoing
+//! The [`Request`] and [`Response`] types define the the incoming and outgoing
 //! messages respectively. Both can be received/send using the `Protocol`.
 //!
 //! See the sub-modules for concrete implementations:
@@ -40,19 +40,19 @@ pub trait Protocol {
     ///
     /// # Errors
     ///
-    /// The error is considered fatal.
+    /// A returned error is considered fatal.
     fn source(&mut self) -> impl Future<Output = Result<Self::Source, Self::ResponseError>>;
 
     /// Source of the client.
     ///
-    /// For TCP connections this will be the IP address.
+    /// For example for TCP connections this will be the IP address.
     type Source: fmt::Display;
 
     /// Read the next request.
     ///
     /// # Errors
     ///
-    /// If this return an error it will be passed to
+    /// If this returns an error it will be passed to
     /// [`Protocol::reply_to_error`]. If the error is [fatal] processing will
     /// stop.
     ///
@@ -98,7 +98,7 @@ pub enum Request<'a> {
     RemoveBlob(Key),
     /// Get blob with key.
     GetBlob(Key),
-    /// Check if a blob with key exists.
+    /// Check if a blob with key is stored.
     ContainsBlob(Key),
     /// Check the number of blobs stored.
     BlobsStored,
@@ -154,8 +154,8 @@ pub enum Response<B> {
 impl<B> fmt::Display for Response<B> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Response::Added(key) => write!(f, "added {key}"),
-            Response::AlreadyStored(key) => write!(f, "already stored {key}"),
+            Response::Added(key) => write!(f, "added blob with {key}"),
+            Response::AlreadyStored(key) => write!(f, "already stored blob with {key}"),
             Response::BlobRemoved => f.write_str("blob removed"),
             Response::BlobNotRemoved => f.write_str("blob not removed"),
             Response::Blob(..) => f.write_str("found blob"),
@@ -163,14 +163,14 @@ impl<B> fmt::Display for Response<B> {
             Response::NotContainBlob => f.write_str("does not contain blob"),
             Response::BlobNotFound => f.write_str("blob not found"),
             Response::Error => f.write_str("server error"),
-            Response::ContainsBlobs(amount) => write!(f, "stored {amount} blobs"),
+            Response::ContainsBlobs(amount) => write!(f, "contains {amount} blobs"),
         }
     }
 }
 
 /// Whether or not an error is fatal.
 pub trait IsFatal {
-    /// If this returns true the component is considered broken and will no
-    /// longer be used.
+    /// If this returns true the connection is considered broken and will be
+    /// closed.
     fn is_fatal(&self) -> bool;
 }

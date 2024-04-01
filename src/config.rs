@@ -9,6 +9,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 /// Configuration of the store.
 pub struct Config {
+    /// Storage configuration.
     pub storage: Storage,
     /// Hypertext Transfer Protocol (HTTP).
     pub http: Option<Protocol>,
@@ -24,6 +25,7 @@ pub enum Storage {
     OnDisk(PathBuf),
 }
 
+/// Protocol listeners.
 #[derive(Clone)]
 pub struct Protocol {
     /// Address to accept connections on.
@@ -35,6 +37,7 @@ pub struct Protocol {
 }
 
 impl Config {
+    /// Read a configuration from `path`.
     pub fn read_from_path(path: &Path) -> io::Result<Config> {
         let config = std::fs::read_to_string(path)?;
         let config: Config = basic_toml::from_str(&config)

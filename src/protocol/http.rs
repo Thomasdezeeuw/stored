@@ -58,7 +58,7 @@ impl Http {
     }
 
     async fn integer_response(&mut self, status_code: StatusCode, value: usize) -> io::Result<()> {
-        // TODO: avoid allocation.
+        // TODO: avoid allocation using `self.buf`.
         let body = OneshotBody::new(value.to_string());
         self.conn.respond(status_code, &self.headers, body).await
     }
@@ -201,11 +201,11 @@ impl Protocol for Http {
     async fn reply_to_error(&mut self, err: Self::RequestError) -> Result<(), Self::ResponseError> {
         match err {
             RequestError::NotFound => {
-                self.string_response(StatusCode::NOT_FOUND, "path not found")
+                self.string_response(StatusCode::NOT_FOUND, "not found")
                     .await
             }
             RequestError::BodyNotEmpty => {
-                self.string_response(StatusCode::NOT_FOUND, "unexpected non-empty body")
+                self.string_response(StatusCode::BAD_REQUEST, "unexpected non-empty body")
                     .await
             }
             RequestError::Conn(heph_http::server::RequestError::Io(_)) => Ok(()),
@@ -255,7 +255,7 @@ impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             RequestError::NotFound => "not found".fmt(f),
-            RequestError::BodyNotEmpty => "unexpected body".fmt(f),
+            RequestError::BodyNotEmpty => "unexpected non-empty body".fmt(f),
             RequestError::Conn(err) => err.fmt(f),
         }
     }

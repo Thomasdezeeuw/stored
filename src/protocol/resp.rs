@@ -1,4 +1,4 @@
-//! Redis Serialization Protocol (RESP) version 2 like protocol
+//! Redis Serialization Protocol (RESP) version 2 protocol
 //! (<https://redis.io/topics/protocol>).
 //!
 //! The implementation starts with [`Resp`].
@@ -63,18 +63,15 @@ where
                     Ok(false) => return Ok(None),
                     Err(err) => return Err(RequestError::Conn(err)),
                 },
-                // Parsing error are always fatal as it's quite difficult to
+                // Parsing errors are always fatal as it's quite difficult to
                 // recover from them.
                 Err(err) => return Err(RequestError::User(err, true)),
             }
         }
     }
 
-    /// Read an argument from the connection, expecting it to be a `Key`. If the
-    /// argument is not a valid key it will return an error.
-    ///
-    /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
-    /// from the connection.
+    /// Read an argument from the connection, expecting it to be a [`Key`]. If
+    /// the argument is not a valid key it will return an error.
     async fn read_key(&mut self) -> Result<Key, RequestError> {
         match self.read_string_idx().await {
             Ok(idx) => match Key::try_parse_bytes(&self.buf[idx]) {
@@ -87,9 +84,6 @@ where
 
     /// Read an argument from the connection, expecting it to be a (not nil)
     /// string. If the argument is not a string it will return an error.
-    ///
-    /// Returns an [`Error::INCOMPLETE`] error if no more arguments can be read
-    /// from the connection.
     async fn read_string(&mut self) -> Result<&[u8], RequestError> {
         match self.read_string_idx().await {
             Ok(idx) => Ok(&self.buf[idx]),
@@ -109,8 +103,8 @@ where
     }
 
     /// Ensure we `expected` number of arguments in the request array, that is
-    /// `length == expected + 1`. If not this will attempt to recover from the
-    /// error and return [`Error::INVALID_ARGUMENTS`].
+    /// `length == expected + 1`. If this is not the case, it will attempt to
+    /// recover from the error and return [`Error::INVALID_ARGUMENTS`].
     async fn ensure_arguments(
         &mut self,
         length: usize,
@@ -169,7 +163,7 @@ where
         }
     }
 
-    /// Write `value` as integer  response.
+    /// Write `value` as integer response.
     async fn write_integer(&mut self, value: usize) -> io::Result<()> {
         let start = self.buf.len();
         encode::integer(&mut self.buf, value);
@@ -197,7 +191,7 @@ where
         Ok(())
     }
 
-    /// Write a nill string response.
+    /// Write a nil string response.
     async fn write_nil_string(&mut self) -> io::Result<()> {
         self.conn.write_all(NIL).await?;
         Ok(())
@@ -372,7 +366,7 @@ enum Value {
     /// The integer value.
     Integer(isize),
     /// Returns the amount of values in the array.
-    /// `None` means a null array.
+    /// `None` means a null/nil array.
     Array(Option<usize>),
 }
 
@@ -395,6 +389,8 @@ impl IsFatal for RequestError {
     fn is_fatal(&self) -> bool {
         match self {
             RequestError::User(_, fatal) => *fatal,
+            // Connection error are always considered fatal as we can't (easily)
+            // recover from them.
             RequestError::Conn(..) => true,
         }
     }
@@ -403,17 +399,18 @@ impl IsFatal for RequestError {
 impl fmt::Display for RequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RequestError::User(err, ..) => err.message().fmt(f),
+            RequestError::User(err, ..) => err.fmt(f),
             RequestError::Conn(err) => err.fmt(f),
         }
     }
 }
 
-/// Error string that can be returned, following RESP (i.e. starts with `-` and
-/// ends with `\r\n`).
+/// RESP error.
 ///
-/// Error must be recoverable.
+/// Can be a protocol, server or user error.
 #[derive(Copy, Clone, Debug)]
+// NOTE: this string is returned directly to the user, so it MUST start with `-`
+// and end with `\r\n`.
 pub struct Error(&'static str);
 
 /// Creates a new [`Error`].
@@ -460,6 +457,12 @@ impl Error {
         debug_assert_eq!(self.0.as_bytes()[0], b'-');
         debug_assert_eq!(&self.0[self.0.len() - 2..], "\r\n");
         self.0.as_bytes()
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.message().fmt(f)
     }
 }
 
@@ -514,7 +517,7 @@ mod decode {
     fn bulk_string(buf: &[u8]) -> ParseResult<Option<Range<usize>>> {
         debug_assert_eq!(buf.first(), Some(&b'$'));
         let (length, processed) = match int(&buf[1..]) {
-            // Null, or nill, string. Format `$-1\r\n`.
+            // Null, or nil, string. Format `$-1\r\n`.
             Ok(Some((-1, processed))) => return Ok(Some((None, processed))),
             Ok(Some((len, _))) if len.is_negative() => {
                 return Err(Error::PARSE_STR_NEGATIVE_LENGTH)
