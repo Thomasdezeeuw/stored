@@ -5,7 +5,7 @@ TEST_OPTS = -- --quiet -Z unstable-options --shuffle
 RUN ?= test
 
 build:
-	cargo build --release -C target-cpu=native
+	RUSTFLAGS='-C target-cpu=native' cargo build --release
 
 # Development loop, runs $RUN whenever a source file changes.
 dev:
