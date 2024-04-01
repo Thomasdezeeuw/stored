@@ -1,7 +1,6 @@
-use std::hash::{Hash, Hasher};
 use std::io::{self, Read};
 
-use stored::key::{key, InvalidKeyStr, Key, KeyHasher};
+use stored::key::{key, InvalidKeyStr, Key};
 
 #[test]
 fn to_owned() {
@@ -65,31 +64,6 @@ fn key_calculator_skip_n() {
     assert_eq!(calc.read(&mut buf).unwrap(), 7);
     assert_eq!(&buf, b"o world");
     assert_eq!(calc.finish(), want);
-}
-
-#[test]
-fn key_hashing() {
-    let keys = [
-        Key::for_blob(b"Hello world"),
-        Key::for_blob(b"Hello world1"),
-        Key::for_blob(b"Hello world2"),
-        Key::for_blob(b"Hello world3"),
-    ];
-
-    for keys in keys.windows(2) {
-        let result1 = hash_key(&keys[0]);
-        let result2 = hash_key(&keys[1]);
-        let result2b = hash_key(&keys[1]);
-
-        assert_ne!(result1, result2);
-        assert_eq!(result2, result2b);
-    }
-
-    fn hash_key(key: &Key) -> u64 {
-        let mut hasher = KeyHasher::default();
-        key.hash(&mut hasher);
-        hasher.finish()
-    }
 }
 
 #[test]

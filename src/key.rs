@@ -364,35 +364,6 @@ where
     }
 }
 
-/// [`Hasher`] implementation for [`Key`].
-pub struct KeyHasher {
-    state: u64,
-}
-
-impl Default for KeyHasher {
-    #[inline]
-    fn default() -> KeyHasher {
-        KeyHasher { state: 0 }
-    }
-}
-
-impl Hasher for KeyHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.state
-    }
-
-    #[inline]
-    fn write(&mut self, bytes: &[u8]) {
-        debug_assert!(bytes.len() == Key::LENGTH);
-        // SAFETY: u64 and u8 have compatible layouts.
-        let parts = unsafe { slice::from_raw_parts(bytes.as_ptr().cast(), Key::LENGTH / 8) };
-        for p in parts {
-            self.state = self.state.bitxor(p);
-        }
-    }
-}
-
 /// Macro to create a constant [`Key`].
 #[macro_export]
 macro_rules! key {
