@@ -1,6 +1,7 @@
 //! Key of a blob.
 //!
-//! See [`Key`].
+//! The main type is [`Key`]. A [`KeyCalculator`] can be used to calculate the
+//! `Key` value of a blob.
 
 use std::error::Error;
 use std::fmt;
@@ -10,9 +11,11 @@ use ring::digest::{self, SHA512_OUTPUT_LEN};
 
 /// The key of a blob.
 ///
-/// This is always the SHA-512 checksum of the blob, which can be calculated
-/// using the [`Key::for_blob`] method.
-#[derive(Eq, PartialEq, Clone)]
+/// This is always the SHA-512 checksum of the blob.
+///
+/// A `Key` can be calculated using the [`Key::for_blob`] method, or a
+/// [`KeyCalculator`].
+#[derive(Clone, Eq, PartialEq)]
 #[repr(transparent)]
 pub struct Key {
     bytes: [u8; Key::LENGTH],
@@ -34,8 +37,8 @@ impl Key {
     ///
     /// # Panics
     ///
-    /// This will panic if `bytes` is not of length `Key::LENGTH`.
-    pub fn from_bytes(bytes: &[u8]) -> &Key {
+    /// This will panic if `bytes` is smaller than [`Key::LENGTH`].
+    pub const fn from_bytes(bytes: &[u8]) -> &Key {
         assert!(bytes.len() >= Key::LENGTH, "invalid Key length");
         // Safety: we ensured above that `bytes` is of length `Key::LENGTH` and
         // `Key` has the same layout as `[u8; Key::LENGTH]` because we use the
@@ -79,7 +82,7 @@ impl Key {
     }
 
     /// Get the key as bytes.
-    pub fn as_bytes(&self) -> &[u8] {
+    pub const fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
 }
@@ -142,27 +145,29 @@ impl fmt::Debug for Key {
     }
 }
 
-/// The key calculator, see [`Key::calculator`].
+/// Key calculator.
+///
+/// Calculate the [`Key`] for a sequence of bytes.
+///
+/// # Examples
+///
+/// ```
+/// use stored::key::{Key, KeyCalculator};
+///
+/// let blob = b"Hello world";
+///
+/// let mut calculator = KeyCalculator::new();
+/// calculator.update(&blob[..6]);
+/// calculator.update(&blob[6..]);
+/// let key = calculator.finish();
+/// assert_eq!(key, Key::for_blob(blob));
+/// ```
 pub struct KeyCalculator {
     digest: digest::Context,
 }
 
 impl KeyCalculator {
     /// Create a `KeyCalculator`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use stored::key::{Key, KeyCalculator};
-    ///
-    /// let blob = b"Hello world";
-    ///
-    /// let mut calculator = KeyCalculator::new();
-    /// calculator.update(&blob[..6]);
-    /// calculator.update(&blob[6..]);
-    /// let key = calculator.finish();
-    /// assert_eq!(key, Key::for_blob(blob));
-    /// ```
     pub fn new() -> KeyCalculator {
         KeyCalculator {
             digest: digest::Context::new(&digest::SHA512),
@@ -187,8 +192,9 @@ impl fmt::Debug for KeyCalculator {
     }
 }
 
-/// Macro to create a constant [`Key`].
+/// Macro to create a [`Key`] (usable as `const`).
 #[macro_export]
+#[doc(hidden)]
 macro_rules! key {
     ($key: literal) => {{
         const OUTPUT: $crate::key::Key = match $crate::key::Key::try_parse($key) {
@@ -201,4 +207,5 @@ macro_rules! key {
     }};
 }
 
+#[doc(inline)]
 pub use key;
