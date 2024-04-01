@@ -1,6 +1,4 @@
-use std::io::{self, Read};
-
-use stored::key::{key, InvalidKeyStr, Key};
+use stored::key::{key, InvalidKeyStr, Key, KeyCalculator};
 
 #[test]
 fn to_owned() {
@@ -42,28 +40,11 @@ fn parsing_errors() {
 
 #[test]
 fn key_calculator() {
-    let want = Key::for_blob(b"Hello world");
-    let reader = io::Cursor::new(b"Hello world");
-    let mut calc = Key::calculator(reader);
-    let mut buf = [0; 6];
-    assert_eq!(calc.read(&mut buf).unwrap(), 6);
-    assert_eq!(&buf, b"Hello ");
-    assert_eq!(calc.read(&mut buf).unwrap(), 5);
-    assert_eq!(&buf, b"world "); // Last space from previous read.
-    assert_eq!(calc.finish(), want);
-}
-
-#[test]
-fn key_calculator_skip_n() {
-    let want = Key::for_blob(b"Hello world");
-    let reader = io::Cursor::new(b"123Hello world");
-    let mut calc = Key::calculator_skip(reader, 3);
-    let mut buf = [0; 7];
-    assert_eq!(calc.read(&mut buf).unwrap(), 7);
-    assert_eq!(&buf, b"123Hell");
-    assert_eq!(calc.read(&mut buf).unwrap(), 7);
-    assert_eq!(&buf, b"o world");
-    assert_eq!(calc.finish(), want);
+    let blob = b"Hello world";
+    let mut calc = KeyCalculator::new();
+    calc.update(&blob[..6]);
+    calc.update(&blob[6..]);
+    assert_eq!(calc.finish(), Key::for_blob(blob));
 }
 
 #[test]

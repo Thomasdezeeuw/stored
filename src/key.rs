@@ -3,12 +3,8 @@
 //! See [`Key`].
 
 use std::error::Error;
-use std::hash::{Hash, Hasher};
-use std::io::{self, IoSlice, IoSliceMut, Read, Write};
-use std::ops::BitXor;
-use std::ops::Deref;
+use std::fmt;
 use std::str::FromStr;
-use std::{fmt, slice};
 
 use ring::digest::{self, digest, SHA512, SHA512_OUTPUT_LEN};
 
@@ -85,62 +81,6 @@ impl Key {
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes
     }
-
-    /// Create a `KeyCalculator`.
-    ///
-    /// `KeyCalculator` is a wrapper around I/O to calculate the [`Key`] for a
-    /// blob, while streaming its contents.
-    ///
-    /// It can be used while [`Reading`] or [`Writing`].
-    ///
-    /// [`Reading`]: std::io::Read
-    /// [`Writing`]: std::io::Write
-    ///
-    /// # Notes
-    ///
-    /// When using `KeyCalculator`'s asynchronous reading and writing traits it
-    /// doesn't implement any waking mechanism, it up to the `IO` type to handle
-    /// wakeups.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::io;
-    /// use std::io::{Write, IoSlice};
-    ///
-    /// # use stored::key::Key;
-    /// #
-    /// # fn main() -> io::Result<()> {
-    /// // Our `Write` implementation.
-    /// let mut streamed_blob = Vec::new();
-    /// let mut calculator = Key::calculator(&mut streamed_blob);
-    ///
-    /// // We can now stream the blob.
-    /// calculator.write(b"Hello")?;
-    /// calculator.write_vectored(&mut [IoSlice::new(b" "), IoSlice::new(b"world")])?;
-    ///
-    /// let key = calculator.finish();
-    /// assert_eq!(key, Key::for_blob(b"Hello world"));
-    ///
-    /// // Now the writer can be used again.
-    /// streamed_blob.write(b"!")?;
-    /// assert_eq!(streamed_blob, b"Hello world!");
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub fn calculator<IO>(io: IO) -> KeyCalculator<IO> {
-        Key::calculator_skip(io, 0)
-    }
-
-    /// Same as [`Key::calculator`] but skips `skip` bytes before using them in
-    /// the `Key` calculation.
-    pub fn calculator_skip<IO>(io: IO, skip: usize) -> KeyCalculator<IO> {
-        KeyCalculator {
-            digest: digest::Context::new(&digest::SHA512),
-            io,
-            skip_left: skip,
-        }
-    }
 }
 
 /// Error returned by [`Key`]'s [`FromStr`] implementation.
@@ -202,17 +142,12 @@ impl fmt::Debug for Key {
 }
 
 /// The key calculator, see [`Key::calculator`].
-pub struct KeyCalculator<IO> {
-    /// NOTE: don't use this directly, use `update_digest` and `update_digestv`,
-    /// which take `skip_left` into account.
+pub struct KeyCalculator {
     digest: digest::Context,
-    /// Number of bytes left to ignore in the [`Key`] calculation.
-    skip_left: usize,
-    io: IO,
 }
 
-impl KeyCalculator<()> {
-    /// Create a new [`KeyCalculator`] which is not backed by I/O.
+impl KeyCalculator {
+    /// Create a `KeyCalculator`.
     ///
     /// # Examples
     ///
@@ -222,135 +157,32 @@ impl KeyCalculator<()> {
     /// let blob = b"Hello world";
     ///
     /// let mut calculator = KeyCalculator::new();
-    /// calculator.add_bytes(&blob[..6]);
-    /// calculator.add_bytes(&blob[6..]);
+    /// calculator.update(&blob[..6]);
+    /// calculator.update(&blob[6..]);
     /// let key = calculator.finish();
     /// assert_eq!(key, Key::for_blob(blob));
     /// ```
-    pub fn new() -> KeyCalculator<()> {
-        Key::calculator(())
+    pub fn new() -> KeyCalculator {
+        KeyCalculator {
+            digest: digest::Context::new(&digest::SHA512),
+        }
     }
 
-    /// Add blob bytes to the calculation.
-    pub fn add_bytes(&mut self, bytes: &[u8]) {
+    /// Update the calculation with `bytes`.
+    pub fn update(&mut self, bytes: &[u8]) {
         self.digest.update(bytes);
     }
-}
 
-impl<IO> KeyCalculator<IO> {
     /// Finish the calculation returning the [`Key`] for all read/written bytes.
     pub fn finish(self) -> Key {
         let result = self.digest.finish();
         Key::from_bytes(result.as_ref()).to_owned()
     }
-
-    fn update_digest(&mut self, bytes: &[u8]) {
-        if self.skip_left == 0 {
-            // No more bytes to skip.
-            self.digest.update(bytes);
-        } else if bytes.len() <= self.skip_left {
-            // Need to skip all bytes.
-            self.skip_left -= bytes.len();
-        } else {
-            // Need to skip some of the bytes.
-            self.digest.update(&bytes[self.skip_left..]);
-            if bytes.len() > self.skip_left {
-                self.skip_left = 0;
-            } else {
-                self.skip_left -= bytes.len();
-            }
-        }
-    }
-
-    fn update_digestv<B>(&mut self, bufs: &[B], processed: usize)
-    where
-        B: Deref<Target = [u8]>,
-    {
-        let mut left = processed;
-        for buf in bufs {
-            let length = buf.len();
-            if length >= left {
-                self.update_digest(&buf[..left]);
-                return;
-            }
-            // Entire buffer was filled.
-            self.update_digest(buf);
-            left -= length;
-        }
-    }
 }
 
-#[allow(clippy::missing_fields_in_debug)]
-impl<IO: fmt::Debug> fmt::Debug for KeyCalculator<IO> {
+impl fmt::Debug for KeyCalculator {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("KeyCalculator")
-            .field("skip_left", &self.skip_left)
-            .field("io", &self.io)
-            .finish()
-    }
-}
-
-impl<R> Read for KeyCalculator<R>
-where
-    R: Read,
-{
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.io.read(buf).map(|n| {
-            self.update_digest(&buf[..n]);
-            n
-        })
-    }
-
-    fn read_vectored(&mut self, bufs: &mut [IoSliceMut]) -> io::Result<usize> {
-        self.io.read_vectored(bufs).map(|n| {
-            self.update_digestv(bufs, n);
-            n
-        })
-    }
-
-    fn read_to_end(&mut self, buf: &mut Vec<u8>) -> io::Result<usize> {
-        self.io.read_to_end(buf).map(|n| {
-            self.update_digest(&buf[..n]);
-            n
-        })
-    }
-
-    fn read_to_string(&mut self, buf: &mut String) -> io::Result<usize> {
-        self.io.read_to_string(buf).map(|n| {
-            self.update_digest(buf.as_bytes());
-            n
-        })
-    }
-
-    fn read_exact(&mut self, buf: &mut [u8]) -> io::Result<()> {
-        self.io.read_exact(buf).map(|()| self.update_digest(buf))
-    }
-}
-
-impl<W> Write for KeyCalculator<W>
-where
-    W: Write,
-{
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.io.write(buf).map(|n| {
-            self.update_digest(&buf[..n]);
-            n
-        })
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.io.flush()
-    }
-
-    fn write_vectored(&mut self, bufs: &[IoSlice]) -> io::Result<usize> {
-        self.io.write_vectored(bufs).map(|n| {
-            self.update_digestv(bufs, n);
-            n
-        })
-    }
-
-    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.io.write_all(buf).map(|()| self.update_digest(buf))
+        f.debug_struct("KeyCalculator").finish_non_exhaustive()
     }
 }
 
