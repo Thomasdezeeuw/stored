@@ -30,10 +30,8 @@ impl Http {
     /// pointing to the blob with `key`.
     async fn redirect_response(&mut self, status_code: StatusCode, key: Key) -> io::Result<()> {
         self.buf.clear();
-        {
-            use std::io::Write; // Limited scope.
-            write!(&mut self.buf, "/blob/{key}").unwrap();
-        }
+        self.buf.extend_from_slice(b"/blob/");
+        key.append_to(&mut self.buf);
         let location = Header::new(HeaderName::LOCATION, &self.buf);
         self.headers.append(location);
         self.empty_response(status_code).await

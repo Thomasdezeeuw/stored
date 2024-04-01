@@ -174,10 +174,7 @@ where
     async fn write_key(&mut self, key: &Key) -> io::Result<()> {
         let start = self.buf.len();
         encode::length(&mut self.buf, Key::STR_LENGTH);
-        {
-            use std::io::Write; // Don't want to use this anywhere else.
-            write!(&mut self.buf, "{key}").unwrap();
-        }
+        key.append_to(&mut self.buf);
         self.buf.extend_from_slice(CRLF.as_bytes());
         self.write_part_buf(start).await
     }

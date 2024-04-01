@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::str::FromStr;
 
 use ring::digest::{self, SHA512_OUTPUT_LEN};
@@ -84,6 +85,20 @@ impl Key {
     /// Get the key as bytes.
     pub const fn as_bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    /// Append the key as hex string to `buf`.
+    pub fn append_to(&self, buf: &mut Vec<u8>) {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        buf.reserve(Key::STR_LENGTH);
+        let bytes = buf.spare_capacity_mut();
+        for (i, b) in self.bytes.into_iter().enumerate() {
+            bytes[i * 2] = MaybeUninit::new(HEX_CHARS[(b >> 4) as usize]);
+            bytes[(i * 2) + 1] = MaybeUninit::new(HEX_CHARS[(b & ((1 << 4) - 1)) as usize]);
+        }
+        // SAFETY: initialised the bytes above, so setting the length is safe.
+        assert!(Key::STR_LENGTH == 2 * self.bytes.len());
+        unsafe { buf.set_len(buf.len() + Key::STR_LENGTH) };
     }
 }
 
