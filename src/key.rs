@@ -201,16 +201,6 @@ impl fmt::Debug for Key {
     }
 }
 
-impl Hash for Key {
-    #[inline]
-    fn hash<H>(&self, state: &mut H)
-    where
-        H: Hasher,
-    {
-        state.write(&self.bytes[..]);
-    }
-}
-
 /// The key calculator, see [`Key::calculator`].
 pub struct KeyCalculator<IO> {
     /// NOTE: don't use this directly, use `update_digest` and `update_digestv`,
