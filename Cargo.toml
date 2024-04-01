@@ -42,6 +42,3 @@ rpath            = false
 [[bin]]
 name = "stored"
 path = "src/bin/server.rs"
-
-[workspace]
-members = ["bench/hashmap_hash"]
