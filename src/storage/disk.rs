@@ -304,6 +304,7 @@ struct Data {
 }
 
 impl Data {
+    /// Open the `Data` file.
     fn open<RT: Access>(rt: &RT, path: &Path) -> io::Result<Data> {
         trace!(path:% = path.display(); "opening data file");
         let file = open_file(path)?;
@@ -345,6 +346,7 @@ impl Index {
     /// [`Key`] + offset (`u64`) + length (`u64`).
     const ENTRY_SIZE: usize = size_of::<Key>() + size_of::<u64>() + size_of::<u32>();
 
+    /// Open index file.
     fn open<RT: Access>(
         rt: &RT,
         path: &Path,
@@ -369,13 +371,17 @@ impl Index {
         // Add existing entries to the index.
         if file_size != 0 {
             let mut buf = vec![0; min(file_size as usize, 2 * 4096)];
+            let mut skip = 0;
             loop {
                 buf.resize(buf.capacity(), 0);
-                let n = std::io::Read::read(&mut file, &mut buf)?;
-                buf.truncate(n);
-                if buf.is_empty() {
+                let n = std::io::Read::read(&mut file, &mut buf[skip..])?;
+                if n == 0 {
+                    // NOTE: we checked the file size above, so this should
+                    // never trigger.
+                    assert!(skip == 0);
                     break;
                 }
+                buf.truncate(skip + n);
 
                 let mut left = buf.as_slice();
                 while let Some(disk_entry) = DiskEntry::from_disk(left) {
@@ -391,6 +397,7 @@ impl Index {
                 }
 
                 buf.drain(0..buf.len() - left.len());
+                skip = buf.len();
             }
 
             write_index.blocking_flush();
