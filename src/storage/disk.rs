@@ -87,7 +87,7 @@ use std::cmp::min;
 use std::future::Future;
 use std::mem::{self, size_of};
 use std::os::fd::AsRawFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
@@ -159,9 +159,6 @@ async fn writer<RT: Access>(
     mut ctx: actor::Context<WriteRequest, RT>,
     mut writer: Writer,
 ) -> io::Result<()> {
-    trace!("adding existing blobs to in-memory index");
-    writer.index.read_entries().await?;
-
     while let Ok(request) = ctx.receive_next().await {
         // Don't care about about whether or not the other end got the response.
         let _ = match request {
@@ -213,21 +210,10 @@ impl Writer {
         std::fs::create_dir_all(path)?;
 
         let data_path = path.join("data");
-        trace!(path:% = data_path.display(); "opening data file");
-        let data_file = open_file(data_path)?;
-        let data = Data {
-            offset: data_file.metadata()?.len(),
-            file: File::from_std(rt, data_file),
-        };
+        let data = Data::open(rt, &data_path)?;
 
         let index_path = path.join("index");
-        trace!(path:% = index_path.display(); "opening index file");
-        let index_file = open_file(index_path)?;
-        let index = Index {
-            offset: index_file.metadata()?.len(),
-            file: File::from_std(rt, index_file),
-            index: write_index,
-        };
+        let index = Index::open(rt, &index_path, write_index)?;
 
         Ok(Writer { data, index })
     }
@@ -267,7 +253,7 @@ impl Writer {
 /// Open index or data file.
 ///
 /// Opens the file for reading, writing and locks it.
-fn open_file(path: PathBuf) -> io::Result<std::fs::File> {
+fn open_file(path: &Path) -> io::Result<std::fs::File> {
     // TODO: look at O_DSYNC and O_SYNC.
     // TODO: look at O_DIRECT.
     let file = std::fs::OpenOptions::new()
@@ -318,6 +304,16 @@ struct Data {
 }
 
 impl Data {
+    fn open<RT: Access>(rt: &RT, path: &Path) -> io::Result<Data> {
+        trace!(path:% = path.display(); "opening data file");
+        let file = open_file(path)?;
+        let offset = file.metadata()?.len();
+        Ok(Data {
+            file: File::from_std(rt, file),
+            offset,
+        })
+    }
+
     /// Write `blob` to disk and `fsync` it.
     ///
     /// Returns the offset at which the blob was written.
@@ -349,12 +345,20 @@ impl Index {
     /// [`Key`] + offset (`u64`) + length (`u64`).
     const ENTRY_SIZE: usize = size_of::<Key>() + size_of::<u64>() + size_of::<u32>();
 
-    /// Read entries from the index file and add them to the in-memory index.
-    async fn read_entries(&mut self) -> io::Result<()> {
-        let metadata = self.file.metadata().await?;
+    fn open<RT: Access>(
+        rt: &RT,
+        path: &Path,
+        mut write_index: index::Writer<Entry>,
+    ) -> io::Result<Index> {
+        trace!(path:% = path.display(); "opening index file");
+        let mut file = open_file(path)?;
+
+        // Read entries from the index file and add them to the in-memory index.
+        trace!("adding existing blobs to in-memory index");
+        let metadata = file.metadata()?;
         let file_size = metadata.len();
 
-        if file_size % Self::ENTRY_SIZE as u64 != 0 {
+        if (file_size % Self::ENTRY_SIZE as u64) != 0 {
             // TODO: validate the storage and attempt to use it anyway?
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -364,20 +368,23 @@ impl Index {
 
         // Add existing entries to the index.
         if file_size != 0 {
-            let mut buf = Vec::with_capacity(2 * 4096);
+            let mut buf = vec![0; min(file_size as usize, 2 * 4096)];
             loop {
-                buf = self.file.read(buf).await?;
+                buf.resize(buf.capacity(), 0);
+                let n = std::io::Read::read(&mut file, &mut buf)?;
+                buf.truncate(n);
                 if buf.is_empty() {
                     break;
                 }
 
                 let mut left = buf.as_slice();
                 while let Some(disk_entry) = DiskEntry::from_disk(left) {
+                    // TODO: add validation of `disk_entry`.
                     let key = disk_entry.key();
                     if disk_entry.is_deleted() {
-                        self.index.remove_blob(&key);
+                        write_index.remove_blob(&key);
                     } else {
-                        self.index.add_blob(key, disk_entry.to_entry());
+                        write_index.add_blob(key, disk_entry.to_entry());
                     }
 
                     left = &left[size_of::<DiskEntry>()..];
@@ -385,10 +392,15 @@ impl Index {
 
                 buf.drain(0..buf.len() - left.len());
             }
+
+            write_index.blocking_flush();
         }
 
-        self.index.flush_changes().await;
-        Ok(())
+        Ok(Index {
+            file: File::from_std(rt, file),
+            index: write_index,
+            offset: file_size,
+        })
     }
 
     /// Writes a new entry to the index for blob with `key`.

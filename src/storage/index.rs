@@ -106,6 +106,11 @@ impl<B> Writer<B> {
     pub async fn flush_changes(&mut self) {
         self.writer.flush().await;
     }
+
+    /// Blocking version of [`Writer::flush_changes`].
+    pub fn blocking_flush(&mut self) {
+        self.writer.blocking_flush();
+    }
 }
 
 /// Handle to the [`Index`] that can be send across thread bounds.
