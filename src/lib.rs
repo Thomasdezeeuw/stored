@@ -25,8 +25,7 @@
     if_let_guard,
     impl_trait_in_assoc_type,
     iter_advance_by,
-    never_type,
-    strict_provenance
+    never_type
 )]
 
 pub mod config;
