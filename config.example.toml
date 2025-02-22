@@ -1,3 +1,8 @@
+# Number of worker threads to use.
+# Can be a specific number or `auto` to use all available cores.
+# Defaults to 1 worker thread.
+worker_threads = "auto"
+
 [storage]
 kind = "disk" # Or `memory`.
 # For disk storage the path is required, for memory it's ignored.

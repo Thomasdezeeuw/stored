@@ -96,11 +96,14 @@ fn parse_args() -> Result<Option<String>, ExitCode> {
 }
 
 fn run(config: Config) -> Result<(), heph_rt::Error> {
-    let mut runtime = Runtime::setup()
+    let setup = Runtime::setup()
         .with_name("stored".to_owned())
-        .use_all_cores()
-        .auto_cpu_affinity()
-        .build()?;
+        .auto_cpu_affinity();
+    let mut runtime = match config.worker_threads {
+        config::WorkerThreads::Auto => setup.use_all_cores(),
+        config::WorkerThreads::Specific(n) => setup.num_threads(n),
+    }
+    .build()?;
 
     let actor_ref = runtime.spawn(
         NoSupervisor,

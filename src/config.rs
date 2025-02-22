@@ -9,12 +9,22 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 /// Configuration of the store.
 pub struct Config {
+    /// Number of worker threads to use.
+    pub worker_threads: WorkerThreads,
     /// Storage configuration.
     pub storage: Storage,
     /// Hypertext Transfer Protocol (HTTP).
     pub http: Option<Protocol>,
     /// Redis Serialization Protocol (RESP).
     pub resp: Option<Protocol>,
+}
+
+/// Number of worker threads to use
+pub enum WorkerThreads {
+    /// Uses one worker thread per available CPU core.
+    Auto,
+    /// Use a specific number of threads.
+    Specific(usize),
 }
 
 /// Storage type used.
@@ -58,6 +68,7 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 impl Default for Config {
     fn default() -> Config {
         Config {
+            worker_threads: WorkerThreads::Specific(1),
             storage: Storage::InMemory,
             http: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
@@ -95,11 +106,18 @@ impl<'de> Deserialize<'de> for Config {
             where
                 V: MapAccess<'de>,
             {
+                let mut worker_threads = None;
                 let mut storage = None;
                 let mut http = None;
                 let mut resp = None;
                 while let Some(key) = map.next_key()? {
                     match key {
+                        Field::WorkerThreads => {
+                            if worker_threads.is_some() {
+                                return Err(de::Error::duplicate_field("worker_threads"));
+                            }
+                            worker_threads = Some(map.next_value()?);
+                        }
                         Field::Storage => {
                             if storage.is_some() {
                                 return Err(de::Error::duplicate_field("storage"));
@@ -122,6 +140,7 @@ impl<'de> Deserialize<'de> for Config {
                 }
                 let storage = storage.ok_or_else(|| de::Error::missing_field("storage"))?;
                 Ok(Config {
+                    worker_threads: worker_threads.unwrap_or(WorkerThreads::Specific(1)),
                     storage,
                     http,
                     resp,
@@ -129,9 +148,10 @@ impl<'de> Deserialize<'de> for Config {
             }
         }
 
-        const CONFIG_FIELDS: &[&str] = &["storage", "http", "resp"];
+        const CONFIG_FIELDS: &[&str] = &["worker_threads", "storage", "http", "resp"];
 
         enum Field {
+            WorkerThreads,
             Storage,
             Http,
             Resp,
@@ -148,7 +168,7 @@ impl<'de> Deserialize<'de> for Config {
                     type Value = Field;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                        formatter.write_str("`storage`, `http` or `resp`")
+                        formatter.write_str("`worker_threads`, `storage`, `http` or `resp`")
                     }
 
                     fn visit_str<E>(self, value: &str) -> Result<Field, E>
@@ -156,6 +176,7 @@ impl<'de> Deserialize<'de> for Config {
                         E: de::Error,
                     {
                         match value {
+                            "worker_threads" => Ok(Field::WorkerThreads),
                             "storage" => Ok(Field::Storage),
                             "http" => Ok(Field::Http),
                             "resp" => Ok(Field::Resp),
@@ -169,6 +190,50 @@ impl<'de> Deserialize<'de> for Config {
         }
 
         deserializer.deserialize_struct("Config", CONFIG_FIELDS, ConfigVisitor)
+    }
+}
+
+impl<'de> Deserialize<'de> for WorkerThreads {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct WorkerThreadsVisitor;
+
+        impl<'de> Visitor<'de> for WorkerThreadsVisitor {
+            type Value = WorkerThreads;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("an integer or `auto`")
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(WorkerThreads::Specific(v as usize))
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                Ok(WorkerThreads::Specific(v as usize))
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: de::Error,
+            {
+                if v == "auto" {
+                    Ok(WorkerThreads::Auto)
+                } else {
+                    Err(E::invalid_value(de::Unexpected::Str(v), &"`auto`"))
+                }
+            }
+        }
+
+        deserializer.deserialize_any(WorkerThreadsVisitor)
     }
 }
 
