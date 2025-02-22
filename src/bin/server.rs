@@ -205,5 +205,5 @@ macro_rules! start_listener (
 
 use {start_listener, start_listeners};
 
-heph::restart_supervisor!(RespSupervisor, "RESP server");
-heph::restart_supervisor!(HttpSupervisor, "HTTP server");
+heph::restart_supervisor!(RespSupervisor);
+heph::restart_supervisor!(HttpSupervisor);
