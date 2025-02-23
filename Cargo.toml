@@ -42,3 +42,8 @@ rpath            = false
 [[bin]]
 name = "stored"
 path = "src/bin/server.rs"
+
+[workspace]
+members = [
+  "clients/store.rs",
+]
