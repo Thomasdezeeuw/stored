@@ -598,6 +598,7 @@ mod decode {
         if buf.first().copied() == Some(b'-') {
             is_positive = false;
             bytes.next();
+            end += 1;
         }
         while let Some(b) = bytes.next() {
             match b {
