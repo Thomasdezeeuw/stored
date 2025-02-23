@@ -9,6 +9,12 @@ repository  = "https://github.com/Thomasdezeeuw/stored"
 readme      = "README.md"
 edition     = "2024"
 
+[dependencies]
+heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "47707a16b3de6d47a956b8c7b3f56bf65b8afee0", default-features = false }
+heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "47707a16b3de6d47a956b8c7b3f56bf65b8afee0", default-features = false }
+itoa              = { version = "1.0.4", default-features = false }
+ring              = { version = "0.17", default-features = false }
+
 [[bin]]
 name = "store"
 path = "src/bin/client.rs"
