@@ -223,7 +223,7 @@ macro_rules! key {
         const OUTPUT: $crate::key::Key = match $crate::key::Key::try_parse($key) {
             ::std::result::Result::Ok(key) => key,
             ::std::result::Result::Err($crate::key::InvalidKeyStr) => {
-                panic!("{}", $crate::key::InvalidKeyStr::description())
+                panic!($crate::key::InvalidKeyStr::description())
             }
         };
         OUTPUT
