@@ -1,7 +1,7 @@
 //! Testing utlities.
 
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::pin::pin;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::task::{self, Poll};

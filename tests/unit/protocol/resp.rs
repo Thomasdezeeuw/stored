@@ -4,8 +4,8 @@ use std::io;
 
 use heph_rt::test::block_on_future;
 
-use stored::key::key;
-use stored::protocol::resp::{RequestError, Resp};
+use stored::key::{key, Key};
+use stored::protocol::resp::{self, RequestError, Resp};
 use stored::protocol::{Protocol, Request, Response};
 use stored::storage::mem::Blob;
 
@@ -240,6 +240,7 @@ error: implementation of `Buf` is not general enough
     |
     = note: `&[u8]` must implement `Buf`
     = note: ...but `Buf` is actually implemented for the type `&'static [u8]`
+
 #[test]
 fn reply_to_conn_error() {
     block_on_future(async {
