@@ -72,7 +72,7 @@ impl Protocol for Http {
 
     type Conn = Connection;
 
-    fn new(mut conn: Connection) -> Http {
+    fn new(conn: Connection) -> Http {
         if let Err(err) = conn.set_nodelay(true) {
             warn!("failed to set NODELAY on socket: {err}");
         }

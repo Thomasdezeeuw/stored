@@ -68,7 +68,7 @@ impl WriteBuf {
 // alive, so is the slice of bytes.
 unsafe impl Buf for WriteBuf {
     unsafe fn parts(&self) -> (*const u8, usize) {
-        let (ptr, len) = self.buf.parts();
-        (ptr.add(self.start), len - self.start)
+        let (ptr, len) = unsafe { self.buf.parts() };
+        (unsafe { ptr.add(self.start) }, len - self.start)
     }
 }

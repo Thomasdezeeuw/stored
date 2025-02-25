@@ -100,7 +100,7 @@ use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::messages::from_message;
 use heph::supervisor::SupervisorStrategy;
 use heph_rt::fs::File;
-use heph_rt::io::{Buf, Read, Write};
+use heph_rt::io::{Buf, Write};
 use heph_rt::Access;
 use log::{debug, error, trace};
 
