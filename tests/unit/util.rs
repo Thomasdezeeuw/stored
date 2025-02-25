@@ -1,10 +1,11 @@
 //! Testing utlities.
 
 use std::future::Future;
-use std::io;
+use std::path::{Path, PathBuf};
 use std::pin::pin;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::task::{self, Poll};
+use std::{env, io};
 
 use heph_rt::io::{Buf, BufMut, BufMutSlice, BufSlice, Read, Write};
 use stored::io::Connection;
@@ -143,4 +144,18 @@ pub fn block_on<Fut: Future>(fut: Fut) -> Fut::Output {
             Poll::Pending => {}
         }
     }
+}
+
+#[track_caller]
+pub fn temp_path() -> PathBuf {
+    let location = std::panic::Location::caller();
+    let file = location
+        .file()
+        .rsplit_once('/')
+        .map(|(_, f)| f)
+        .unwrap_or(location.file());
+    let file_name = format!("stored_test_{file}-{}", location.line());
+    let mut dir = env::temp_dir();
+    dir.push(file_name);
+    dir
 }
