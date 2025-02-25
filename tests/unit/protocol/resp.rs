@@ -252,4 +252,16 @@ fn reply_to_conn_error() {
         assert_eq!(&*recv.received(), b"TODO");
     });
 }
+
+#[test]
+fn reply_to_user_error() {
+    block_on_future(async {
+        let (conn, recv) = TestConn::new();
+        let mut protocol = Resp::new(conn);
+
+        let err = RequestError::User(resp::Error::SERVER_ERROR, false);
+        protocol.reply_to_error(err).await.unwrap();
+        assert_eq!(&*recv.received(), b"TODO");
+    });
+}
 */
