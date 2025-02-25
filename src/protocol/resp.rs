@@ -361,6 +361,7 @@ enum Value {
     /// Contains the range of bytes that make up the error in the buffer.
     Error(Range<usize>),
     /// The integer value.
+    #[allow(dead_code)] // Currently unused.
     Integer(isize),
     /// Returns the amount of values in the array.
     /// `None` means a null/nil array.
