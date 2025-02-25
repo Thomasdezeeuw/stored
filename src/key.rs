@@ -212,6 +212,7 @@ impl fmt::Debug for KeyCalculator {
 /// # Examples
 ///
 /// ```
+/// # use stored::key::{key,Key};
 /// const KEY1: Key = key!("b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47");
 ///
 /// const KEY2: Key = key!("45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc");
