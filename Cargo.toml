@@ -46,4 +46,5 @@ path = "src/bin/server.rs"
 [workspace]
 members = [
   "clients/store.rs",
+  "e2e-tests",
 ]
