@@ -1,9 +1,12 @@
 use std::fmt;
+use std::io;
 use std::net::SocketAddr;
 use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::Once;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 
 use heph_rt::access::{Access, ThreadSafe};
 use heph_rt::spawn::options::FutureOptions;
@@ -33,7 +36,9 @@ fn main() -> Result<(), heph_rt::Error> {
 fn start_process<RT: Access>(rt: &RT) -> impl Future<Output = (Client, Stored)> {
     let (config_path, address) = config(Location::caller());
 
-    let stored = start_with_config(&config_path);
+    let mut stored = start_with_config(&config_path);
+    wait_until_started(&mut stored, address);
+
     async move {
         let client = Client::connect(rt, address)
             .await
@@ -187,5 +192,28 @@ impl Drop for Stored {
         self.process
             .wait()
             .unwrap_or_else(|err| panic!("failed to wait on stored process: {err}"));
+    }
+}
+
+fn wait_until_started(stored: &mut Stored, address: SocketAddr) {
+    const MAX: Duration = Duration::from_secs(1);
+    const SLEEP: Duration = Duration::from_millis(100);
+    let start = Instant::now();
+    loop {
+        match std::net::TcpStream::connect(address) {
+            Ok(_) => return,
+            Err(ref err) if err.kind() == io::ErrorKind::ConnectionRefused => {
+                if start.elapsed() + SLEEP > MAX {
+                    match stored.process.try_wait() {
+                        Ok(Some(_)) => panic!("failed to start stored"),
+                        Ok(None) => panic!("waited too long for stored to start"),
+                        Err(err) => panic!("error starting stored: {err}"),
+                    }
+                }
+                sleep(SLEEP);
+                continue;
+            }
+            Err(err) => panic!("unexpected error connecting to stored: {err}"),
+        }
     }
 }
