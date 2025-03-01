@@ -1,6 +1,9 @@
 //! Redis Serialization Protocol (RESP) version 2 protocol
 //! (<https://redis.io/topics/protocol>).
 
+pub(crate) const NIL: &str = "$-1\r\n";
+pub(crate) const CRLF: &str = "\r\n";
+
 pub(crate) mod encode {
     //! Module that encodes following the Redis Protocol (RESP2).
     //!
@@ -55,7 +58,8 @@ pub(crate) mod decode {
 
     use std::io;
 
-    use crate::{invalid_response, new_error, NIL};
+    use crate::resp::NIL;
+    use crate::{invalid_response, new_error};
 
     /// Result of a parsing function.
     ///

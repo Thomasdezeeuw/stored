@@ -12,9 +12,6 @@ pub use key::Key;
 
 mod resp;
 
-const NIL: &str = "$-1\r\n";
-const CRLF: &str = "\r\n";
-
 /// Client for Store*d*.
 pub struct Client {
     conn: TcpStream,
@@ -42,7 +39,7 @@ impl Client {
         resp::encode::string(&mut buf, "SET");
         resp::encode::string_start(&mut buf, blob.len());
 
-        let bufs = (buf, blob, CRLF);
+        let bufs = (buf, blob, resp::CRLF);
         let bufs = self.conn.send_vectored_all(bufs).await?;
         self.buf = bufs.0;
         self.buf.clear();
