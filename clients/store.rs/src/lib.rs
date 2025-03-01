@@ -1,5 +1,7 @@
 //! Store a client for Store*d*.
 
+#![feature(impl_trait_in_assoc_type)]
+
 use std::mem::take;
 use std::net::SocketAddr;
 use std::{fmt, io};
@@ -10,6 +12,7 @@ use heph_rt::Access;
 pub mod key;
 pub use key::Key;
 
+pub mod ops;
 mod resp;
 
 /// Client for Store*d*.
@@ -20,90 +23,39 @@ pub struct Client {
 
 impl Client {
     /// Create a new `Client` connecting to `address`.
-    pub async fn connect<RT>(rt: &RT, address: SocketAddr) -> io::Result<Client>
+    pub const fn connect<'rt, RT>(rt: &'rt RT, address: SocketAddr) -> ops::Connect<'rt, RT>
     where
         RT: Access,
     {
-        let conn = TcpStream::connect(rt, address).await?;
-        Ok(Client {
-            conn,
-            buf: Vec::with_capacity(512),
-        })
+        ops::Connect::new(rt, address)
     }
 
     /// Add a `blob` to the store.
-    pub async fn add(&mut self, blob: Blob) -> io::Result<Key> {
-        let mut buf = take(&mut self.buf);
-
-        resp::encode::array(&mut buf, 2); // "SET" + blob.
-        resp::encode::string(&mut buf, "SET");
-        resp::encode::string_start(&mut buf, blob.len());
-
-        let bufs = (buf, blob, resp::CRLF);
-        let bufs = self.conn.send_vectored_all(bufs).await?;
-        self.buf = bufs.0;
-        self.buf.clear();
-
-        self.read_key().await
+    pub const fn add<'c>(&'c mut self, blob: Blob) -> ops::Add<'c> {
+        ops::Add::new(self, blob)
     }
 
     /// Remove a blob with `key` from the store.
     ///
     /// Returns true if the blob was removed, false if the blob was never
     /// stored.
-    pub async fn remove(&mut self, key: &Key) -> io::Result<bool> {
-        let mut buf = take(&mut self.buf);
-
-        resp::encode::array(&mut buf, 2); // "DEL" + key.
-        resp::encode::string(&mut buf, "DEL");
-        resp::encode::key(&mut buf, key);
-
-        self.buf = self.conn.send_all(buf).await?;
-        self.buf.clear();
-
-        self.read_bool().await
+    pub const fn remove<'c, 'k>(&'c mut self, key: &'k Key) -> ops::Remove<'c, 'k> {
+        ops::Remove::new(self, key)
     }
 
     /// Get blob with `key`.
-    pub async fn get(&mut self, key: &Key) -> io::Result<Option<Blob>> {
-        let mut buf = take(&mut self.buf);
-        buf.clear();
-
-        resp::encode::array(&mut buf, 2); // "GET" + key.
-        resp::encode::string(&mut buf, "GET");
-        resp::encode::key(&mut buf, key);
-
-        self.buf = self.conn.send_all(buf).await?;
-        self.buf.clear();
-
-        self.read_opt_string(|blob| Ok(blob.map(Into::into))).await
+    pub const fn get<'c, 'k>(&'c mut self, key: &'k Key) -> ops::Get<'c, 'k> {
+        ops::Get::new(self, key)
     }
 
     /// Check if a blob with `key` is stored.
-    pub async fn contains(&mut self, key: &Key) -> io::Result<bool> {
-        let mut buf = take(&mut self.buf);
-
-        resp::encode::array(&mut buf, 2); // "EXISTS" + key.
-        resp::encode::string(&mut buf, "EXISTS");
-        resp::encode::key(&mut buf, key);
-
-        self.buf = self.conn.send_all(buf).await?;
-        self.buf.clear();
-
-        self.read_bool().await
+    pub const fn contains<'c, 'k>(&'c mut self, key: &'k Key) -> ops::Contains<'c, 'k> {
+        ops::Contains::new(self, key)
     }
 
     /// Check the number of blobs stored.
-    pub async fn blobs_stored(&mut self) -> io::Result<usize> {
-        let mut buf = take(&mut self.buf);
-
-        resp::encode::array(&mut buf, 1); // "DBSIZE".
-        resp::encode::string(&mut buf, "DBSIZE");
-
-        self.buf = self.conn.send_all(buf).await?;
-        self.buf.clear();
-
-        self.read_integer().await
+    pub const fn blobs_stored<'c>(&'c mut self) -> ops::BlobsStored<'c> {
+        ops::BlobsStored::new(self)
     }
 
     async fn read_key(&mut self) -> io::Result<Key> {
