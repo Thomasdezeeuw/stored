@@ -8,6 +8,7 @@ use std::{fmt, io};
 use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 /// Configuration of the store.
+#[derive(Debug)]
 pub struct Config {
     /// Number of worker threads to use.
     pub worker_threads: WorkerThreads,
@@ -20,6 +21,7 @@ pub struct Config {
 }
 
 /// Number of worker threads to use
+#[derive(Debug)]
 pub enum WorkerThreads {
     /// Uses one worker thread per available CPU core.
     Auto,
@@ -28,6 +30,7 @@ pub enum WorkerThreads {
 }
 
 /// Storage type used.
+#[derive(Debug)]
 pub enum Storage {
     /// In-memory only.
     InMemory,
@@ -36,7 +39,7 @@ pub enum Storage {
 }
 
 /// Protocol listeners.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Protocol {
     /// Address to accept connections on.
     pub address: SocketAddr,

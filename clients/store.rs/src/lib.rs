@@ -16,6 +16,7 @@ pub mod ops;
 mod resp;
 
 /// Client for Store*d*.
+#[derive(Debug)]
 pub struct Client {
     conn: TcpStream,
     buf: Vec<u8>,
