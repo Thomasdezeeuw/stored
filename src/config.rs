@@ -1,4 +1,6 @@
 //! Configuration.
+//!
+//! See [`Config`].
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
