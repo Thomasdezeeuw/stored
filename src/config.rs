@@ -214,7 +214,7 @@ impl<'de> Deserialize<'de> for WorkerThreads {
             where
                 E: de::Error,
             {
-                Ok(WorkerThreads::Specific(v as usize))
+                Ok(WorkerThreads::Specific(v.try_into().unwrap_or(0)))
             }
 
             fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>

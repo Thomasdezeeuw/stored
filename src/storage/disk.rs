@@ -257,6 +257,7 @@ fn open_file(path: &Path) -> io::Result<std::fs::File> {
     // TODO: look at O_DSYNC and O_SYNC.
     // TODO: look at O_DIRECT.
     let file = std::fs::OpenOptions::new()
+        .truncate(false)
         .create(true)
         .read(true)
         .write(true)
@@ -281,7 +282,7 @@ fn lock_file(file: &std::fs::File) -> io::Result<()> {
             Err(err) => match err.kind() {
                 io::ErrorKind::WouldBlock => {
                     return Err(io::Error::new(
-                        io::ErrorKind::Other,
+                        io::ErrorKind::ResourceBusy,
                         "storage already in use",
                     ))
                 }

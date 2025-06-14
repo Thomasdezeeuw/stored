@@ -132,7 +132,7 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
             );
             start_listeners!(disk::Storage, config, runtime, storage_handle);
         }
-    };
+    }
 
     runtime.start()
 }
