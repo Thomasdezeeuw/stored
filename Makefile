@@ -62,6 +62,7 @@ clippy:
 		--allow clippy::cargo-common-metadata \
 		--allow clippy::cast-possible-truncation \
 		--allow clippy::doc-markdown \
+		--allow clippy::elidable-lifetime-names \
 		--allow clippy::equatable-if-let \
 		--allow clippy::future-not-send \
 		--allow clippy::if-not-else \
@@ -73,6 +74,7 @@ clippy:
 		--allow clippy::missing-panics-doc \
 		--allow clippy::module-name-repetitions \
 		--allow clippy::must-use-candidate \
+		--allow clippy::needless-continue \
 		--allow clippy::needless-lifetimes \
 		--allow clippy::new-without-default \
 		--allow clippy::option-if-let-else \
