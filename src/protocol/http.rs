@@ -94,20 +94,23 @@ impl Protocol for Http {
                         // Read the entire blob into memory.
                         let mut body_buf = take(&mut self.buf);
                         body_buf.clear();
-                        // FIXME: make `Content-Length` required (expected for
-                        // chunked encoding when we support streaming adding of
-                        // blobs).
-                        if let BodyLength::Known(len) = body.len() {
-                            // FIXME: put size restrictions on this.
-                            body_buf.reserve(len);
-                        }
-                        let before_length = body_buf.len();
-                        while before_length != body_buf.len() {
-                            // FIXME: put size restrictions on this.
-                            body_buf.reserve(4096);
+                        let BodyLength::Known(body_len) = body.len() else {
+                            return Err(RequestError::MissingContentLength);
+                        };
+                        // FIXME: put size restrictions on this.
+                        body_buf.reserve(body_len);
+                        while body_buf.len() != body_len {
+                            let before = body_buf.len();
                             body_buf = body.recv(body_buf).await.map_err(|err| {
                                 RequestError::Conn(heph_http::server::RequestError::Io(err))
                             })?;
+                            if before == body_buf.len() {
+                                return Err(RequestError::Conn(
+                                    heph_http::server::RequestError::Io(
+                                        io::ErrorKind::UnexpectedEof.into(),
+                                    ),
+                                ));
+                            }
                         }
                         self.buf = body_buf;
                         Ok(Some(Request::AddBlob(&self.buf)))
@@ -201,6 +204,13 @@ impl Protocol for Http {
                 self.string_response(StatusCode::BAD_REQUEST, "unexpected non-empty body")
                     .await
             }
+            RequestError::MissingContentLength => {
+                self.string_response(
+                    StatusCode::LENGTH_REQUIRED,
+                    "missing required Content-Length header",
+                )
+                .await
+            }
             RequestError::Conn(heph_http::server::RequestError::Io(_)) => Ok(()),
             RequestError::Conn(err) => {
                 self.string_response(err.proper_status_code(), err.as_str())
@@ -225,6 +235,8 @@ pub enum RequestError {
     NotFound,
     /// Expected an empty body, but got a non-empty body.
     BodyNotEmpty,
+    /// Missing a Content-Length header when adding a blob.
+    MissingContentLength,
     /// Connection error.
     Conn(heph_http::server::RequestError),
 }
@@ -239,6 +251,7 @@ impl IsFatal for RequestError {
     fn is_fatal(&self) -> bool {
         match self {
             RequestError::NotFound | RequestError::BodyNotEmpty => false,
+            RequestError::MissingContentLength => true,
             RequestError::Conn(err) => err.should_close(),
         }
     }
@@ -249,6 +262,7 @@ impl fmt::Display for RequestError {
         match self {
             RequestError::NotFound => "not found".fmt(f),
             RequestError::BodyNotEmpty => "unexpected non-empty body".fmt(f),
+            RequestError::MissingContentLength => "missing required Content-Length header".fmt(f),
             RequestError::Conn(err) => err.fmt(f),
         }
     }
