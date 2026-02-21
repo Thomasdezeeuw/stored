@@ -51,9 +51,9 @@ store values using a POST request.
 
 ```bash
 # Store "Hello world".
-curl -X POST -d "Hello world" -v http://127.0.0.1:8080/blob
+curl -X POST -d "Hello world" -v http://127.0.0.1:5080/blob
 # Store the contents of some_file.txt.
-curl -X POST -d "@some_file.txt" -v http://127.0.0.1:8080/blob
+curl -X POST -d "@some_file.txt" -v http://127.0.0.1:5080/blob
 ```
 
 
@@ -69,7 +69,7 @@ Or using the HTTP interface using `curl`.
 
 ```bash
 # Retrieves "Hello world".
-curl http://127.0.0.1:8080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
+curl http://127.0.0.1:5080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
 ```
 
 
@@ -85,5 +85,5 @@ Or a simple DELETE request.
 
 ```bash
 # Deletes "Hello world".
-curl -X DELETE http://127.0.0.1:8080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
+curl -X DELETE http://127.0.0.1:5080/blob/b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47
 ```
