@@ -14,8 +14,9 @@ use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::supervisor::NoSupervisor;
 use heph::{actor, from_message};
-use heph_rt::io::{Buf, Write};
+use heph_rt::io::Buf;
 
+use crate::io::Connection;
 use crate::key::Key;
 use crate::storage::{self, AddError, index};
 
@@ -28,8 +29,7 @@ pub fn new() -> (Handle, impl Future<Output = ()>) {
     let (w, handle) = index::new();
     let (future, writer) = ActorFutureBuilder::new()
         .with_inbox_size(InboxSize::MAX)
-        .build(NoSupervisor, actor_fn(writer), w)
-        .unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
+        .build(NoSupervisor, actor_fn(writer), w);
     (Handle { writer, handle }, future)
 }
 
@@ -45,10 +45,10 @@ impl storage::Blob for Blob {
     where
         H: Buf,
         T: Buf,
-        C: Write,
+        C: Connection,
     {
         let bufs = (header, self, trailer);
-        let bufs = conn.write_vectored_all(bufs).await?;
+        let bufs = conn.send_all_vectored(bufs).await?;
         Ok((bufs.0, bufs.2))
     }
 

@@ -87,7 +87,7 @@ use std::cmp::min;
 use std::future::Future;
 use std::mem::{self, size_of};
 use std::os::fd::AsRawFd;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{self, Poll};
@@ -100,11 +100,12 @@ use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::messages::from_message;
 use heph::supervisor::SupervisorStrategy;
 use heph_rt::Access;
-use heph_rt::fs::File;
-use heph_rt::io::{Buf, Write};
+use heph_rt::extract::Extract;
+use heph_rt::fd::AsyncFd;
+use heph_rt::io::Buf;
 use log::{debug, error, trace};
 
-use crate::io::syscall;
+use crate::io::{Connection, syscall};
 use crate::key::Key;
 use crate::storage::{self, AddError, index};
 
@@ -121,20 +122,19 @@ const READ_BLOB_BUF_SIZE: usize = 4096;
 /// that when this function returns the index is not yet filled.
 pub fn open<RT: Access + Clone>(
     rt: RT,
-    path: &Path,
+    path: PathBuf,
 ) -> io::Result<(Handle, impl Future<Output = ()>)> {
     // In-memory index of the stored blobs.
     let (write_index, read_index) = index::new();
     // Create the writing and reading sides of the storage.
-    let w = Writer::open(&rt, path, write_index)?;
+    let w = Writer::open(&rt, &path, write_index)?;
     let reader = Arc::new(w.new_reader()?);
 
     // Actor that handles the writes.
     let (future, writer) = ActorFutureBuilder::new()
         .with_rt(rt)
         .with_inbox_size(InboxSize::MAX)
-        .build(writer_supervisor, actor_fn(writer), w)
-        .unwrap(); // SAFETY: `NewActor::Error = !` thus can never panic.
+        .build(writer_supervisor, actor_fn(writer), w);
 
     let handle = Handle {
         reader,
@@ -299,7 +299,7 @@ fn lock_file(file: &std::fs::File) -> io::Result<()> {
 /// in the [`Index`] file.
 struct Data {
     /// Data file opened for reading and writing.
-    file: File,
+    file: AsyncFd,
     /// Current offset to write the next blob to.
     offset: u64,
 }
@@ -311,7 +311,7 @@ impl Data {
         let file = open_file(path)?;
         let offset = file.metadata()?.len();
         Ok(Data {
-            file: File::from_std(rt, file),
+            file: AsyncFd::new(file.into(), rt.sq()),
             offset,
         })
     }
@@ -321,7 +321,7 @@ impl Data {
     /// Returns the offset at which the blob was written.
     async fn write_blob(&mut self, blob: Box<[u8]>) -> io::Result<u64> {
         let offset = self.offset;
-        let blob = self.file.write_all_at(blob, offset).await?;
+        let blob = self.file.write_all(blob).at(offset).extract().await?;
         self.offset += blob.len() as u64;
         self.file.sync_all().await?;
         Ok(offset)
@@ -334,7 +334,7 @@ impl Data {
 /// file.
 struct Index {
     /// Index file opened for reading and writing in append-only mode.
-    file: File,
+    file: AsyncFd,
     /// In-memory index of blobs.
     index: index::Writer<Entry>,
     /// Current offset to write the next entry to.
@@ -405,7 +405,7 @@ impl Index {
         }
 
         Ok(Index {
-            file: File::from_std(rt, file),
+            file: AsyncFd::new(file.into(), rt.sq()),
             index: write_index,
             offset: file_size,
         })
@@ -414,7 +414,7 @@ impl Index {
     /// Writes a new entry to the index for blob with `key`.
     async fn write_entry(&mut self, key: Key, offset: u64, length: u64) -> io::Result<()> {
         let disk_entry = Box::new(DiskEntry::new(key.clone(), offset, length));
-        self.file.write_all_at(disk_entry, self.offset).await?;
+        self.file.write_all(disk_entry).at(self.offset).await?;
         self.offset += size_of::<DiskEntry>() as u64;
 
         let entry = Entry { offset, length };
@@ -505,10 +505,13 @@ impl DiskEntry {
 // SAFETY: due to the heap allocation of the `Box` we can ensure that the
 // returned pointer is valid and has a static and `Unpin` lifetime.
 unsafe impl Buf for Box<DiskEntry> {
-    unsafe fn parts(&self) -> (*const u8, usize) {
+    unsafe fn parts(&self) -> (*const u8, u32) {
         // SAFETY: the layout of `DiskEntry` is valid as slice of bytes due to
         // `repr(C)`.
-        (ptr::from_ref::<DiskEntry>(self).cast(), size_of::<Self>())
+        (
+            ptr::from_ref::<DiskEntry>(self).cast(),
+            size_of::<Self>() as u32,
+        )
     }
 }
 
@@ -527,7 +530,7 @@ struct Reader {
     ///
     /// NOTE: the file descriptor is duplicated from the writing side fd, so
     /// it's not actually read only, but we threat it as such.
-    data_file: File,
+    data_file: AsyncFd,
 }
 
 /// Handle to the [`Storage`] that can be send across thread bounds.
@@ -616,15 +619,15 @@ impl storage::Blob for BlobRef {
     where
         H: Buf,
         T: Buf,
-        C: Write,
+        C: Connection,
     {
-        let header = conn.write_all(header).await?;
+        let header = conn.send_all(header).await?;
         // TODO: optimise this, e.g. by using `sendfile(2)`.
         let mut offset = self.entry.offset;
         let mut left = self.entry.length as usize;
         let mut buf = Vec::with_capacity(min(READ_BLOB_BUF_SIZE, left));
         loop {
-            buf = self.reader.data_file.read_at(buf, offset).await?;
+            buf = self.reader.data_file.read(buf).from(offset).await?;
             let written = buf.len();
             if written == 0 {
                 break;
@@ -632,18 +635,18 @@ impl storage::Blob for BlobRef {
             offset += written as u64;
             left -= written;
 
-            buf = conn.write_all(buf).await?;
+            buf = conn.send_all(buf).await?;
 
             if left == 0 {
                 break;
             }
             buf.clear();
         }
-        let trailer = conn.write_all(trailer).await?;
+        let trailer = conn.send_all(trailer).await?;
         Ok((header, trailer))
     }
 
-    type BlobBytes = BlobBytes<File>;
+    type BlobBytes = BlobBytes;
 
     fn bytes(self) -> Self::BlobBytes {
         BlobBytes {
@@ -657,13 +660,13 @@ impl storage::Blob for BlobRef {
 
 /// Async iterator of a blob's bytes.
 #[allow(private_bounds)] // Stupid workaround trait.
-pub struct BlobBytes<F: WorkAroundReadAt + 'static = File> {
+pub struct BlobBytes {
     /// Reading future.
     ///
     /// NOTE: the `'static` lifetime is wrong, its lifetime is tied to the
     /// `data_file` in `Reader`.
     /// NOTE: due to the above `future` MUST be declared before `reader`.
-    future: Option<F::Future<'static>>,
+    future: Option<heph_rt::io::Read<'static, Vec<u8>>>,
     reader: Arc<Reader>,
     /// Current offset into the data file.
     offset: u64,
@@ -684,7 +687,7 @@ impl AsyncIterator for BlobBytes {
         let fut = unsafe {
             Pin::new_unchecked(this.future.get_or_insert_with(|| {
                 let buf = Vec::with_capacity(min(READ_BLOB_BUF_SIZE, this.left as usize));
-                let fut = WorkAroundReadAt::read_at(&this.reader.data_file, buf, this.offset);
+                let fut = this.reader.data_file.read(buf).from(this.offset);
                 // SAFETY: this not safe. It's to work around the lifetime
                 // issue, see the `future` field.
                 mem::transmute(fut)
@@ -713,22 +716,5 @@ impl AsyncIterator for BlobBytes {
             let reads = self.left as usize / READ_BLOB_BUF_SIZE;
             (reads, Some(reads))
         }
-    }
-}
-
-/// This trait is a work around for not being able to name the type of the
-/// `Future` returned by an `async` function, which means you can't store that
-/// future in a structure, which is what we need to do.
-trait WorkAroundReadAt {
-    type Future<'a>: Future<Output = io::Result<Vec<u8>>> + 'a
-    where
-        Self: 'a;
-    fn read_at<'a>(&'a self, buf: Vec<u8>, offset: u64) -> Self::Future<'a>;
-}
-
-impl WorkAroundReadAt for File {
-    type Future<'a> = impl Future<Output = io::Result<Vec<u8>>> + 'a;
-    fn read_at<'a>(&'a self, buf: Vec<u8>, offset: u64) -> Self::Future<'a> {
-        self.read_at(buf, offset)
     }
 }

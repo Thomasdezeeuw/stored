@@ -149,7 +149,7 @@ where
         self.prepare_buf();
         let buf = take(&mut self.buf);
         let before_length = buf.len();
-        self.buf = self.conn.read(buf).await?;
+        self.buf = self.conn.recv(buf).await?;
         Ok(before_length != self.buf.len())
     }
 
@@ -190,20 +190,20 @@ where
 
     /// Write a nil string response.
     async fn write_nil_string(&mut self) -> io::Result<()> {
-        self.conn.write_all(NIL).await?;
+        self.conn.send_all(NIL).await?;
         Ok(())
     }
 
     /// Write `error` as error response.
     async fn write_err(&mut self, err: Error) -> io::Result<()> {
-        self.conn.write_all(err.as_bytes()).await?;
+        self.conn.send_all(err.as_bytes()).await?;
         Ok(())
     }
 
     /// Write `self.buf[start..]` as response.
     async fn write_part_buf(&mut self, start: usize) -> io::Result<()> {
         let buf = WriteBuf::new(take(&mut self.buf), start);
-        self.buf = self.conn.write_all(buf).await?.reset();
+        self.buf = self.conn.send_all(buf).await?.reset();
         Ok(())
     }
 

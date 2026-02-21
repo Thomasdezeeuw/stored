@@ -1,14 +1,14 @@
 #![feature(never_type)]
 
+use std::env;
 use std::path::Path;
 use std::process::ExitCode;
-use std::{env, io};
 
 use heph::actor::{self, NewActor, actor_fn};
 use heph::supervisor::NoSupervisor;
-use heph_rt::net::{TcpStream, tcp};
+use heph_rt::fd::AsyncFd;
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
-use heph_rt::{Runtime, Signal, ThreadSafe};
+use heph_rt::{Runtime, ThreadSafe, process};
 use log::{error, info};
 
 use stored::config::{self, Config};
@@ -124,7 +124,7 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
         }
         config::Storage::OnDisk(path) => {
             let rt = ThreadSafe::from(&runtime);
-            let (storage_handle, future) = storage::open_on_disk(rt, &path)
+            let (storage_handle, future) = storage::open_on_disk(rt, path)
                 .map_err(|err| heph_rt::Error::setup(format!("failed to open storage: {err}")))?;
             runtime.spawn_future(
                 future,
@@ -137,9 +137,9 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
     runtime.start()
 }
 
-async fn signal_handler<RT>(mut ctx: actor::Context<Signal, RT>) -> Result<(), !> {
+async fn signal_handler<RT>(mut ctx: actor::Context<process::Signal, RT>) -> Result<(), !> {
     while let Ok(signal) = ctx.receive_next().await {
-        if signal.should_stop() {
+        if signal.should_exit() {
             info!(signal:% = signal; "received shut down signal, waiting on all connections to close before shutting down");
             break;
         }
@@ -158,13 +158,13 @@ macro_rules! start_listeners (
         if let Some(config) = $config.resp {
             let storage_handle = $storage_handle.clone();
             #[rustfmt::skip]
-            start_listener!(Resp<TcpStream>, $storage, $runtime, storage_handle, tcp::server::setup, config, RespSupervisor);
+            start_listener!(Resp<AsyncFd>, $storage, $runtime, storage_handle, heph_rt::net::Server::new, config, RespSupervisor);
         }
 
         if let Some(config) = $config.http {
             let storage_handle = $storage_handle.clone();
             #[rustfmt::skip]
-            start_listener!(Http, $storage, $runtime, storage_handle, heph_http::server::setup, config, HttpSupervisor);
+            start_listener!(Http, $storage, $runtime, storage_handle, heph_http::Server::new, config, HttpSupervisor);
         }
     }
 );
@@ -194,10 +194,14 @@ macro_rules! start_listener (
             heph_rt::Error::setup(format!("failed to setup {} server: {err}", <$protocol>::NAME))
         })?;
 
-        $runtime.run_on_workers(move |mut runtime_ref| -> io::Result<()> {
+        $runtime.run_on_workers(move |mut runtime_ref| -> Result<(), heph_rt::Error> {
             let supervisor = $listener_supervisor::new();
             let options = ActorOptions::default().with_priority(Priority::LOW);
-            let actor_ref = runtime_ref.spawn_local(supervisor, server, (), options);
+            let actor_ref = runtime_ref.try_spawn_local(supervisor, server, (), options)
+                .map_err(|err| {
+                    heph_rt::Error::setup(format!("failed to setup {} server: {err}", <$protocol>::NAME))
+                })?;
+
             runtime_ref.receive_signals(actor_ref.try_map());
             Ok(())
         })?;

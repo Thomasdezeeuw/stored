@@ -10,7 +10,6 @@ use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
 use heph_http::head::{Header, HeaderName, Headers, Method, StatusCode};
 use heph_http::server::Connection;
 use heph_rt::timer::DeadlinePassed;
-use log::warn;
 
 use crate::key::Key;
 use crate::protocol::{IsFatal, Protocol, Request, Response};
@@ -73,10 +72,6 @@ impl Protocol for Http {
     type Conn = Connection;
 
     fn new(conn: Connection) -> Http {
-        if let Err(err) = conn.set_nodelay(true) {
-            warn!("failed to set NODELAY on socket: {err}");
-        }
-
         Http {
             conn,
             headers: Headers::EMPTY,
@@ -85,7 +80,7 @@ impl Protocol for Http {
     }
 
     async fn source(&mut self) -> Result<Self::Source, Self::ResponseError> {
-        self.conn.peer_addr()
+        self.conn.peer_addr().await
     }
 
     type Source = std::net::SocketAddr;

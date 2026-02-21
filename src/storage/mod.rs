@@ -15,8 +15,9 @@ use std::async_iter::AsyncIterator;
 use std::future::Future;
 use std::{fmt, io};
 
-use heph_rt::io::{Buf, Write};
+use heph_rt::io::Buf;
 
+use crate::io::Connection;
 use crate::key::Key;
 
 pub mod index;
@@ -79,7 +80,7 @@ pub trait Blob {
     where
         H: Buf,
         T: Buf,
-        C: Write;
+        C: Connection;
 
     /// Iterator of the blob's bytes.
     // NOTE: this is mainly here for the HTTP implementation which doesn't have
