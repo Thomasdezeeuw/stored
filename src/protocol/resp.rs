@@ -269,6 +269,13 @@ where
                     }
                     b"SET" => {
                         self.ensure_arguments(length, 1).await?;
+                        /* FIXME: check maximum blob size. Currently the
+                         * read_argument function (really decode::bulk_string)
+                         * doesn't return until the entire argument is read.
+                        if body_len as u64 > self.max_blob_size {
+                            return Err(RequestError::User(Error::BLOB_TOO_LARGE, true));
+                        }
+                        */
                         match self.read_string().await {
                             Ok(blob) => Ok(Some(Request::AddBlob(blob))),
                             Err(err) => Err(err),
@@ -428,6 +435,7 @@ impl Error {
     const INVALID_ARGUMENTS: Error = user_error!("invalid number of arguments");
     const INVALID_ARG_TYPE_EXP_STR: Error =
         user_error!("invalid argument type (expecting a string)");
+    const BLOB_TOO_LARGE: Error = user_error!("blob too large");
     // Array errors.
     const PARSE_ARRAY_NEGATIVE_LENGTH: Error =
         user_error!("unable to parse array: negative length");
