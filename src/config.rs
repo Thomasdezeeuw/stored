@@ -35,6 +35,8 @@ pub enum WorkerThreads {
 #[derive(Debug)]
 pub struct Storage {
     pub kind: StorageKind,
+    /// Maximum size of a blob in bytes.
+    pub max_blob_size: u64,
 }
 
 /// Storage kind used.
@@ -75,6 +77,7 @@ impl Config {
 
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_MAX_BLOB_SIZE: u64 = 100 * 1000000; // 100 mb.
 
 impl Default for Config {
     fn default() -> Config {
@@ -82,6 +85,7 @@ impl Default for Config {
             worker_threads: WorkerThreads::Specific(1),
             storage: Storage {
                 kind: StorageKind::InMemory,
+                max_blob_size: DEFAULT_MAX_BLOB_SIZE,
             },
             http: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
@@ -270,6 +274,7 @@ impl<'de> Deserialize<'de> for Storage {
             {
                 let mut kind = None;
                 let mut path = None;
+                let mut max_blob_size: Option<human_size::Size> = None;
                 while let Some(key) = map.next_key()? {
                     match key {
                         Field::Kind => {
@@ -284,6 +289,12 @@ impl<'de> Deserialize<'de> for Storage {
                             }
                             path = Some(map.next_value()?);
                         }
+                        Field::MaxBlobSize => {
+                            if max_blob_size.is_some() {
+                                return Err(de::Error::duplicate_field("max_blob_size"));
+                            }
+                            max_blob_size = Some(map.next_value()?);
+                        }
                     }
                 }
                 let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
@@ -294,15 +305,23 @@ impl<'de> Deserialize<'de> for Storage {
                         StorageKind::OnDisk(path)
                     }
                 };
-                Ok(Storage { kind })
+                let max_blob_size = match max_blob_size {
+                    Some(size) => size.to_bytes(),
+                    None => DEFAULT_MAX_BLOB_SIZE,
+                };
+                Ok(Storage {
+                    kind,
+                    max_blob_size,
+                })
             }
         }
 
-        const STORAGE_FIELDS: &[&str] = &["kind", "path"];
+        const STORAGE_FIELDS: &[&str] = &["kind", "path", "max_blob_size"];
 
         enum Field {
             Kind,
             Path,
+            MaxBlobSize,
         }
 
         impl<'de> Deserialize<'de> for Field {
@@ -326,6 +345,7 @@ impl<'de> Deserialize<'de> for Storage {
                         match value {
                             "kind" => Ok(Field::Kind),
                             "path" => Ok(Field::Path),
+                            "max_blob_size" => Ok(Field::MaxBlobSize),
                             _ => Err(de::Error::unknown_field(value, STORAGE_FIELDS)),
                         }
                     }

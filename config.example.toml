@@ -7,6 +7,8 @@ worker_threads = "auto"
 kind = "disk" # Or `memory`.
 # For disk storage the path is required, for memory it's ignored.
 path = "stored.db"
+# Maximum size of a single blob.
+max_blob_size = "100 mb"
 
 # Support for thee Hypertext Transfer Protocol (HTTP) version 1.1 protocol.
 [http]
