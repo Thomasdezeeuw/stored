@@ -47,7 +47,7 @@ pub trait Storage {
 
     /// Add `blob` to the storage.
     fn add_blob(&mut self, blob: &[u8])
-        -> impl Future<Output = Result<Key, AddError<Self::Error>>>;
+    -> impl Future<Output = Result<Key, AddError<Self::Error>>>;
 
     /// Remove the blob with `key` from storage.
     ///

@@ -4,10 +4,10 @@ use std::io;
 use std::mem::take;
 use std::net::SocketAddr;
 
-use heph_rt::net::tcp::stream::TcpStream;
 use heph_rt::Access;
+use heph_rt::net::tcp::stream::TcpStream;
 
-use crate::{resp, Blob, Client, Key};
+use crate::{Blob, Client, Key, resp};
 
 /// Create a new [`Client`].
 pub struct Connect<'rt, RT> {

@@ -17,7 +17,7 @@ use heph::{actor, from_message};
 use heph_rt::io::{Buf, Write};
 
 use crate::key::Key;
-use crate::storage::{self, index, AddError};
+use crate::storage::{self, AddError, index};
 
 /// Create a new in-memory storage.
 ///

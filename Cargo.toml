@@ -7,7 +7,7 @@ authors     = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
 license     = "GPL-2.0-only"
 repository  = "https://github.com/Thomasdezeeuw/stored"
 readme      = "README.md"
-edition     = "2021"
+edition     = "2024"
 
 [dependencies]
 basic-toml        = { version = "0.1.9", default-features = false }

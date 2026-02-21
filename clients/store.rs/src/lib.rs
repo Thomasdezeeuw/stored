@@ -6,8 +6,8 @@ use std::mem::take;
 use std::net::SocketAddr;
 use std::{fmt, io};
 
-use heph_rt::net::tcp::stream::TcpStream;
 use heph_rt::Access;
+use heph_rt::net::tcp::stream::TcpStream;
 
 pub mod key;
 pub use key::Key;

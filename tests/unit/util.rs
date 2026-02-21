@@ -3,7 +3,7 @@
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::pin;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::task::{self, Poll};
 use std::{env, io};
 

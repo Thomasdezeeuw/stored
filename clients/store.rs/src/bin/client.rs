@@ -5,9 +5,9 @@ use std::pin::Pin;
 use std::process::ExitCode;
 use std::{env, io};
 
-use heph::actor::{self, actor_fn, Actor, NewActor};
+use heph::actor::{self, Actor, NewActor, actor_fn};
 use heph::supervisor::{Supervisor, SupervisorStrategy};
-use heph_rt::io::{stderr, stdin, stdout, Read, Write};
+use heph_rt::io::{Read, Write, stderr, stdin, stdout};
 use heph_rt::spawn::options::{ActorOptions, InboxSize};
 use heph_rt::util::either;
 use heph_rt::{Access, Runtime, Signal};

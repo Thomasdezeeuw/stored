@@ -1,4 +1,4 @@
-use stored::key::{key, InvalidKeyStr, Key, KeyCalculator};
+use stored::key::{InvalidKeyStr, Key, KeyCalculator, key};
 
 #[test]
 fn to_owned() {
@@ -21,7 +21,9 @@ fn formatting() {
 #[test]
 fn parsing() {
     let got = Key::for_blob(b"Hello world");
-    let expected = key!("b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47");
+    let expected = key!(
+        "b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47"
+    );
     assert_eq!(got, expected);
 }
 
@@ -49,7 +51,9 @@ fn key_calculator() {
 
 #[test]
 fn key_macro() {
-    let key = key!("b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47");
+    let key = key!(
+        "b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47"
+    );
     let expected = "b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47";
     assert_eq!(format!("{key}"), expected);
 }

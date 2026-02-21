@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 
 use heph::actor;
 use heph::supervisor::SupervisorStrategy;
-use heph_rt::timer::{DeadlinePassed, Timer};
 use heph_rt::Access;
+use heph_rt::timer::{DeadlinePassed, Timer};
 use log::{debug, error, info, warn};
 
 use crate::key::Key;

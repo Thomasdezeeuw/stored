@@ -1,7 +1,7 @@
 //! In-memory storage tests.
 
-use stored::key::{key, Key};
-use stored::storage::{mem, AddError, Storage};
+use stored::key::{Key, key};
+use stored::storage::{AddError, Storage, mem};
 
 use heph_rt::spawn::options::FutureOptions;
 use heph_rt::test::spawn_future;
@@ -9,7 +9,9 @@ use heph_rt::test::spawn_future;
 use crate::util::block_on;
 
 const BLOB: &[u8] = b"Hello world";
-const KEY: Key = key!("b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47");
+const KEY: Key = key!(
+    "b7f783baed8297f0db917462184ff4f08e69c2d5e5f79a942600f9725f58ce1f29c18139bf80b06c0fff2bdd34738452ecf40c488c22a7e3d80cdf6f9c1c0d47"
+);
 
 #[test]
 fn add_blob() {

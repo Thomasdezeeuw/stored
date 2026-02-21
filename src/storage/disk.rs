@@ -99,14 +99,14 @@ use heph::actor_ref::{ActorRef, RpcMessage};
 use heph::future::{ActorFutureBuilder, InboxSize};
 use heph::messages::from_message;
 use heph::supervisor::SupervisorStrategy;
+use heph_rt::Access;
 use heph_rt::fs::File;
 use heph_rt::io::{Buf, Write};
-use heph_rt::Access;
 use log::{debug, error, trace};
 
 use crate::io::syscall;
 use crate::key::Key;
-use crate::storage::{self, index, AddError};
+use crate::storage::{self, AddError, index};
 
 /// Buffer size for reading blob data.
 const READ_BLOB_BUF_SIZE: usize = 4096;
@@ -284,7 +284,7 @@ fn lock_file(file: &std::fs::File) -> io::Result<()> {
                     return Err(io::Error::new(
                         io::ErrorKind::ResourceBusy,
                         "storage already in use",
-                    ))
+                    ));
                 }
                 io::ErrorKind::Interrupted => continue, // Try again.
                 _ => return Err(err),

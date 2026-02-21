@@ -4,7 +4,7 @@ use std::io;
 
 use heph_rt::test::block_on_future;
 
-use stored::key::{key, Key};
+use stored::key::{Key, key};
 use stored::protocol::resp::{self, RequestError, Resp};
 use stored::protocol::{Protocol, Request, Response};
 use stored::storage::mem::Blob;
@@ -39,7 +39,12 @@ fn remove_blob() {
         let mut protocol = Resp::new(TestConn::with_input(b"*2\r\n$3\r\nDEL\r\n$128\r\n45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc\r\n"));
         let request = protocol.next_request().await.unwrap().unwrap();
         if let Request::RemoveBlob(key) = request {
-            assert_eq!(key, key!("45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"));
+            assert_eq!(
+                key,
+                key!(
+                    "45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"
+                )
+            );
         } else {
             panic!("unexpected request: {request:?}");
         }
@@ -53,7 +58,12 @@ fn get_blob() {
         let mut protocol = Resp::new(TestConn::with_input(b"*2\r\n$3\r\nGET\r\n$128\r\n45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc\r\n"));
         let request = protocol.next_request().await.unwrap().unwrap();
         if let Request::GetBlob(key) = request {
-            assert_eq!(key, key!("45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"));
+            assert_eq!(
+                key,
+                key!(
+                    "45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"
+                )
+            );
         } else {
             panic!("unexpected request: {request:?}");
         }
@@ -67,7 +77,12 @@ fn contains_blob() {
         let mut protocol = Resp::new(TestConn::with_input(b"*2\r\n$6\r\nEXISTS\r\n$128\r\n45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc\r\n"));
         let request = protocol.next_request().await.unwrap().unwrap();
         if let Request::ContainsBlob(key) = request {
-            assert_eq!(key, key!("45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"));
+            assert_eq!(
+                key,
+                key!(
+                    "45546d4d71407e82ecda31eba5bf74b65bc092b0436a2409a6b615c1f78fdb2d3da371758f07a65b5d2b3ee8fa9ea0c772dd1eff884c4c77d4290177b002ccdc"
+                )
+            );
         } else {
             panic!("unexpected request: {request:?}");
         }

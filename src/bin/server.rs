@@ -4,9 +4,9 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::{env, io};
 
-use heph::actor::{self, actor_fn, NewActor};
+use heph::actor::{self, NewActor, actor_fn};
 use heph::supervisor::NoSupervisor;
-use heph_rt::net::{tcp, TcpStream};
+use heph_rt::net::{TcpStream, tcp};
 use heph_rt::spawn::options::{ActorOptions, FutureOptions, Priority};
 use heph_rt::{Runtime, Signal, ThreadSafe};
 use log::{error, info};

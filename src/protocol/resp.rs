@@ -57,7 +57,7 @@ where
                     // though the sender already closed their write half any
                     // way.
                     Ok(false) if !self.buf.is_empty() => {
-                        return Err(RequestError::User(Error::INCOMPLETE, true))
+                        return Err(RequestError::User(Error::INCOMPLETE, true));
                     }
                     // Read and processed everything, so we're done.
                     Ok(false) => return Ok(None),
@@ -518,7 +518,7 @@ mod decode {
             // Null, or nil, string. Format `$-1\r\n`.
             Ok(Some((-1, processed))) => return Ok(Some((None, processed))),
             Ok(Some((len, _))) if len.is_negative() => {
-                return Err(Error::PARSE_STR_NEGATIVE_LENGTH)
+                return Err(Error::PARSE_STR_NEGATIVE_LENGTH);
             }
             #[allow(clippy::cast_sign_loss)] // Check for negative in the line above.
             Ok(Some((len, processed))) => (len as usize, processed), // $ is included in processed.
