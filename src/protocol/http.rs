@@ -100,7 +100,9 @@ impl Protocol for Http {
                         let BodyLength::Known(body_len) = body.len() else {
                             return Err(RequestError::MissingContentLength);
                         };
-                        // FIXME: put size restrictions on this.
+                        if body_len as u64 > self.max_blob_size {
+                            return Err(RequestError::BlobTooLarge);
+                        }
                         body_buf.reserve(body_len);
                         while body_buf.len() != body_len {
                             let before = body_buf.len();
@@ -214,6 +216,10 @@ impl Protocol for Http {
                 )
                 .await
             }
+            RequestError::BlobTooLarge => {
+                self.string_response(StatusCode::PAYLOAD_TOO_LARGE, "blob is too large")
+                    .await
+            }
             RequestError::Conn(heph_http::server::RequestError::Io(_)) => Ok(()),
             RequestError::Conn(err) => {
                 self.string_response(err.proper_status_code(), err.as_str())
@@ -240,6 +246,8 @@ pub enum RequestError {
     BodyNotEmpty,
     /// Missing a Content-Length header when adding a blob.
     MissingContentLength,
+    /// Blob is too large to store.
+    BlobTooLarge,
     /// Connection error.
     Conn(heph_http::server::RequestError),
 }
@@ -254,7 +262,7 @@ impl IsFatal for RequestError {
     fn is_fatal(&self) -> bool {
         match self {
             RequestError::NotFound | RequestError::BodyNotEmpty => false,
-            RequestError::MissingContentLength => true,
+            RequestError::MissingContentLength | RequestError::BlobTooLarge => true,
             RequestError::Conn(err) => err.should_close(),
         }
     }
@@ -266,6 +274,7 @@ impl fmt::Display for RequestError {
             RequestError::NotFound => "not found".fmt(f),
             RequestError::BodyNotEmpty => "unexpected non-empty body".fmt(f),
             RequestError::MissingContentLength => "missing required Content-Length header".fmt(f),
+            RequestError::BlobTooLarge => "blob is too large".fmt(f),
             RequestError::Conn(err) => err.fmt(f),
         }
     }
