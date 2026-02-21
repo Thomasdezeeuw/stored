@@ -185,7 +185,7 @@ macro_rules! start_listener (
             write_timeout: $config.write_timeout,
         };
         let new_actor = actor_fn(controller::actor::<_, $storage, _>).map_arg(move |conn| {
-            let protocol = <$protocol>::new(conn);
+            let protocol = <$protocol>::new(conn, $config.max_blob_size);
             let storage = $storage_handle.clone().into();
             (controller_config.clone(), protocol, storage)
         });

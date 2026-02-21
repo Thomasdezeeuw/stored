@@ -22,6 +22,8 @@ pub struct Http {
     headers: Headers,
     /// Reusable buffer.
     buf: Vec<u8>,
+    /// See [`config::Storage::max_blob_size`].
+    max_blob_size: u64,
 }
 
 impl Http {
@@ -71,11 +73,12 @@ impl Protocol for Http {
 
     type Conn = Connection;
 
-    fn new(conn: Connection) -> Http {
+    fn new(conn: Connection, max_blob_size: u64) -> Http {
         Http {
             conn,
             headers: Headers::EMPTY,
             buf: Vec::new(),
+            max_blob_size,
         }
     }
 

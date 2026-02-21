@@ -57,6 +57,8 @@ pub struct Protocol {
     pub read_timeout: Duration,
     /// Write timeout.
     pub write_timeout: Duration,
+    /// Maximum size of a blob in bytes.
+    pub max_blob_size: u64,
 }
 
 impl Config {
@@ -91,11 +93,13 @@ impl Default for Config {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
                 read_timeout: READ_TIMEOUT,
                 write_timeout: WRITE_TIMEOUT,
+                max_blob_size: DEFAULT_MAX_BLOB_SIZE,
             }),
             resp: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5378),
                 read_timeout: READ_TIMEOUT,
                 write_timeout: WRITE_TIMEOUT,
+                max_blob_size: DEFAULT_MAX_BLOB_SIZE,
             }),
         }
     }
@@ -124,9 +128,9 @@ impl<'de> Deserialize<'de> for Config {
                 V: MapAccess<'de>,
             {
                 let mut worker_threads = None;
-                let mut storage = None;
-                let mut http = None;
-                let mut resp = None;
+                let mut storage: Option<Storage> = None;
+                let mut http: Option<Protocol> = None;
+                let mut resp: Option<Protocol> = None;
                 while let Some(key) = map.next_key()? {
                     match key {
                         Field::WorkerThreads => {
@@ -156,6 +160,11 @@ impl<'de> Deserialize<'de> for Config {
                     }
                 }
                 let storage = storage.ok_or_else(|| de::Error::missing_field("storage"))?;
+                for protocol in [&mut http, &mut resp] {
+                    if let Some(protocol) = protocol.as_mut() {
+                        protocol.max_blob_size = storage.max_blob_size;
+                    }
+                }
                 Ok(Config {
                     worker_threads: worker_threads.unwrap_or(WorkerThreads::Specific(1)),
                     storage,
@@ -446,6 +455,8 @@ impl<'de> Deserialize<'de> for Protocol {
                     address,
                     read_timeout: read_timeout.unwrap_or(READ_TIMEOUT),
                     write_timeout: write_timeout.unwrap_or(WRITE_TIMEOUT),
+                    // NOTE: overwritten based on the Storage config.
+                    max_blob_size: 0,
                 })
             }
         }

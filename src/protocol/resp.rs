@@ -25,6 +25,8 @@ pub struct Resp<C> {
     buf: Vec<u8>,
     /// Amount of bytes processed from `buf`.
     processed: usize,
+    /// See [`config::Storage::max_blob_size`].
+    max_blob_size: u64,
 }
 
 impl<C> Resp<C>
@@ -221,11 +223,12 @@ where
 
     type Conn = C;
 
-    fn new(conn: C) -> Resp<C> {
+    fn new(conn: C, max_blob_size: u64) -> Resp<C> {
         Resp {
             conn,
             buf: Vec::with_capacity(4096),
             processed: 0,
+            max_blob_size,
         }
     }
 

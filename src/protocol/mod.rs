@@ -34,7 +34,7 @@ pub trait Protocol {
     type Conn;
 
     /// Create a new protocol around `conn`ection.
-    fn new(conn: Self::Conn) -> Self;
+    fn new(conn: Self::Conn, max_blob_size: u64) -> Self;
 
     /// Return the source of the client.
     ///
