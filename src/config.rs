@@ -22,7 +22,7 @@ pub struct Config {
     pub resp: Option<Protocol>,
 }
 
-/// Number of worker threads to use
+/// Number of worker threads to use.
 #[derive(Debug)]
 pub enum WorkerThreads {
     /// Uses one worker thread per available CPU core.
@@ -31,9 +31,15 @@ pub enum WorkerThreads {
     Specific(usize),
 }
 
-/// Storage type used.
+/// Configuration related to storage.
 #[derive(Debug)]
-pub enum Storage {
+pub struct Storage {
+    pub kind: StorageKind,
+}
+
+/// Storage kind used.
+#[derive(Debug)]
+pub enum StorageKind {
     /// In-memory only.
     InMemory,
     /// On-disk storage.
@@ -74,7 +80,9 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             worker_threads: WorkerThreads::Specific(1),
-            storage: Storage::InMemory,
+            storage: Storage {
+                kind: StorageKind::InMemory,
+            },
             http: Some(Protocol {
                 address: SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 5080),
                 read_timeout: READ_TIMEOUT,
@@ -279,13 +287,14 @@ impl<'de> Deserialize<'de> for Storage {
                     }
                 }
                 let kind = kind.ok_or_else(|| de::Error::missing_field("kind"))?;
-                match kind {
-                    StorageKind::InMemory => Ok(Storage::InMemory),
-                    StorageKind::OnDisk => {
+                let kind = match kind {
+                    Kind::InMemory => StorageKind::InMemory,
+                    Kind::OnDisk => {
                         let path = path.ok_or_else(|| de::Error::missing_field("path"))?;
-                        Ok(Storage::OnDisk(path))
+                        StorageKind::OnDisk(path)
                     }
-                }
+                };
+                Ok(Storage { kind })
             }
         }
 
@@ -328,32 +337,32 @@ impl<'de> Deserialize<'de> for Storage {
 
         const STORAGE_KINDS: &[&str] = &["memory", "disk"];
 
-        enum StorageKind {
+        enum Kind {
             InMemory,
             OnDisk,
         }
 
-        impl<'de> Deserialize<'de> for StorageKind {
-            fn deserialize<D>(deserializer: D) -> Result<StorageKind, D::Error>
+        impl<'de> Deserialize<'de> for Kind {
+            fn deserialize<D>(deserializer: D) -> Result<Kind, D::Error>
             where
                 D: Deserializer<'de>,
             {
                 struct StorageKindVisitor;
 
                 impl<'de> Visitor<'de> for StorageKindVisitor {
-                    type Value = StorageKind;
+                    type Value = Kind;
 
                     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
                         formatter.write_str("`memory` or `disk`")
                     }
 
-                    fn visit_str<E>(self, value: &str) -> Result<StorageKind, E>
+                    fn visit_str<E>(self, value: &str) -> Result<Kind, E>
                     where
                         E: de::Error,
                     {
                         match value {
-                            "memory" => Ok(StorageKind::InMemory),
-                            "disk" => Ok(StorageKind::OnDisk),
+                            "memory" => Ok(Kind::InMemory),
+                            "disk" => Ok(Kind::OnDisk),
                             _ => Err(de::Error::unknown_field(value, STORAGE_KINDS)),
                         }
                     }

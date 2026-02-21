@@ -113,8 +113,8 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
     );
     runtime.receive_signals(actor_ref);
 
-    match config.storage {
-        config::Storage::InMemory => {
+    match config.storage.kind {
+        config::StorageKind::InMemory => {
             let (storage_handle, future) = storage::new_in_memory();
             runtime.spawn_future(
                 future,
@@ -122,7 +122,7 @@ fn run(config: Config) -> Result<(), heph_rt::Error> {
             );
             start_listeners!(mem::Storage, config, runtime, storage_handle);
         }
-        config::Storage::OnDisk(path) => {
+        config::StorageKind::OnDisk(path) => {
             let rt = ThreadSafe::from(&runtime);
             let (storage_handle, future) = storage::open_on_disk(rt, path)
                 .map_err(|err| heph_rt::Error::setup(format!("failed to open storage: {err}")))?;
