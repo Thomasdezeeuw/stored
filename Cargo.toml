@@ -21,7 +21,7 @@ itoa              = { version = "1.0.4", default-features = false }
 libc              = { version = "0.2.151", default-features = false }
 log               = { version = "0.4.21", default-features = false, features = ["kv_std", "release_max_level_info"] }
 ring              = { version = "0.17", default-features = false }
-serde             = { version = "1.0.197", default-features = false }
+serde_core        = { version = "1.0.220", default-features = false }
 std-logger        = { version = "0.5.3", default-features = false, features = ["timestamp", "log-panic", "nightly"] }
 
 [dev-dependencies.heph-rt]

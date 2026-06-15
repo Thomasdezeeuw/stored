@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{fmt, io};
 
-use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde_core::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 
 /// Configuration of the store.
 #[derive(Debug)]

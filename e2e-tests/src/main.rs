@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 
 use heph_rt::access::{Access, ThreadSafe};
 use heph_rt::spawn::options::FutureOptions;
-use serde::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
+use serde_core::de::{self, Deserialize, Deserializer, MapAccess, Visitor};
 use store::Client;
 
 mod smoke;
