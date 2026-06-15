@@ -19,14 +19,7 @@
 //! [`Protocol`]: protocol::Protocol
 //! [`Storage`]: storage::Storage
 
-#![feature(
-    async_iter_from_iter,
-    async_iterator,
-    if_let_guard,
-    impl_trait_in_assoc_type,
-    iter_advance_by,
-    never_type
-)]
+#![feature(async_iter_from_iter, async_iterator, iter_advance_by, never_type)]
 
 pub mod config;
 pub mod controller;
