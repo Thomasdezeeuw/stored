@@ -11,7 +11,7 @@ edition     = "2024"
 [dependencies]
 basic-toml        = { version = "0.1.9", default-features = false }
 # TODO: replace with published crates.
-heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "0b02e070d5f2eff9df663bf81ad217fde9e08d5c", default-features = false }
+heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
 log               = { version = "0.4.21", default-features = false, features = ["kv_std", "release_max_level_info"] }
 serde_core        = { version = "1.0.220", default-features = false }
 std-logger        = { version = "0.5.3", default-features = false, features = ["nightly"] }
