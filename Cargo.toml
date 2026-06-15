@@ -16,7 +16,7 @@ left-right        = { git = "https://github.com/Thomasdezeeuw/left-right", rev =
 heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
 heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
 heph-http         = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
-human-size        = { version = "0.4.3", default-features = false, features = ["serde"] }
+human-size        = { version = "0.4.4", default-features = false, features = ["enable-serde"] }
 itoa              = { version = "1.0.4", default-features = false }
 libc              = { version = "0.2.151", default-features = false }
 log               = { version = "0.4.21", default-features = false, features = ["kv_std", "release_max_level_info"] }
