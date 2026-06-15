@@ -7,7 +7,7 @@ use std::mem::take;
 use std::{fmt, io};
 
 use heph_http::body::{BodyLength, EmptyBody, OneshotBody, StreamingBody};
-use heph_http::head::{Header, HeaderName, Headers, Method, StatusCode};
+use heph_http::head::{HeaderName, Headers, Method, StatusCode};
 use heph_http::server::Connection;
 use heph_rt::timer::DeadlinePassed;
 
@@ -33,8 +33,7 @@ impl Http {
         self.buf.clear();
         self.buf.extend_from_slice(b"/blob/");
         key.append_to(&mut self.buf);
-        let location = Header::new(HeaderName::LOCATION, &self.buf);
-        self.headers.append(location);
+        self.headers.append(HeaderName::LOCATION, &*self.buf);
         self.empty_response(status_code).await
     }
 
