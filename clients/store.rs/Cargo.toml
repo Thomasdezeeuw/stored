@@ -1,0 +1,20 @@
+[package]
+name        = "store"
+description = "Client for Store*d* (pronounced store-daemon, or just stored). Stored is a distributed immutable blob store. Stored is not a key-value store, as the key isn't the decided by the user but by the SHA-512 checksum of the stored blob."
+version     = "0.2.0-dev"
+publish     = false # In development.
+authors     = ["Thomas de Zeeuw <thomasdezeeuw@gmail.com>"]
+license     = "MIT"
+repository  = "https://github.com/Thomasdezeeuw/stored"
+readme      = "README.md"
+edition     = "2024"
+
+[dependencies]
+heph              = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
+heph-rt           = { git = "https://github.com/Thomasdezeeuw/heph", rev = "29ac160cc2b31c0d27e4d2a7837afdd4133aac4f", default-features = false }
+itoa              = { version = "1.0.4", default-features = false }
+ring              = { version = "0.17", default-features = false }
+
+[[bin]]
+name = "store"
+path = "src/bin/client.rs"

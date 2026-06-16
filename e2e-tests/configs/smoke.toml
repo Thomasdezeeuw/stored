@@ -1,0 +1,7 @@
+worker_threads = 1
+
+[storage]
+kind = "memory"
+
+[resp]
+address = "127.0.0.1:60000"

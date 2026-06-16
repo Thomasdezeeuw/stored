@@ -1,9 +1,0 @@
-path = "/tmp/stored/peer_server.db"
-
-[http]
-address = "127.0.0.1:14000"
-
-[distributed]
-peer_address = "127.0.0.1:14100"
-replicas = "all"
-peers = []

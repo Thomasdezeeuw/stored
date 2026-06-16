@@ -1,0 +1,7 @@
+# IDEAS
+
+## Storage Compression
+
+Column based storage.
+ * Delta compression for integers, e.g. HTTP status.
+ * Delta compression for timestamps.
